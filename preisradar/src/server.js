@@ -82,9 +82,12 @@ export function createApp(db, { dataDir = null } = {}) {
   const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
 
   // --- Übersicht ---
-  app.get('/api/overview', wrap((_req, res) => {
+  app.get('/api/overview', wrap((req, res) => {
     const competitors = db.prepare('SELECT c.*, (SELECT COUNT(*) FROM sitemap_urls s WHERE s.competitor_id=c.id) AS sitemap_count FROM competitors c ORDER BY position, id').all();
-    const products = db.prepare('SELECT * FROM products WHERE active=1 ORDER BY manufacturer, name').all();
+    const counts = db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get();
+    // scope: tracked = beobachtete Artikel, all = komplette Artikelbasis; ohne Angabe beobachtete, sofern vorhanden
+    const scope = req.query.scope === 'all' || (req.query.scope !== 'tracked' && !counts.tracked) ? 'all' : 'tracked';
+    const products = db.prepare(`SELECT * FROM products WHERE active=1 ${scope === 'tracked' ? 'AND tracked=1' : ''} ORDER BY manufacturer, name`).all();
     const matches = db.prepare('SELECT * FROM matches').all();
     const prev = db.prepare(`
       SELECT h.match_id, h.price FROM price_history h
@@ -102,6 +105,9 @@ export function createApp(db, { dataDir = null } = {}) {
     res.json({
       own: { name: ownName() },
       competitors,
+      scope,
+      counts,
+      schedule: scheduleConfig(db),
       products: products.map((p) => ({ ...p, matches: byProduct.get(p.id) ?? {} })),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
@@ -288,6 +294,17 @@ export function createApp(db, { dataDir = null } = {}) {
     res.json({ set, skipped: skipped.length });
   }));
 
+  // --- Beobachtete Artikel (nur diese werden bei Mitbewerbern abgeglichen) ---
+  app.post('/api/products/track', wrap((req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length) throw bad('Keine Artikel ausgewählt');
+    if (ids.length > 100000) throw bad('Zu viele Artikel auf einmal');
+    const v = req.body?.tracked === false ? 0 : 1;
+    const upd = db.prepare('UPDATE products SET tracked=? WHERE id=?');
+    tx(db, () => { for (const id of ids) upd.run(v, id); });
+    res.json({ ok: true, changed: ids.length, counts: db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get() });
+  }));
+
   // --- Abruf starten/stoppen ---
   app.post('/api/scrape', wrap((req, res) => {
     const { competitor_id = null, product_id = null, force = false } = req.body ?? {};
@@ -306,6 +323,7 @@ export function createApp(db, { dataDir = null } = {}) {
       own_name: ownName(),
       own_url: getSetting(db, 'own_url') || process.env.OWN_SHOP_URL || '',
       own_sitemap_url: getSetting(db, 'own_sitemap_url') || '',
+      schedule: scheduleConfig(db),
       shopware_url: cfg.url,
       shopware_client_id: cfg.clientId,
       shopware_secret_set: Boolean(cfg.clientSecret),
@@ -324,6 +342,13 @@ export function createApp(db, { dataDir = null } = {}) {
     const b = req.body ?? {};
     if (b.own_name !== undefined) setSetting(db, 'own_name', String(b.own_name).trim());
     if (b.own_url !== undefined) setSetting(db, 'own_url', cleanUrl(b.own_url));
+    if (b.schedule && typeof b.schedule === 'object') {
+      const sc = b.schedule;
+      if (['rolling', 'slots'].includes(sc.mode)) setSetting(db, 'scrape_mode', sc.mode);
+      for (const [k, key] of [['batch', 'scrape_batch'], ['interval', 'scrape_interval'], ['jitter', 'scrape_jitter'], ['refresh', 'scrape_refresh_hours']]) {
+        if (sc[k] !== undefined && sc[k] !== '' && Number.isFinite(Number(sc[k]))) setSetting(db, key, String(Number(sc[k])));
+      }
+    }
     if (b.own_sitemap_url !== undefined) setSetting(db, 'own_sitemap_url', sitemapField(b.own_sitemap_url));
     if (b.shopware_url !== undefined) setSetting(db, 'shopware_url', cleanUrl(b.shopware_url));
     if (b.shopware_client_id !== undefined) setSetting(db, 'shopware_client_id', String(b.shopware_client_id).trim());
@@ -416,16 +441,43 @@ export function createApp(db, { dataDir = null } = {}) {
   return app;
 }
 
+const clamp = (v, lo, hi, dflt) => { const n = v == null || v === '' ? NaN : Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt; };
+
+/** Abrufplan. rolling: laufend kleine Pakete über den Tag verteilt; slots: feste Uhrzeiten (SCRAPE_HOURS). */
+export function scheduleConfig(db) {
+  return {
+    mode: getSetting(db, 'scrape_mode') === 'slots' ? 'slots' : 'rolling',
+    batch: clamp(getSetting(db, 'scrape_batch'), 1, 1000, 100), // Artikel je Mitbewerber und Paket
+    interval: clamp(getSetting(db, 'scrape_interval'), 10, 86400, 200), // Sekunden zwischen den Paketen
+    jitter: clamp(getSetting(db, 'scrape_jitter'), 0, 3600, 100), // zufälliger Aufschlag in Sekunden
+    refresh: clamp(getSetting(db, 'scrape_refresh_hours'), 1, 168, 12), // Mindestabstand je Artikel in Stunden
+    hours: SCRAPE_HOURS,
+  };
+}
+
 export function startScheduler(db) {
-  const done = new Set(); // "YYYY-MM-DD-HH" – pro Zeitfenster nur ein Lauf
-  setInterval(() => {
-    const d = new Date();
-    const slot = `${d.toISOString().slice(0, 10)}-${d.getHours()}`;
-    if (SCRAPE_HOURS.includes(d.getHours()) && !done.has(slot) && startScrape(db, { trigger: 'schedule' })) {
-      done.add(slot);
-      if (done.size > 10) done.delete(done.values().next().value);
+  const done = new Set(); // "YYYY-MM-DD-HH" – pro Zeitfenster nur ein Lauf (Modus slots)
+  const tick = () => {
+    let next = 60;
+    try {
+      const cfg = scheduleConfig(db);
+      if (cfg.mode === 'rolling') {
+        if (!scrapeState.running) startScrape(db, { trigger: 'rolling', limitPerCompetitor: cfg.batch, minIntervalH: cfg.refresh });
+        next = cfg.interval + Math.random() * cfg.jitter;
+      } else {
+        const d = new Date();
+        const slot = `${d.toISOString().slice(0, 10)}-${d.getHours()}`;
+        if (SCRAPE_HOURS.includes(d.getHours()) && !done.has(slot) && startScrape(db, { trigger: 'schedule' })) {
+          done.add(slot);
+          if (done.size > 10) done.delete(done.values().next().value);
+        }
+      }
+    } catch (e) {
+      console.error('Zeitplan:', e.message);
     }
-  }, 60 * 1000).unref();
+    setTimeout(tick, next * 1000).unref();
+  };
+  setTimeout(tick, 30 * 1000).unref();
 }
 
 /** Mitbewerber aus einer JSON-Datei übernehmen (Schlüssel: Name), z. B. data/competitors.json. */

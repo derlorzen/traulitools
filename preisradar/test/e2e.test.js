@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import zlib from 'node:zlib';
 process.env.MIN_DELAY_MS = '0';
+process.env.OWN_IMPORT_DELAY_MS = '0';
 import { openDb } from '../src/db.js';
 import { createApp } from '../src/server.js';
 import { scrapeState } from '../src/scraper.js';
@@ -216,6 +217,7 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     const made = (await call('/api/overview')).json.competitors.find((x) => x.name === 'Auto-Shop');
     assert.equal(made.search_url, `${base}/search?q={q}`);
     assert.equal(made.sitemap_url, null); // Suche funktioniert, Sitemap nicht nötig
+    await call(`/api/competitors/${made.id}`, { name: 'Auto-Shop', base_url: base, search_url: made.search_url, delay_ms: 1, ai_mode: 'off' }, 'PUT'); // Test beschleunigen
     assert.equal((await call('/api/competitors/autosetup', { product_url: 'kein-link' })).status, 400);
 
     // Sitemap-Mitbewerber ohne Such-URL: Kandidaten über URL-Bezeichnung, Verifikation über EAN
@@ -251,8 +253,26 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     for (let i = 0; i < 100; i++) { if (!(await call('/api/import/sitemap/status')).json.running) break; await new Promise((r) => setTimeout(r, 100)); }
     const ist = (await call('/api/import/sitemap/status')).json;
     assert.deepEqual([ist.running, ist.total, ist.created, ist.updated, ist.errors], [false, 2, 1, 1, 0]);
-    const np = (await call('/api/overview')).json.products.find((p) => p.number === '20001');
+    assert.equal((await call('/api/overview')).json.scope, 'tracked');
+    assert.ok(!(await call('/api/overview')).json.products.some((p) => p.number === '20001')); // Sitemap-Import: zunächst nicht beobachtet
+    const allv = (await call('/api/overview?scope=all')).json;
+    assert.equal(allv.counts.all, allv.counts.tracked + 1);
+    const np = allv.products.find((p) => p.number === '20001');
+    assert.equal(np.tracked, 0);
     assert.deepEqual([np.name, np.manufacturer, np.ean, np.mpn, np.price], ['Neues Produkt', 'Testmarke', '4000000000017', 'MPN-20001', 99.9]);
+    // Nicht beobachtete Artikel werden beim Abruf übersprungen, beobachtete aufgenommen
+    await runAll();
+    assert.deepEqual((await call('/api/overview?scope=all')).json.products.find((p) => p.number === '20001').matches, {});
+    assert.equal((await call('/api/products/track', { ids: [np.id], tracked: true })).json.counts.tracked, allv.counts.tracked + 1);
+    await runAll();
+    assert.ok(Object.keys((await call('/api/overview')).json.products.find((p) => p.number === '20001').matches).length > 0);
+    assert.equal((await call('/api/products/track', { ids: [] })).status, 400);
+    // Abrufplan: verteilt über den Tag, Werte werden begrenzt gespeichert
+    assert.equal((await call('/api/settings')).json.schedule.mode, 'rolling');
+    await call('/api/settings', { schedule: { mode: 'slots', batch: 5000, interval: 300 } }, 'PUT');
+    const sch = (await call('/api/settings')).json.schedule;
+    assert.deepEqual([sch.mode, sch.batch, sch.interval, sch.jitter, sch.refresh], ['slots', 1000, 300, 100, 12]);
+    await call('/api/settings', { schedule: { mode: 'rolling' } }, 'PUT');
     // zweiter Lauf: bereits importierte Seiten werden übersprungen
     await call('/api/import/sitemap', { limit: 0 });
     for (let i = 0; i < 100; i++) { if (!(await call('/api/import/sitemap/status')).json.running) break; await new Promise((r) => setTimeout(r, 100)); }

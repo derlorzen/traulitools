@@ -248,23 +248,27 @@ export async function processItem(db, comp, product, match, now = new Date().toI
   }
 }
 
-function isDue(m, force, now) {
+function isDue(m, force, now, minH = MIN_INTERVAL_H) {
   if (force) return true;
   if (!m.last_checked) return true;
   const age = now - Date.parse(m.last_checked);
-  if (m.status === 'ok' || m.status === 'review') return age > MIN_INTERVAL_H * HOUR;
+  if (m.status === 'ok' || m.status === 'review') return age > minH * HOUR;
   if (m.status === 'error') return age > 6 * HOUR;
   if (m.status === 'pending') return true;
   return age > 7 * 24 * HOUR; // not_found, nourl, blocked: nur selten erneut
 }
 
 /** Lauf starten (läuft im Hintergrund). Liefert false, wenn bereits einer läuft. */
-export function startScrape(db, { trigger = 'manual', competitorId = null, productId = null, force = false } = {}) {
+/**
+ * limitPerCompetitor: höchstens so viele Prüfungen je Mitbewerber (Rolling-Modus, die ältesten zuerst).
+ * minIntervalH: Mindestabstand zwischen zwei Prüfungen desselben Artikels.
+ */
+export function startScrape(db, { trigger = 'manual', competitorId = null, productId = null, force = false, limitPerCompetitor = null, minIntervalH = MIN_INTERVAL_H } = {}) {
   if (scrapeState.running) return false;
   const now = Date.now();
 
   const comps = db.prepare(`SELECT * FROM competitors WHERE enabled=1 ${competitorId ? 'AND id=?' : ''} ORDER BY position, id`).all(...(competitorId ? [competitorId] : []));
-  const prods = db.prepare(`SELECT * FROM products WHERE active=1 ${productId ? 'AND id=?' : ''}`).all(...(productId ? [productId] : []));
+  const prods = db.prepare(`SELECT * FROM products WHERE active=1 ${productId ? 'AND id=?' : 'AND tracked=1'}`).all(...(productId ? [productId] : []));
   const ensure = db.prepare("INSERT OR IGNORE INTO matches(product_id, competitor_id, status) VALUES (?,?,'pending')");
   db.exec('BEGIN');
   for (const c of comps) for (const p of prods) ensure.run(p.id, c.id);
@@ -277,12 +281,14 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
     const byProduct = new Map(rows.map((r) => [r.product_id, r]));
     const items = prods
       .map((p) => ({ p, m: byProduct.get(p.id) }))
-      .filter(({ m }) => m && isDue(m, force || Boolean(productId), now))
-      .sort((a, b) => (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''));
+      .filter(({ m }) => m && isDue(m, force || Boolean(productId), now, minIntervalH))
+      .sort((a, b) => (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''))
+      .slice(0, limitPerCompetitor ?? undefined);
     return { comp: c, items };
   });
 
   const total = queues.reduce((s, q) => s + q.items.length, 0);
+  if (trigger === 'rolling' && !total) return false; // nichts fällig: keinen leeren Lauf protokollieren
   const startedAt = new Date().toISOString();
   const runId = db.prepare('INSERT INTO runs(started_at, trigger, total) VALUES (?,?,?)').run(startedAt, trigger, total).lastInsertRowid;
   Object.assign(scrapeState, { running: true, stop: false, runId, trigger, total, done: 0, found: 0, errors: 0, startedAt, current: null });
@@ -303,7 +309,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
           scrapeState.done++;
           if (r.found) scrapeState.found++;
           if (r.error) scrapeState.errors++;
-          await sleep(comp.delay_ms);
+          await sleep(comp.delay_ms * (1 + Math.random() * 0.5)); // Pausen leicht streuen
         }
       }),
     );

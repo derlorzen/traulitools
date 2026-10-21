@@ -50,7 +50,7 @@ function toast(msg, err = false) {
 }
 const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof AuthError)) toast(e.message, true); } };
 
-const state = { data: null, tab: 'preise', q: '', brand: '', filter: 'all', sort: 'name', selected: null, runs: [] };
+const state = { data: null, scope: null, tab: 'preise', q: '', brand: '', filter: 'all', sort: 'name', selected: null, runs: [] };
 
 // ---------- Auswertung pro Produkt ----------
 function analyse(p, comps) {
@@ -140,6 +140,14 @@ function renderPrices(root) {
           .filter(([v]) => !noComps || v === 'name' || v === 'price').map(([v, l]) => h('option', { value: v, selected: v === state.sort }, l))),
       h('span', { class: 'spacer' }),
       h('a', { class: 'btn', href: '/api/export.csv' }, 'CSV-Export')),
+    h('div', { class: 'toolbar' },
+      h('div', { class: 'seg' },
+        h('button', { class: `chip${state.scope === 'tracked' ? ' on' : ''}`, onclick: () => { state.scope = 'tracked'; refresh(); } }, h('b', {}, String(d.counts.tracked)), 'beobachtet'),
+        h('button', { class: `chip${state.scope === 'all' ? ' on' : ''}`, onclick: () => { state.scope = 'all'; refresh(); } }, h('b', {}, String(d.counts.all)), 'alle Artikel')),
+      h('span', { class: 'spacer' }),
+      h('span', { class: 'pmeta' }, 'Nur beobachtete Artikel werden bei Mitbewerbern abgeglichen:'),
+      h('button', { class: 'btn small', onclick: guard(() => track(state.visibleIds, true)) }, 'Gefilterte beobachten'),
+      h('button', { class: 'btn small', onclick: guard(() => track(state.visibleIds, false)) }, 'Gefilterte nicht beobachten')),
     noComps ? null : h('div', { class: 'toolbar' }, h('div', { class: 'seg' },
       chip('all', 'Produkte', rows.length),
       chip('undercut', 'teurer als ein Mitbewerber', count((r) => r.a.kind === 'undercut'), 'bad'),
@@ -148,6 +156,15 @@ function renderPrices(root) {
       chip('review', 'zu prüfen', count((r) => r.a.review), 'warn'))),
     h('div', { class: 'tablewrap', id: 'tablewrap' }));
   renderTable();
+}
+
+/** Beobachtung (Abgleich bei Mitbewerbern) für Artikel setzen. */
+async function track(ids, tracked) {
+  if (!ids?.length) return toast('Keine Artikel im Filter', true);
+  if (ids.length > 500 && !confirm(`${ids.length} Artikel ${tracked ? 'beobachten' : 'nicht mehr beobachten'}?`)) return;
+  const r = await api('/api/products/track', { body: { ids, tracked } });
+  toast(`${r.changed} Artikel ${tracked ? 'werden beobachtet' : 'werden nicht mehr beobachtet'}`);
+  await refresh();
 }
 
 function renderTable() {
@@ -169,15 +186,18 @@ function renderTable() {
     price: (x, y) => (y.p.price ?? 0) - (x.p.price ?? 0),
   };
   rows.sort(sorters[state.sort]);
+  state.visibleIds = rows.map(({ p }) => p.id);
 
   const shown = rows.slice(0, 400);
   const table = h('table', { class: 'prices' },
     h('thead', {}, h('tr', {},
+      h('th', { title: 'Beobachten: wird bei Mitbewerbern abgeglichen' }, '👁'),
       h('th', { class: 'prod' }, `Produkt (${rows.length}${rows.length !== d.products.length ? ' von ' + d.products.length : ''})`),
       h('th', { class: 'own' }, d.own.name),
       d.competitors.map((c) => h('th', { title: c.base_url }, c.name, c.enabled ? '' : ' (aus)')),
       d.competitors.length ? [h('th', {}, 'Position'), h('th', {}, 'Abstand zum günstigsten')] : null)),
     h('tbody', {}, shown.map(({ p, a }) => h('tr', { tabindex: 0, onclick: () => openDrawer(p.id), onkeydown: (e) => e.key === 'Enter' && openDrawer(p.id) },
+      h('td', { onclick: (e) => e.stopPropagation() }, h('input', { type: 'checkbox', checked: Boolean(p.tracked), 'aria-label': `${p.name} beobachten`, onchange: guard((e) => track([p.id], e.target.checked)) })),
       h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name), h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.ean].filter(Boolean).join(' · '))),
       h('td', { class: 'own' }, p.price != null ? eur.format(p.price) : '–'),
       a.cells.map((cell) => matchCell(p, a, cell)),
@@ -458,9 +478,9 @@ async function renderImport(root) {
   } catch { /* ignorieren */ }
   root.append(h('div', { class: 'panel' }, h('h3', {}, 'Letzte Läufe'),
     state.runs.length ? h('table', { class: 'plain' }, h('thead', {}, h('tr', {}, ['Start', 'Auslöser', 'Geprüft', 'Preise gefunden', 'Fehler', 'Dauer'].map((x) => h('th', {}, x)))),
-      h('tbody', {}, state.runs.map((r) => h('tr', {}, h('td', {}, dt.format(new Date(r.started_at))), h('td', {}, r.trigger === 'schedule' ? 'Zeitplan' : 'manuell'), h('td', {}, `${r.checked}/${r.total}`), h('td', {}, r.found), h('td', {}, r.errors),
+      h('tbody', {}, state.runs.map((r) => h('tr', {}, h('td', {}, dt.format(new Date(r.started_at))), h('td', {}, r.trigger === 'schedule' ? 'Zeitplan' : r.trigger === 'rolling' ? 'verteilt' : 'manuell'), h('td', {}, `${r.checked}/${r.total}`), h('td', {}, r.found), h('td', {}, r.errors),
         h('td', {}, r.finished_at ? `${Math.max(1, Math.round((Date.parse(r.finished_at) - Date.parse(r.started_at)) / 60000))} min${r.note ? ` (${r.note})` : ''}` : 'läuft …'))))) : h('p', { class: 'pmeta' }, 'Noch kein Lauf.'),
-    h('p', { class: 'pmeta', style: 'margin-top:8px' }, `Automatischer Abruf zweimal täglich (${d.config.scrapeHours.map((x) => String(x).padStart(2, '0') + ':00').join(' und ')} Uhr).`)));
+    h('p', { class: 'pmeta', style: 'margin-top:8px' }, (d.schedule.mode === 'rolling' ? `Automatischer Abruf verteilt über den Tag: alle ${d.schedule.interval} bis ${d.schedule.interval + d.schedule.jitter} Sekunden bis zu ${d.schedule.batch} Artikel je Mitbewerber, jeder Artikel höchstens alle ${d.schedule.refresh} Stunden.` : `Automatischer Abruf zu festen Zeiten (${d.schedule.hours.map((x) => String(x).padStart(2, '0') + ':00').join(' und ')} Uhr).`) + ' Einstellbar unter Einstellungen → Abrufplan.')));
 }
 
 // ---------- Anmeldung ----------
@@ -610,13 +630,26 @@ async function renderSettings(root) {
       h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(ki)) }); toast('KI-Einstellungen gespeichert'); await refresh(); }) }, 'Speichern')),
     kout);
 
+  const sch = cur.schedule;
+  const plan = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
+    h('h3', {}, 'Abrufplan'),
+    h('p', { class: 'sub' }, 'Verteilt: kleine Pakete über den ganzen Tag mit zufälligem Abstand, das schont die Server der Mitbewerber. Feste Zeiten: ein großer Lauf zu den Stunden aus der Server-Einstellung SCRAPE_HOURS. Abgeglichen werden nur beobachtete Artikel.'),
+    h('div', { class: 'grid' },
+      h('div', { class: 'field' }, h('label', {}, 'Modus'), h('select', { name: 'mode' }, [['rolling', 'Verteilt über den Tag'], ['slots', `Feste Zeiten (${sch.hours.map((x) => `${String(x).padStart(2, '0')}:00`).join(', ')})`]].map(([v, t]) => h('option', { value: v, selected: sch.mode === v }, t)))),
+      f('Artikel je Mitbewerber und Paket', 'batch', sch.batch, { type: 'number' }),
+      f('Abstand zwischen Paketen (Sekunden)', 'interval', sch.interval, { type: 'number' }),
+      f('Zufälliger Aufschlag bis (Sekunden)', 'jitter', sch.jitter, { type: 'number' }),
+      f('Mindestabstand je Artikel (Stunden)', 'refresh', sch.refresh, { type: 'number', hint: '12 = etwa zweimal täglich' })),
+    h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: { schedule: Object.fromEntries(new FormData(plan)) } }); toast('Abrufplan gespeichert'); await refresh(); }) }, 'Speichern')));
+
   const pw = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
     h('h3', {}, 'Passwort ändern'),
     h('div', { class: 'grid' }, f('Aktuelles Passwort', 'current', '', { type: 'password' }), f('Neues Passwort (mind. 10 Zeichen)', 'password', '', { type: 'password' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
   const up = h('div', { id: 'userpanel' }, await userPanel());
-  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, ki, up, pw));
+  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, ki, up, pw));
 }
 
 // ---------- Laufleiste ----------
@@ -655,7 +688,8 @@ function render() {
 let pollTimer;
 async function refresh() {
   const scrollY = window.scrollY;
-  state.data = await api('/api/overview');
+  state.data = await api(`/api/overview${state.scope ? `?scope=${state.scope}` : ''}`);
+  state.scope = state.data.scope;
   const typing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) && document.getElementById('main').contains(document.activeElement);
   if (typing && state.tab === 'preise') { renderRunbar(); renderTable(); } // Eingabefeld nicht neu aufbauen
   else if (typing) renderRunbar();

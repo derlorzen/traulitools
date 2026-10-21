@@ -10,7 +10,7 @@ Node 22, SQLite (eingebaut), keine externen Dienste, keine Tracker oder Fremd-Fo
    - Suche beim Mitbewerber per EAN, dann Herstellernummer, dann Artikelnummer.
    - Treffer wird geprüft: EAN/Nummer in den Seitendaten → **bestätigt**. Nur Namensähnlichkeit → **„prüfen"** (Preis blass angezeigt, zählt nicht für „günstigster", Button „Passt / Passt nicht").
    - Manuelle Produkt-URLs (Detailansicht oder URL-CSV) haben Vorrang und werden nie überschrieben.
-4. **Abgleich** zweimal täglich (`SCRAPE_HOURS=6,18`) und per Knopf. Preise werden aus JSON-LD, Meta-Tags oder einem eigenen CSS-Selektor gelesen. Der Preisverlauf wird bei Änderung gespeichert.
+4. **Abgleich** verteilt über den Tag (Einstellungen → Abrufplan) oder zu festen Zeiten (`SCRAPE_HOURS=6,18`) und per Knopf. Preise werden aus JSON-LD, Meta-Tags oder einem eigenen CSS-Selektor gelesen. Der Preisverlauf wird bei Änderung gespeichert.
 
 ## Erster Start und Shopware
 Beim ersten Aufruf legst du im Browser Benutzername und Passwort an (nur einmal möglich; mit `SETUP_TOKEN` zusätzlich per Einrichtungscode geschützt).
@@ -45,6 +45,10 @@ Ist die Suche eines Shops gesperrt (robots.txt) oder nur per JavaScript gerender
 
 ## Mitbewerber per Produktlink einrichten
 Im Tab Mitbewerber den Link zu einem Produkt des Mitbewerbers einfügen: Preisradar erkennt die Preisquelle (JSON-LD, Meta, Microdata, sonst KI), probiert gängige Such-URLs (nur wenn die robots.txt sie erlaubt und sie das Produkt wirklich findet) und sucht die Sitemaps. Funktioniert keine Suche, wird der Mitbewerber mit seinen Sitemaps angelegt.
+
+## Beobachtete Artikel und Abrufplan
+- **Beobachtet** sind die Artikel, die bei Mitbewerbern abgeglichen werden (Haken im Tab Preise, Sammelaktionen „Gefilterte beobachten“). Neu importierte Artikel aus der Sitemap sind zunächst nicht beobachtet, CSV- und Shopware-Import beobachten neue Artikel. „Alle Artikel“ zeigt immer die komplette Artikelbasis.
+- **Verteilter Abruf (Standard):** alle `Abstand` bis `Abstand + Aufschlag` Sekunden (Standard 200 bis 300) ein Paket von bis zu 100 Artikeln je Mitbewerber, die am längsten nicht geprüften zuerst, jeder Artikel höchstens alle 12 Stunden. Pausen zwischen Seiten werden zusätzlich zufällig um bis zu 50 % gestreckt. Der Abruf nutzt stets die gleiche, offen erkennbare Kennung (`PreisradarBot`) und beachtet die robots.txt. IP-Rotation oder Verschleierung gibt es bewusst nicht.
 
 ## Wichtig
 - Anmeldung per Session-Cookie, Passwörter mit scrypt gehasht, Login-Versuche begrenzt. Bei öffentlicher URL `SETUP_TOKEN` setzen und die Einrichtung sofort durchführen.

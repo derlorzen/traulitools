@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS products (
   url TEXT,
   price REAL,
   active INTEGER NOT NULL DEFAULT 1,
+  tracked INTEGER NOT NULL DEFAULT 1,
   source TEXT,
   updated_at TEXT
 );
@@ -112,6 +113,7 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   db.exec(SCHEMA);
   // Migration für bestehende Datenbanken
   if (!db.prepare('PRAGMA table_info(competitors)').all().some((c) => c.name === 'ai_mode')) db.exec("ALTER TABLE competitors ADD COLUMN ai_mode TEXT NOT NULL DEFAULT 'fallback'");
+  if (!db.prepare('PRAGMA table_info(products)').all().some((c) => c.name === 'tracked')) db.exec('ALTER TABLE products ADD COLUMN tracked INTEGER NOT NULL DEFAULT 1');
   const compCols = db.prepare('PRAGMA table_info(competitors)').all().map((c) => c.name);
   if (!compCols.includes('sitemap_url')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_url TEXT');
   if (!compCols.includes('sitemap_fetched_at')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_fetched_at TEXT');
@@ -134,11 +136,12 @@ export function tx(db, fn) {
 const nz = (v) => (v === undefined || v === '' ? null : v);
 
 /** Eigene Produkte anlegen/aktualisieren (Schlüssel: Artikelnummer). */
-export function upsertProducts(db, rows, source) {
+/** tracked: gilt nur für neu angelegte Artikel (beobachtet = wird bei Mitbewerbern abgeglichen). */
+export function upsertProducts(db, rows, source, { tracked = true } = {}) {
   const now = new Date().toISOString();
   const sel = db.prepare('SELECT id, price FROM products WHERE number = ?');
   const ins = db.prepare(
-    'INSERT INTO products(number, ean, mpn, name, manufacturer, url, price, active, source, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO products(number, ean, mpn, name, manufacturer, url, price, active, source, updated_at, tracked) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
   );
   const upd = db.prepare(
     'UPDATE products SET ean=?, mpn=?, name=?, manufacturer=?, url=COALESCE(?, url), price=?, active=?, source=?, updated_at=? WHERE id=?',
@@ -153,7 +156,7 @@ export function upsertProducts(db, rows, source) {
       const price = r.price ?? null;
       const active = r.active === false ? 0 : 1;
       if (!cur) {
-        const res = ins.run(r.number, vals[0], vals[1], r.name, vals[3], vals[4], price, active, source, now);
+        const res = ins.run(r.number, vals[0], vals[1], r.name, vals[3], vals[4], price, active, source, now, tracked ? 1 : 0);
         if (price != null) hist.run(res.lastInsertRowid, price, now);
         created++;
       } else {

@@ -67,7 +67,7 @@ export function startOwnImport(db, { limit = null, all = false, delayMs = Number
     let batch = [];
     const flush = () => {
       if (!batch.length) return;
-      const r = upsertProducts(db, batch, 'sitemap');
+      const r = upsertProducts(db, batch, 'sitemap', { tracked: false }); // Auswahl der beobachteten Artikel trifft der Nutzer
       ownImportState.created += r.created;
       ownImportState.updated += r.updated;
       batch = [];
