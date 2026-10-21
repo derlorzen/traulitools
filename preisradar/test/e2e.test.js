@@ -40,7 +40,8 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     const res = await fetch(api + path, { method: method || (body ? 'POST' : 'GET'), headers: { 'content-type': 'application/json', cookie }, body: body ? JSON.stringify(body) : undefined });
     const sc = res.headers.getSetCookie?.()[0];
     if (sc && !sc.includes('Max-Age=0')) cookie = sc.split(';')[0];
-    return { status: res.status, json: await res.json() };
+    const raw = await res.text(); let json; try { json = JSON.parse(raw); } catch { json = { raw: raw.slice(0, 120), path, status: res.status }; }
+    return { status: res.status, json };
   };
 
   try {
@@ -63,6 +64,26 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.equal(st.own_url, 'https://www.belkai.de');
     assert.ok(!JSON.stringify(st).includes('geheim'));
     assert.equal((await call('/api/overview')).json.config.shopware, true);
+
+    // Benutzerverwaltung
+    assert.equal((await call('/api/users', { username: 'zweiter', password: 'noch-ein-passwort' })).status, 200);
+    assert.equal((await call('/api/users', { username: 'zweiter', password: 'noch-ein-passwort' })).status, 409);
+    assert.equal((await call('/api/users', { username: 'x', password: 'noch-ein-passwort' })).status, 400);
+    const dup = await call('/api/users', { username: 'zweiter', password: 'noch-ein-passwort' });
+    assert.match(dup.json.error, /gibt es schon/);
+    const list = (await call('/api/users')).json;
+    assert.equal(list.length, 2);
+    assert.ok(list.find((u) => u.username === 'marco').me);
+    const meId = list.find((u) => u.me).id;
+    assert.equal((await call(`/api/users/${meId}`, null, 'DELETE')).status, 409);
+    const secondId = list.find((u) => !u.me).id;
+    assert.equal((await call(`/api/users/${secondId}/password`, { password: 'kurz' }, 'PUT')).status, 400);
+    assert.equal((await call(`/api/users/${secondId}/password`, { password: 'neues-passwort-123' }, 'PUT')).status, 200);
+    const mine = cookie; cookie = '';
+    assert.equal((await call('/api/auth/login', { username: 'zweiter', password: 'neues-passwort-123' })).status, 200);
+    cookie = mine;
+    assert.equal((await call(`/api/users/${secondId}`, null, 'DELETE')).status, 200);
+    assert.equal((await call('/api/users')).json.length, 1);
 
     const csv = 'Artikelnummer;Name;EAN;Hersteller;Preis\n10484;KLUDI Showersystem Logo Basic Dual;4015241210108;KLUDI;239,00\n10276-001;HSK Duschsystem RS 200 AquaSwitch Rund Ablage weiß;;HSK;669,00\n';
     const imp = await call('/api/import/csv', { text: csv });

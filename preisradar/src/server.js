@@ -33,6 +33,10 @@ export function createApp(db, { dataDir = null } = {}) {
   // --- Anmeldung: Benutzer wird beim ersten Aufruf angelegt ---
   const bad0 = (msg, status = 400) => Object.assign(new Error(msg), { status });
   const setupToken = process.env.SETUP_TOKEN || '';
+  const checkCredentials = (username, password) => {
+    if (!/^[\w.@-]{3,64}$/.test(username ?? '')) throw bad0('Benutzername: 3–64 Zeichen (Buchstaben, Zahlen, . _ - @)');
+    if (String(password ?? '').length < 10) throw bad0('Das Passwort braucht mindestens 10 Zeichen');
+  };
   app.get('/api/auth/state', (req, res) => {
     const user = currentUser(db, req);
     res.json({ setup: !hasUsers(db), setupTokenRequired: Boolean(setupToken) && !hasUsers(db), authenticated: Boolean(user), username: user?.username ?? null });
@@ -43,8 +47,7 @@ export function createApp(db, { dataDir = null } = {}) {
       if (tooManyAttempts(req)) throw bad0('Zu viele Versuche, bitte später erneut probieren', 429);
       const { username, password, setup_token } = req.body ?? {};
       if (setupToken && setup_token !== setupToken) throw bad0('Einrichtungscode falsch', 403);
-      if (!/^[\w.@-]{3,64}$/.test(username ?? '')) throw bad0('Benutzername: 3–64 Zeichen (Buchstaben, Zahlen, . _ - @)');
-      if (String(password ?? '').length < 10) throw bad0('Das Passwort braucht mindestens 10 Zeichen');
+      checkCredentials(username, password);
       const id = db.prepare('INSERT INTO users(username, password_hash, created_at) VALUES (?,?,?)').run(username, hashPassword(password), new Date().toISOString()).lastInsertRowid;
       createSession(db, Number(id), req, res);
       res.json({ ok: true });
@@ -69,7 +72,7 @@ export function createApp(db, { dataDir = null } = {}) {
   // Ab hier nur mit Anmeldung
   app.use('/api', (req, res, next) => (currentUser(db, req) ? next() : res.status(401).json({ error: 'Nicht angemeldet' })));
 
-  const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => res.status(e.status || 500).json({ error: e.message }));
+  const wrap = (fn) => (req, res) => (async () => fn(req, res))().catch((e) => res.status(e.status || 500).json({ error: e.message })); // auch synchrone Fehler als JSON
   const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
 
   // --- Übersicht ---
@@ -274,6 +277,35 @@ export function createApp(db, { dataDir = null } = {}) {
     db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(password), u.id);
     db.prepare('DELETE FROM sessions WHERE user_id=?').run(u.id);
     createSession(db, u.id, req, res);
+    res.json({ ok: true });
+  }));
+
+  // --- Benutzerverwaltung (alle angemeldeten Benutzer sind gleichberechtigt) ---
+  app.get('/api/users', wrap((req, res) => {
+    const me = currentUser(db, req);
+    res.json(db.prepare('SELECT id, username, created_at FROM users ORDER BY username').all().map((u) => ({ ...u, me: u.id === me.id })));
+  }));
+  app.post('/api/users', wrap((req, res) => {
+    const { username, password } = req.body ?? {};
+    checkCredentials(username, password);
+    if (db.prepare('SELECT 1 FROM users WHERE username=?').get(username)) throw bad('Diesen Benutzernamen gibt es schon', 409);
+    const id = db.prepare('INSERT INTO users(username, password_hash, created_at) VALUES (?,?,?)').run(username, hashPassword(password), new Date().toISOString()).lastInsertRowid;
+    res.json({ id: Number(id) });
+  }));
+  app.put('/api/users/:id/password', wrap((req, res) => {
+    const id = Number(req.params.id);
+    const { password } = req.body ?? {};
+    if (String(password ?? '').length < 10) throw bad('Das Passwort braucht mindestens 10 Zeichen');
+    if (!db.prepare('SELECT 1 FROM users WHERE id=?').get(id)) throw bad('Benutzer nicht gefunden', 404);
+    db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(password), id);
+    const me = currentUser(db, req);
+    if (id !== me.id) db.prepare('DELETE FROM sessions WHERE user_id=?').run(id); // andere Benutzer werden abgemeldet
+    res.json({ ok: true });
+  }));
+  app.delete('/api/users/:id', wrap((req, res) => {
+    const id = Number(req.params.id);
+    if (id === currentUser(db, req).id) throw bad('Das eigene Konto kann nicht gelöscht werden', 409);
+    db.prepare('DELETE FROM users WHERE id=?').run(id);
     res.json({ ok: true });
   }));
 

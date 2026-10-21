@@ -395,6 +395,33 @@ async function showAuth(info) {
   document.getElementById('main').replaceChildren(form);
 }
 
+
+// ---------- Benutzer ----------
+async function userPanel() {
+  const users = await api('/api/users');
+  const box = h('div', { class: 'panel' }, h('h3', {}, 'Benutzer'),
+    h('p', { class: 'sub' }, 'Alle Benutzer haben die gleichen Rechte. Neue Benutzer melden sich mit Benutzername und Passwort an.'));
+  box.append(h('table', { class: 'plain' }, h('thead', {}, h('tr', {}, ['Benutzer', 'Angelegt', 'Neues Passwort', ''].map((x) => h('th', {}, x)))),
+    h('tbody', {}, users.map((u) => {
+      const pw = h('input', { type: 'password', placeholder: 'mind. 10 Zeichen', autocomplete: 'new-password', 'aria-label': `Neues Passwort für ${u.username}` });
+      return h('tr', {},
+        h('td', {}, u.username, u.me ? h('span', { class: 'tag mute' }, ' (du)') : null),
+        h('td', {}, dt.format(new Date(u.created_at))),
+        h('td', {}, h('div', { class: 'row' }, pw, h('button', { class: 'btn small', type: 'button', onclick: guard(async () => { await api(`/api/users/${u.id}/password`, { method: 'PUT', body: { password: pw.value } }); pw.value = ''; toast(`Passwort für ${u.username} gesetzt`); }) }, 'Setzen'))),
+        h('td', {}, u.me ? null : h('button', { class: 'btn small danger', type: 'button', onclick: guard(async () => { if (confirm(`Benutzer „${u.username}“ löschen?`)) { await api(`/api/users/${u.id}`, { method: 'DELETE' }); await refreshUsers(); } }) }, 'Löschen')));
+    }))));
+  const nu = h('form', { class: 'row', style: 'margin-top:14px', onsubmit: (e) => e.preventDefault() },
+    h('input', { name: 'username', placeholder: 'Neuer Benutzername', autocomplete: 'off', 'aria-label': 'Neuer Benutzername' }),
+    h('input', { name: 'password', type: 'password', placeholder: 'Passwort (mind. 10 Zeichen)', autocomplete: 'new-password', 'aria-label': 'Passwort für neuen Benutzer' }),
+    h('button', { class: 'btn primary', type: 'submit', onclick: guard(async () => { await api('/api/users', { body: Object.fromEntries(new FormData(nu)) }); nu.reset(); toast('Benutzer angelegt'); await refreshUsers(); }) }, 'Benutzer anlegen'));
+  box.append(nu);
+  return box;
+}
+async function refreshUsers() {
+  const old = document.getElementById('userpanel');
+  if (old) old.replaceChildren(await userPanel());
+}
+
 // ---------- Einstellungen ----------
 async function renderSettings(root) {
   const cur = await api('/api/settings');
@@ -427,7 +454,8 @@ async function renderSettings(root) {
     h('div', { class: 'grid' }, f('Aktuelles Passwort', 'current', '', { type: 'password' }), f('Neues Passwort (mind. 10 Zeichen)', 'password', '', { type: 'password' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
-  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, pw));
+  const up = h('div', { id: 'userpanel' }, await userPanel());
+  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, up, pw));
 }
 
 // ---------- Laufleiste ----------
