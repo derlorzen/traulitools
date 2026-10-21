@@ -389,9 +389,39 @@ function competitorPanel(c) {
   return form;
 }
 
+/** Mitbewerber per Produktlink einrichten: App analysiert den Shop und legt ihn an. */
+function quickSetupPanel() {
+  const url = h('input', { type: 'url', placeholder: 'https://www.mitbewerber.de/produkt-xyz', style: 'flex:1;min-width:260px', 'aria-label': 'Produktlink eines Mitbewerbers' });
+  const name = h('input', { placeholder: 'Name (optional)', style: 'width:180px' });
+  const out = h('div', { class: 'result', hidden: true });
+  const row = (k, v) => h('div', {}, h('strong', {}, `${k}: `), v);
+  const analyse = h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => {
+    out.hidden = false; out.textContent = 'Analysiere Shop … (kann bis zu einer Minute dauern)';
+    analyse.disabled = true;
+    try {
+      const r = await api('/api/competitors/autosetup', { body: { product_url: url.value } });
+      const ok = r.product || r.search_url || r.sitemaps.length;
+      out.replaceChildren(
+        row('Shop', `${r.name} (${r.base_url})`),
+        row('Preis', r.product ? `${eur.format(r.product.price)} erkannt über ${r.price_method}` : 'nicht erkannt'),
+        row('Suche', r.search_url ?? 'keine nutzbare Such-URL'),
+        row('Sitemaps', r.sitemaps.length ? r.sitemaps.map((s) => s.url).join(', ') : 'keine gefunden'),
+        ...r.notes.map((n) => h('div', { class: 'pmeta' }, n)),
+        ok ? h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => {
+          await api('/api/competitors/autosetup', { body: { product_url: url.value, name: name.value, create: true } });
+          toast('Mitbewerber angelegt'); await refresh();
+        }) }, 'Mitbewerber so anlegen')) : null);
+    } finally { analyse.disabled = false; }
+  }) }, 'Shop analysieren');
+  return h('div', { class: 'panel' }, h('h3', {}, 'Per Produktlink einrichten'),
+    h('p', { class: 'sub' }, 'Füge den Link zu einem beliebigen Produkt des Mitbewerbers ein. Preisradar erkennt, wie der Preis ausgelesen wird, probiert gängige Such-URLs (nur wenn die robots.txt sie erlaubt) und sucht die Sitemaps. Danach legst du den Mitbewerber mit einem Klick an.'),
+    h('div', { class: 'row' }, url, name, analyse), out);
+}
+
 function renderCompetitors(root) {
   root.append(h('h2', {}, 'Mitbewerber'),
     h('p', { class: 'sub' }, 'Jeder Mitbewerber braucht eine Such-URL (Suche per EAN oder Herstellernummer) und/oder Sitemap-URLs (Zuordnung über Marke und Name). Alternativ trägst du Produkt-URLs direkt im Import oder in der Detailansicht ein. Die robots.txt der Shops wird immer beachtet.'),
+    quickSetupPanel(),
     ...state.data.competitors.map((c) => competitorPanel(c)),
     h('h3', {}, 'Neuen Mitbewerber hinzufügen'), competitorPanel(null));
 }

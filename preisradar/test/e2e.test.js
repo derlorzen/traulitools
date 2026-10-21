@@ -205,6 +205,19 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.match(kh.ai_note, /KI \(95 %\)/);
     assert.ok(aiCalls.some((x) => x.auth === 'Bearer sk-test-123' && x.model === 'test-model' && x.json === 'json_object'));
 
+    // Mitbewerber per Produktlink einrichten: Preisquelle + Such-URL werden erkannt
+    const as = (await call('/api/competitors/autosetup', { product_url: `${base}/p/kludi` })).json;
+    assert.equal(as.product.price, 215);
+    assert.match(as.price_method, /JSON-LD/);
+    assert.equal(as.search_url, `${base}/search?q={q}`);
+    assert.ok(as.sitemaps.some((s) => s.url.endsWith('/sitemap-index.xml')));
+    const asc = (await call('/api/competitors/autosetup', { product_url: `${base}/p/kludi`, name: 'Auto-Shop', create: true })).json;
+    assert.ok(asc.created);
+    const made = (await call('/api/overview')).json.competitors.find((x) => x.name === 'Auto-Shop');
+    assert.equal(made.search_url, `${base}/search?q={q}`);
+    assert.equal(made.sitemap_url, null); // Suche funktioniert, Sitemap nicht nötig
+    assert.equal((await call('/api/competitors/autosetup', { product_url: 'kein-link' })).status, 400);
+
     // Sitemap-Mitbewerber ohne Such-URL: Kandidaten über URL-Bezeichnung, Verifikation über EAN
     const sc = await call('/api/competitors', { name: 'Sitemap-Shop', base_url: base, sitemap_url: `${base}/sitemap.xml`, delay_ms: 1, ai_mode: 'off' });
     assert.ok(sc.json.id);

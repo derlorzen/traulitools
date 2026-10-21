@@ -9,6 +9,7 @@ import { fetchText, robotsAllows } from './fetcher.js';
 import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
 import { aiConfig, testAi, DEFAULT_MODEL } from './ai.js';
 import { analyse } from './analysis.js';
+import { autoSetup } from './autosetup.js';
 import { startOwnImport, ownImportState } from './ownimport.js';
 import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList } from './sitemap.js';
 import { pageDigest, aiExtract } from './aiscrape.js';
@@ -147,6 +148,24 @@ export function createApp(db, { dataDir = null } = {}) {
   app.put('/api/competitors/:id', wrap((req, res) => {
     db.prepare('UPDATE competitors SET name=?, base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=?, sitemap_url=? WHERE id=?').run(...compFields(req.body), Number(req.params.id));
     res.json({ ok: true });
+  }));
+  // Mitbewerber per Produktlink einrichten: analysieren (create=false) oder direkt anlegen (create=true)
+  app.post('/api/competitors/autosetup', wrap(async (req, res) => {
+    const cfg = aiConfig(db);
+    const r = await autoSetup(String(req.body?.product_url ?? '').trim(), { ai: cfg.key ? { cfg } : null });
+    if (req.body?.create) {
+      if (!r.product && !r.search_url && !r.sitemaps.length) throw bad('Der Shop lässt sich nicht automatisch einrichten: ' + r.notes.join(' '));
+      const name = String(req.body?.name || r.name).trim();
+      const body = {
+        name, base_url: r.base_url, search_url: r.search_url, delay_ms: 3000, ai_mode: r.ai_mode, enabled: true,
+        sitemap_url: r.search_url ? '' : r.sitemaps.map((s) => s.url).join('\n'),
+      };
+      const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
+      const ins = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(...compFields(body), pos);
+      // Produktlink als bekannte URL ist nicht möglich (Zuordnung zu eigenem Artikel fehlt), daher nur der Mitbewerber
+      return res.json({ ...r, created: true, id: Number(ins.lastInsertRowid) });
+    }
+    res.json(r);
   }));
   app.post('/api/sitemaps/discover', wrap(async (req, res) => {
     let base;
