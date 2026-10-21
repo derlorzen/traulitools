@@ -27,8 +27,34 @@ function mockShop() {
   });
 }
 
+function mockOpenAi(calls) {
+  return http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const j = JSON.parse(body);
+      calls.push({ auth: req.headers.authorization, model: j.model, json: j.response_format?.type });
+      const sys = j.messages[0].content;
+      const user = JSON.parse(j.messages[1].content === 'Test' ? '{}' : j.messages[1].content);
+      let out = { ok: true };
+      if (sys.includes('Preisanalyst')) {
+        const first = user.products[0];
+        out = { summary: 'Test-Zusammenfassung', recommendations: [{ number: first.number, action: 'senken', suggested_price: 219.9, reason: 'Mitbewerber ist günstiger' }, { number: 'GIBTSNICHT', action: 'halten', suggested_price: 1, reason: 'x' }], warnings: [{ number: first.number, issue: 'Test-Warnung' }] };
+      } else if (sys.includes('prüfst')) {
+        out = { results: user.pairs.map((p) => ({ id: p.id, same: true, confidence: 0.95, reason: 'Gleiche Serie und Maße' })) };
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(out) } }], usage: { total_tokens: 42 } }));
+    });
+  });
+}
+
 test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
   const shop = mockShop();
+  const aiCalls = [];
+  const ai = mockOpenAi(aiCalls);
+  await new Promise((r) => ai.listen(0, '127.0.0.1', r));
+  process.env.OPENAI_BASE_URL = `http://127.0.0.1:${ai.address().port}/v1`;
   await new Promise((r) => shop.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${shop.address().port}`;
   const db = openDb(':memory:');
@@ -106,6 +132,27 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.equal(mh.status, 'review');        // nur per Namensähnlichkeit gefunden
     assert.equal(mh.price, 640);
 
+    // KI: ohne Schlüssel Fehler, dann Zugang speichern, testen, Zuordnung prüfen lassen, analysieren
+    assert.match((await call('/api/ai/analyze', {})).json.error, /Schlüssel fehlt/);
+    await call('/api/settings', { openai_api_key: 'sk-test-123', openai_model: 'test-model' }, 'PUT');
+    const st2 = (await call('/api/settings')).json;
+    assert.equal(st2.openai_key_set, true);
+    assert.equal(st2.openai_model, 'test-model');
+    assert.ok(!JSON.stringify(st2).includes('sk-test-123'));
+    assert.equal(st2.own_name, 'BelKai'); // teilweises Speichern lässt andere Einstellungen unberührt
+    assert.equal((await call('/api/settings/openai/test', {})).json.ok, true);
+    const ver = (await call('/api/ai/verify-reviews', {})).json;
+    assert.deepEqual([ver.checked, ver.confirmed, ver.rejected], [1, 1, 0]);
+    const afterVerify = (await call('/api/overview')).json.products.find((p) => p.number === '10276-001').matches[c.json.id];
+    assert.equal(afterVerify.status, 'ok');
+    assert.match(afterVerify.ai_note, /KI \(95 %\)/);
+    const rep = (await call('/api/ai/analyze', {})).json.report;
+    assert.equal(rep.result.summary, 'Test-Zusammenfassung');
+    assert.equal(rep.result.recommendations.length, 1); // unbekannte Artikelnummer verworfen
+    assert.equal(rep.result.recommendations[0].suggested_price, 219.9);
+    assert.equal((await call('/api/ai/report')).json.report.id, rep.id);
+    assert.ok(aiCalls.every((x) => x.auth === 'Bearer sk-test-123' && x.model === 'test-model' && x.json === 'json_object'));
+
     const confirm = await call(`/api/matches/${mh.id}/confirm`, {});
     assert.equal(confirm.status, 200);
     const hist = (await call(`/api/products/${kludi.id}/history`)).json;
@@ -115,6 +162,6 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     const csvOut = await (await fetch(api + '/api/export.csv', { headers: { cookie } })).text();
     assert.match(csvOut, /215,00/);
   } finally {
-    srv.closeAllConnections(); srv.close(); shop.closeAllConnections(); shop.close();
+    srv.closeAllConnections(); srv.close(); shop.closeAllConnections(); shop.close(); ai.closeAllConnections(); ai.close();
   }
 });

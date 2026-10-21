@@ -7,6 +7,7 @@ import { parseCsv, pick, parsePrice, csvEscape } from './util.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { fetchText, robotsAllows } from './fetcher.js';
 import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
+import { aiConfig, testAi, analyze, latestReport, verifyReviews, DEFAULT_MODEL } from './ai.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState } from './scraper.js';
@@ -90,7 +91,7 @@ export function createApp(db, { dataDir = null } = {}) {
       if (!byProduct.has(m.product_id)) byProduct.set(m.product_id, {});
       byProduct.get(m.product_id)[m.competitor_id] = {
         id: m.id, status: m.status, price: m.price, url: m.url, title: m.title, availability: m.availability,
-        checked: m.last_checked, error: m.last_error, source: m.source, previous: prevBy.get(m.id) ?? null,
+        checked: m.last_checked, error: m.last_error, source: m.source, previous: prevBy.get(m.id) ?? null, ai_note: m.ai_note,
       };
     }
     res.json({
@@ -99,7 +100,7 @@ export function createApp(db, { dataDir = null } = {}) {
       products: products.map((p) => ({ ...p, matches: byProduct.get(p.id) ?? {} })),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key) },
     });
   }));
 
@@ -242,6 +243,10 @@ export function createApp(db, { dataDir = null } = {}) {
       shopware_client_id: cfg.clientId,
       shopware_secret_set: Boolean(cfg.clientSecret),
       shopware_from_env: !hasSetting(db, 'shopware_url') && Boolean(process.env.SHOPWARE_URL),
+      openai_key_set: Boolean(aiConfig(db).key),
+      openai_from_env: !hasSetting(db, 'openai_api_key') && Boolean(process.env.OPENAI_API_KEY),
+      openai_model: aiConfig(db).model,
+      openai_default_model: DEFAULT_MODEL,
     });
   }));
   const cleanUrl = (u) => {
@@ -250,11 +255,14 @@ export function createApp(db, { dataDir = null } = {}) {
   };
   app.put('/api/settings', wrap((req, res) => {
     const b = req.body ?? {};
-    setSetting(db, 'own_name', String(b.own_name ?? '').trim());
-    setSetting(db, 'own_url', cleanUrl(b.own_url));
-    setSetting(db, 'shopware_url', cleanUrl(b.shopware_url));
-    setSetting(db, 'shopware_client_id', String(b.shopware_client_id ?? '').trim());
+    if (b.own_name !== undefined) setSetting(db, 'own_name', String(b.own_name).trim());
+    if (b.own_url !== undefined) setSetting(db, 'own_url', cleanUrl(b.own_url));
+    if (b.shopware_url !== undefined) setSetting(db, 'shopware_url', cleanUrl(b.shopware_url));
+    if (b.shopware_client_id !== undefined) setSetting(db, 'shopware_client_id', String(b.shopware_client_id).trim());
     if (b.shopware_client_secret) setSetting(db, 'shopware_client_secret', String(b.shopware_client_secret).trim(), { secret: true });
+    if (b.openai_api_key) setSetting(db, 'openai_api_key', String(b.openai_api_key).trim(), { secret: true });
+    if (typeof b.openai_model === 'string') setSetting(db, 'openai_model', b.openai_model.trim());
+    if (b.openai_remove_key) setSetting(db, 'openai_api_key', '');
     res.json({ ok: true });
   }));
   app.post('/api/settings/shopware/test', wrap(async (req, res) => {
@@ -308,6 +316,24 @@ export function createApp(db, { dataDir = null } = {}) {
     db.prepare('DELETE FROM users WHERE id=?').run(id);
     res.json({ ok: true });
   }));
+
+  // --- KI ---
+  app.post('/api/settings/openai/test', wrap(async (req, res) => {
+    const b = req.body ?? {};
+    const cfg = aiConfig(db);
+    if (b.openai_api_key) cfg.key = String(b.openai_api_key).trim();
+    if (b.openai_model) cfg.model = String(b.openai_model).trim();
+    res.json(await testAi(cfg));
+  }));
+  app.get('/api/ai/report', wrap((_req, res) => res.json({ report: latestReport(db) })));
+  let aiBusy = false;
+  const exclusive = (fn) => async (req, res) => {
+    if (aiBusy) throw bad('Es läuft bereits eine KI-Anfrage', 409);
+    aiBusy = true;
+    try { return await fn(req, res); } finally { aiBusy = false; }
+  };
+  app.post('/api/ai/analyze', wrap(exclusive(async (_req, res) => res.json({ report: await analyze(db, aiConfig(db)) }))));
+  app.post('/api/ai/verify-reviews', wrap(exclusive(async (_req, res) => res.json(await verifyReviews(db, aiConfig(db))))));
 
   // --- Export ---
   app.get('/api/export.csv', wrap((_req, res) => {

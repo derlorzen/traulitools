@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS matches (
   availability TEXT,
   last_checked TEXT,
   last_error TEXT,
+  ai_note TEXT,
   UNIQUE(product_id, competitor_id)
 );
 CREATE TABLE IF NOT EXISTS price_history (
@@ -69,6 +70,15 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_reports (
+  id INTEGER PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  model TEXT,
+  product_count INTEGER,
+  analysed INTEGER,
+  result TEXT NOT NULL,
+  usage TEXT
+);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT NOT NULL,
@@ -87,6 +97,8 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  // Migration für bestehende Datenbanken
+  if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_note')) db.exec('ALTER TABLE matches ADD COLUMN ai_note TEXT');
   return db;
 }
 

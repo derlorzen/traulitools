@@ -31,6 +31,12 @@ Voraussetzung: Node >= 22.13 (`.node-version` liegt bei). Start: `npm ci --omit=
 - Zeitzone für den Zeitplan: `TZ=Europe/Berlin`.
 - Health-Check: `/healthz`.
 
+## KI-Analyse (OpenAI)
+Unter **Einstellungen → KI** trägst du den OpenAI-API-Schlüssel und das Modell ein (verschlüsselt gespeichert; Abrechnung nach Verbrauch bei OpenAI, nicht über ein ChatGPT-Abo).
+- **Analyse starten:** wertet bis zu 120 Produkte mit bestätigten Mitbewerberpreisen aus und liefert Zusammenfassung, Preisempfehlungen (senken/halten/erhöhen/prüfen) und Auffälligkeiten. Einkaufspreise sind der KI unbekannt, Vorschläge immer gegen die Marge prüfen.
+- **Unsichere Zuordnungen prüfen lassen:** beurteilt „zu prüfen"-Treffer; ab 85 % Sicherheit wird bestätigt bzw. verworfen, der Rest bleibt mit KI-Notiz zur manuellen Entscheidung.
+- Übermittelt werden nur Artikelnummer, Name, Marke und Preise. Kosten pro Analyse sind gering (ein Aufruf).
+
 ## Wichtig
 - Anmeldung per Session-Cookie, Passwörter mit scrypt gehasht, Login-Versuche begrenzt. Bei öffentlicher URL `SETUP_TOKEN` setzen und die Einrichtung sofort durchführen.
 - Die **robots.txt** der Mitbewerber wird immer beachtet; gesperrte Seiten erscheinen als „gesperrt". Pausen zwischen Abrufen pro Shop einstellbar (Standard 3 s).

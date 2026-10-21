@@ -110,15 +110,19 @@ function matchCell(p, a, { c, m }) {
 
 function renderPrices(root) {
   const d = state.data;
-  if (!d.competitors.length || !d.products.length) {
+  if (!d.products.length) {
     root.append(h('div', { class: 'panel empty' },
-      h('h3', {}, !d.products.length ? 'Noch keine Produkte' : 'Noch keine Mitbewerber'),
-      h('p', {}, !d.products.length
-        ? 'Hol die Produkte aus Shopware oder lade eine CSV-Datei hoch.'
-        : 'Lege fest, mit welchen Shops du vergleichen willst.'),
-      h('button', { class: 'btn primary', onclick: () => setTab(!d.products.length ? 'import' : 'mitbewerber') },
-        !d.products.length ? 'Zum Import' : 'Mitbewerber anlegen')));
+      h('h3', {}, 'Noch keine Produkte'),
+      h('p', {}, 'Hol die Produkte aus Shopware oder lade eine CSV-Datei hoch.'),
+      h('button', { class: 'btn primary', onclick: () => setTab('import') }, 'Zum Import')));
     return;
+  }
+  const noComps = !d.competitors.length;
+  if (noComps) {
+    root.append(h('div', { class: 'panel head' },
+      h('div', {}, h('strong', {}, `${d.products.length} Produkte in deiner Artikelbasis. `), 'Für den Preisvergleich fehlen noch Mitbewerber.'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', onclick: () => setTab('mitbewerber') }, 'Mitbewerber anlegen')));
   }
   const rows = d.products.map((p) => ({ p, a: analyse(p, d.competitors) }));
   const count = (f) => rows.filter(f).length;
@@ -133,10 +137,10 @@ function renderPrices(root) {
         h('option', { value: '' }, 'Alle Hersteller'), brands.map((b) => h('option', { value: b, selected: b === state.brand }, b))),
       h('select', { 'aria-label': 'Sortierung', onchange: (e) => { state.sort = e.target.value; renderTable(); } },
         [['name', 'Sortiert nach Name'], ['gap', 'Größter Rückstand zuerst'], ['lead', 'Größter Vorsprung zuerst'], ['price', 'Preis absteigend']]
-          .map(([v, l]) => h('option', { value: v, selected: v === state.sort }, l))),
+          .filter(([v]) => !noComps || v === 'name' || v === 'price').map(([v, l]) => h('option', { value: v, selected: v === state.sort }, l))),
       h('span', { class: 'spacer' }),
       h('a', { class: 'btn', href: '/api/export.csv' }, 'CSV-Export')),
-    h('div', { class: 'toolbar' }, h('div', { class: 'seg' },
+    noComps ? null : h('div', { class: 'toolbar' }, h('div', { class: 'seg' },
       chip('all', 'Produkte', rows.length),
       chip('undercut', 'teurer als ein Mitbewerber', count((r) => r.a.kind === 'undercut'), 'bad'),
       chip('cheapest', 'günstigster Preis', count((r) => r.a.kind === 'cheapest'), 'good'),
@@ -169,20 +173,19 @@ function renderTable() {
   const shown = rows.slice(0, 400);
   const table = h('table', { class: 'prices' },
     h('thead', {}, h('tr', {},
-      h('th', { class: 'prod' }, `Produkt (${rows.length})`),
+      h('th', { class: 'prod' }, `Produkt (${rows.length}${rows.length !== d.products.length ? ' von ' + d.products.length : ''})`),
       h('th', { class: 'own' }, d.own.name),
       d.competitors.map((c) => h('th', { title: c.base_url }, c.name, c.enabled ? '' : ' (aus)')),
-      h('th', {}, 'Position'),
-      h('th', {}, 'Abstand zum günstigsten'))),
+      d.competitors.length ? [h('th', {}, 'Position'), h('th', {}, 'Abstand zum günstigsten')] : null)),
     h('tbody', {}, shown.map(({ p, a }) => h('tr', { tabindex: 0, onclick: () => openDrawer(p.id), onkeydown: (e) => e.key === 'Enter' && openDrawer(p.id) },
       h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name), h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.ean].filter(Boolean).join(' · '))),
       h('td', { class: 'own' }, p.price != null ? eur.format(p.price) : '–'),
       a.cells.map((cell) => matchCell(p, a, cell)),
-      h('td', {}, ladder(p, a)),
-      h('td', { class: a.kind === 'undercut' ? 'gap bad' : a.kind === 'cheapest' ? 'gap good' : 'gap' },
+      d.competitors.length ? h('td', {}, ladder(p, a)) : null,
+      d.competitors.length ? h('td', { class: a.kind === 'undercut' ? 'gap bad' : a.kind === 'cheapest' ? 'gap good' : 'gap' },
         a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `${pct.format(a.gapPct)} % über dem günstigsten`)]
           : a.kind === 'cheapest' ? ['günstigster', h('small', {}, a.min - p.price > 0.004 ? `${eur.format(a.min - p.price)} Vorsprung` : 'gleichauf')]
-            : h('span', { class: 'tag mute' }, '–'))))));
+            : h('span', { class: 'tag mute' }, '–')) : null))));
   wrap.replaceChildren(table);
   if (rows.length > shown.length) wrap.append(h('p', { class: 'pmeta', style: 'padding:10px 14px' }, `Es werden die ersten ${shown.length} von ${rows.length} Produkten gezeigt – Suche oder Filter verwenden.`));
   if (!rows.length) wrap.replaceChildren(h('div', { class: 'empty' }, 'Keine Produkte für diesen Filter.'));
@@ -259,6 +262,7 @@ async function openDrawer(id) {
           h('span', { class: 'p' }, m?.price != null && (m.status === 'ok' || m.status === 'review') ? eur.format(m.price) : '')),
         m?.title ? h('div', { class: 'pmeta' }, m.title) : null,
         m?.error ? h('div', { class: 'pmeta' }, m.error) : null,
+        m?.ai_note ? h('div', { class: 'pmeta' }, m.ai_note) : null,
         m?.checked ? h('div', { class: 'pmeta' }, `Geprüft ${dt.format(new Date(m.checked))}`) : null,
         input,
         h('div', { class: 'row', style: 'margin-top:8px' },
@@ -396,6 +400,65 @@ async function showAuth(info) {
 }
 
 
+// ---------- KI-Analyse ----------
+const ACTION_TAG = { senken: ['Preis senken', 'err'], halten: ['Preis halten', 'mute'], 'erhöhen': ['Preis erhöhen', ''], 'prüfen': ['Prüfen', ''] };
+
+async function renderAi(root) {
+  const d = state.data;
+  const { report } = await api('/api/ai/report');
+  const reviewCount = d.products.reduce((n, p) => n + Object.values(p.matches).filter((m) => m.status === 'review').length, 0);
+  const byNumber = new Map(d.products.map((p) => [p.number, p]));
+  const busy = (btn, label, fn) => guard(async () => {
+    const old = btn.textContent;
+    document.querySelectorAll('#aiactions button').forEach((b) => (b.disabled = true));
+    btn.textContent = label;
+    try { await fn(); } finally { document.querySelectorAll('#aiactions button').forEach((b) => (b.disabled = false)); btn.textContent = old; }
+  });
+
+  const analyzeBtn = h('button', { class: 'btn primary', disabled: !d.config.ai });
+  analyzeBtn.textContent = 'Analyse starten';
+  analyzeBtn.onclick = busy(analyzeBtn, 'Analysiere … (bis zu 1 Minute)', async () => { await api('/api/ai/analyze', { method: 'POST', body: {} }); toast('Analyse fertig'); render(); });
+  const verifyBtn = h('button', { class: 'btn', disabled: !d.config.ai || !reviewCount });
+  verifyBtn.textContent = `Unsichere Zuordnungen prüfen lassen (${reviewCount})`;
+  verifyBtn.onclick = busy(verifyBtn, 'Prüfe …', async () => {
+    const r = await api('/api/ai/verify-reviews', { method: 'POST', body: {} });
+    toast(`${r.confirmed} bestätigt, ${r.rejected} verworfen, ${r.unclear} unklar`);
+    await refresh();
+  });
+
+  root.append(h('h2', {}, 'KI-Analyse'),
+    h('p', { class: 'sub' }, 'Die KI wertet deine Preise gegen die bestätigten Mitbewerberpreise aus und schlägt Anpassungen vor. Übermittelt werden nur Artikelnummer, Name, Marke und Preise, keine Kundendaten. Einkaufspreise und Margen kennt sie nicht, Preissenkungen bitte immer gegen die Marge prüfen.'));
+  if (!d.config.ai) root.append(h('div', { class: 'panel head' }, h('div', {}, 'Es ist noch kein OpenAI-Zugang hinterlegt.'), h('span', { class: 'spacer' }), h('button', { class: 'btn primary', onclick: () => setTab('einstellungen') }, 'Zu den Einstellungen')));
+  root.append(h('div', { class: 'row', id: 'aiactions', style: 'margin-bottom:16px' }, analyzeBtn, verifyBtn));
+
+  if (!report) {
+    root.append(h('div', { class: 'panel empty' }, h('h3', {}, 'Noch keine Analyse'), h('p', {}, 'Sobald Mitbewerberpreise vorliegen, startest du hier die erste Auswertung.')));
+    return;
+  }
+  const r = report.result;
+  root.append(h('div', { class: 'panel' },
+    h('p', { class: 'pmeta' }, `Stand ${dt.format(new Date(report.created_at))} · ${report.model} · ${report.analysed} von ${report.product_count} Produkten mit Vergleichspreisen`),
+    h('p', { style: 'max-width:80ch;margin:8px 0 0' }, r.summary || 'Keine Zusammenfassung.')));
+  if (r.recommendations.length) {
+    root.append(h('div', { class: 'tablewrap', style: 'max-height:none;margin-bottom:16px' }, h('table', { class: 'prices', style: 'min-width:0' },
+      h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Empfehlung'), h('th', {}, 'Aktion'), h('th', {}, 'Mein Preis'), h('th', {}, 'Vorschlag'), h('th', { style: 'text-align:left' }, 'Begründung'))),
+      h('tbody', {}, r.recommendations.map((x) => {
+        const p = byNumber.get(x.number);
+        const [label, cls] = ACTION_TAG[x.action] ?? [x.action, ''];
+        return h('tr', { onclick: () => p && (state.tab = 'preise', render(), openDrawer(p.id)) },
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, p?.name ?? x.number), h('div', { class: 'pmeta' }, x.number)),
+          h('td', {}, h('span', { class: `tag ${cls}` }, label)),
+          h('td', {}, p?.price != null ? eur.format(p.price) : '–'),
+          h('td', { style: 'font-weight:700' }, x.suggested_price != null ? eur.format(x.suggested_price) : '–'),
+          h('td', { style: 'text-align:left;white-space:normal;min-width:260px' }, x.reason));
+      })))));
+  }
+  if (r.warnings.length) {
+    root.append(h('div', { class: 'panel' }, h('h3', {}, 'Auffälligkeiten'),
+      h('ul', { style: 'margin:0;padding-left:18px' }, r.warnings.map((w) => h('li', {}, h('strong', {}, byNumber.get(w.number)?.name ?? w.number), ': ', w.issue)))));
+  }
+}
+
 // ---------- Benutzer ----------
 async function userPanel() {
   const users = await api('/api/users');
@@ -449,13 +512,32 @@ async function renderSettings(root) {
       h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: vals() }); toast('Einstellungen gespeichert'); await refresh(); }) }, 'Speichern')),
     out);
 
+  const kout = h('div', { class: 'result', hidden: true });
+  const ki = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
+    h('h3', {}, 'KI (OpenAI / ChatGPT API)'),
+    h('p', { class: 'sub' }, 'API-Schlüssel aus dem OpenAI-Dashboard (platform.openai.com → API keys). Der Schlüssel wird verschlüsselt gespeichert und nie wieder angezeigt. Die Nutzung wird von OpenAI nach Verbrauch abgerechnet, nicht über ein ChatGPT-Abo.'),
+    cur.openai_from_env ? h('p', { class: 'pmeta' }, 'Aktuell wird der Schlüssel aus der Server-Umgebung verwendet.') : null,
+    h('div', { class: 'grid' },
+      f('API-Schlüssel', 'openai_api_key', '', { type: 'password', ph: cur.openai_key_set ? '•••••••• (gespeichert)' : 'sk-…', hint: cur.openai_key_set ? 'Leer lassen, um den gespeicherten Schlüssel zu behalten' : '' }),
+      f('Modell', 'openai_model', cur.openai_model, { hint: `Name wie in der OpenAI-Modellliste, Standard: ${cur.openai_default_model}` })),
+    h('div', { class: 'row', style: 'margin-top:14px' },
+      h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
+        kout.hidden = false; kout.textContent = 'Verbindung wird geprüft …';
+        try { const r = await api('/api/settings/openai/test', { body: Object.fromEntries(new FormData(ki)) }); kout.textContent = `Verbunden, Modell ${r.model} antwortet.`; }
+        catch (e) { kout.textContent = `Fehlgeschlagen: ${e.message}`; }
+      }) }, 'Verbindung testen'),
+      cur.openai_key_set && !cur.openai_from_env ? h('button', { class: 'btn danger', type: 'button', onclick: guard(async () => { if (confirm('Gespeicherten OpenAI-Schlüssel entfernen?')) { await api('/api/settings', { method: 'PUT', body: { openai_remove_key: true } }); toast('Schlüssel entfernt'); await refresh(); } }) }, 'Schlüssel entfernen') : null,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(ki)) }); toast('KI-Einstellungen gespeichert'); await refresh(); }) }, 'Speichern')),
+    kout);
+
   const pw = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
     h('h3', {}, 'Passwort ändern'),
     h('div', { class: 'grid' }, f('Aktuelles Passwort', 'current', '', { type: 'password' }), f('Neues Passwort (mind. 10 Zeichen)', 'password', '', { type: 'password' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
   const up = h('div', { id: 'userpanel' }, await userPanel());
-  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, up, pw));
+  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, ki, up, pw));
 }
 
 // ---------- Laufleiste ----------
@@ -484,6 +566,7 @@ function render() {
   const keep = main.scrollTop;
   main.replaceChildren();
   if (state.tab === 'preise') renderPrices(main);
+  else if (state.tab === 'ki') renderAi(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
   else if (state.tab === 'mitbewerber') renderCompetitors(main);
   else if (state.tab === 'einstellungen') renderSettings(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
   else renderImport(main);
