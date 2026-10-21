@@ -1,0 +1,21 @@
+{
+  "id": "2026-10-22-erstimport",
+  "own_sitemap_url": [
+    "https://www.belkai.de/sitemap/salesChannel-ec694894daa8472399b22fbcb8e0b765-2fbb5fe2e29a4d70aa5854ce7ce3e20b/ec694894daa8472399b22fbcb8e0b765-26027a3aaada4556b9400149116b69d2-sitemap-www-belkai-de-1.xml.gz"
+  ],
+  "import": {
+    "limit": 500,
+    "tracked": true
+  },
+  "competitors": [
+    {
+      "name": "unidomo.de",
+      "base_url": "https://www.unidomo.de",
+      "sitemap_url": [
+        "https://www.unidomo.de/sitemap/Sitemap_item.xml"
+      ],
+      "delay_ms": 3000,
+      "ai_mode": "fallback"
+    }
+  ]
+}

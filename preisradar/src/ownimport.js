@@ -54,7 +54,7 @@ export function extractOwnProduct(html, url) {
   return { number, name, manufacturer: brand, ean, mpn, price: ext.price, url };
 }
 
-export function startOwnImport(db, { limit = null, all = false, delayMs = Number(process.env.OWN_IMPORT_DELAY_MS ?? 400) } = {}) {
+export function startOwnImport(db, { limit = null, all = false, tracked = false, delayMs = Number(process.env.OWN_IMPORT_DELAY_MS ?? 400) } = {}) {
   if (ownImportState.running) return false;
   const known = new Set(db.prepare("SELECT url FROM products WHERE source='sitemap' AND url IS NOT NULL").all().map((r) => r.url));
   let urls = db.prepare('SELECT url FROM own_sitemap_urls').all().map((r) => r.url).filter(isProductUrl);
@@ -67,7 +67,7 @@ export function startOwnImport(db, { limit = null, all = false, delayMs = Number
     let batch = [];
     const flush = () => {
       if (!batch.length) return;
-      const r = upsertProducts(db, batch, 'sitemap', { tracked: false }); // Auswahl der beobachteten Artikel trifft der Nutzer
+      const r = upsertProducts(db, batch, 'sitemap', { tracked }); // Standard: nicht beobachtet, die Auswahl trifft der Nutzer
       ownImportState.created += r.created;
       ownImportState.updated += r.updated;
       batch = [];

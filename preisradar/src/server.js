@@ -183,7 +183,7 @@ export function createApp(db, { dataDir = null } = {}) {
     const n = db.prepare('SELECT COUNT(*) AS n FROM own_sitemap_urls').get().n;
     if (!n) throw bad('Eigene Sitemap erst einlesen (Einstellungen → Dein Shop)');
     const limit = Math.max(0, Math.floor(Number(req.body?.limit) || 0)) || null;
-    if (!startOwnImport(db, { limit, all: req.body?.all === true })) throw bad('Es läuft bereits ein Import', 409);
+    if (!startOwnImport(db, { limit, all: req.body?.all === true, tracked: req.body?.tracked === true })) throw bad('Es läuft bereits ein Import', 409);
     res.json({ ok: true, ...ownImportState });
   }));
   app.post('/api/import/sitemap/stop', wrap((_req, res) => { ownImportState.stop = true; res.json({ ok: true }); }));
@@ -497,6 +497,43 @@ export function seedCompetitors(db, file = process.env.COMPETITORS_FILE || './da
   return n;
 }
 
+/**
+ * Einmalige Grundeinrichtung aus data/bootstrap.json (im Repo): eigene Sitemap, Import der ersten Artikel,
+ * Mitbewerber anlegen (nur wenn es sie noch nicht gibt). Wird pro "id" nur einmal vollständig ausgeführt;
+ * wird der Server mitten im Import neu gestartet, läuft er beim nächsten Start weiter (importierte Seiten werden übersprungen).
+ */
+export async function applyBootstrap(db, file = process.env.BOOTSTRAP_FILE || './data/bootstrap.json') {
+  if (!fs.existsSync(file)) return null;
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!cfg.id || getSetting(db, 'bootstrap_done') === cfg.id) return null;
+  for (const c of cfg.competitors ?? []) {
+    if (!c?.name || !c?.base_url || db.prepare('SELECT 1 FROM competitors WHERE name=?').get(c.name)) continue;
+    const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
+    db.prepare('INSERT INTO competitors(name, base_url, search_url, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,1,?,?,?)')
+      .run(c.name, new URL(c.base_url).origin, c.search_url ?? null, Number(c.delay_ms) || 3000, ['off', 'fallback', 'always'].includes(c.ai_mode) ? c.ai_mode : 'fallback', c.sitemap_url ? [].concat(c.sitemap_url).join('\n') : null, pos);
+    console.log(`Bootstrap: Mitbewerber ${c.name} angelegt`);
+  }
+  const own = [].concat(cfg.own_sitemap_url ?? []).filter(Boolean);
+  if (own.length) {
+    if (!getSetting(db, 'own_sitemap_url')) setSetting(db, 'own_sitemap_url', own.join('\n'));
+    const urls = String(getSetting(db, 'own_sitemap_url')).split(/\s+/).filter(Boolean);
+    const r = await refreshOwnSitemap(db, urls);
+    console.log(`Bootstrap: eigene Sitemap, ${r.count} URLs, ${r.assigned} zugeordnet`);
+  }
+  if (cfg.import?.limit) {
+    const have = db.prepare("SELECT COUNT(*) AS n FROM products WHERE source='sitemap'").get().n;
+    const want = Math.max(0, Number(cfg.import.limit) - have);
+    if (want && startOwnImport(db, { limit: want, tracked: cfg.import.tracked !== false })) {
+      console.log(`Bootstrap: importiere ${want} Artikel aus der Sitemap`);
+      while (ownImportState.running) await new Promise((r) => setTimeout(r, 2000));
+      if (ownImportState.errors > ownImportState.done / 2) return console.error('Bootstrap: zu viele Fehler, wird beim nächsten Start wiederholt');
+    }
+  }
+  setSetting(db, 'bootstrap_done', cfg.id);
+  console.log('Bootstrap abgeschlossen');
+  return cfg.id;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const db = openDb();
   const seeded = seedCompetitors(db);
@@ -504,4 +541,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 3000);
   createApp(db, { dataDir: path.dirname(process.env.DB_PATH || './data/preisradar.db') }).listen(port, () => console.log(`Preisradar läuft auf Port ${port}`));
   startScheduler(db);
+  applyBootstrap(db).catch((e) => console.error('Bootstrap fehlgeschlagen:', e.message));
 }

@@ -50,7 +50,7 @@ function toast(msg, err = false) {
 }
 const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof AuthError)) toast(e.message, true); } };
 
-const state = { data: null, scope: null, tab: 'preise', q: '', brand: '', filter: 'all', sort: 'name', selected: null, runs: [] };
+const state = { data: null, scope: null, tab: 'preise', q: '', brand: '', filter: 'all', sort: 'name', comp: '', status: '', minP: '', maxP: '', gapMin: '', selected: null, runs: [] };
 
 // ---------- Auswertung pro Produkt ----------
 function analyse(p, comps) {
@@ -61,7 +61,11 @@ function analyse(p, comps) {
   let kind = 'none';
   if (min != null && p.price != null) kind = p.price <= min ? 'cheapest' : 'undercut';
   const gap = min != null && p.price != null ? p.price - min : null;
-  return { cells, ok, min, kind, gap, gapPct: gap != null && min ? (gap / min) * 100 : null, review };
+  const moved = ok.some(({ m }) => m.previous != null && m.previous !== m.price);
+  const problem = cells.some(({ m }) => m && ['error', 'blocked'].includes(m.status));
+  const notFound = cells.some(({ m }) => m && m.status === 'not_found');
+  const oos = ok.some(({ m }) => m.availability === 'out_of_stock');
+  return { moved, problem, notFound, oos, cells, ok, min, kind, gap, gapPct: gap != null && min ? (gap / min) * 100 : null, review };
 }
 
 // ---------- Preisleiter ----------
@@ -88,7 +92,7 @@ function ladder(p, a) {
 function matchCell(p, a, { c, m }) {
   if (!m) return h('td', {}, h('span', { class: 'tag mute' }, '–'));
   const tip = m.checked ? `Geprüft: ${dt.format(new Date(m.checked))}` : '';
-  if (m.status === 'ok' || m.status === 'review') {
+  if (m.status === 'ok' || (m.status === 'review' && m.price != null)) {
     const best = m.status === 'ok' && a.min != null && m.price === a.min;
     let delta = null;
     if (p.price) {
@@ -102,7 +106,7 @@ function matchCell(p, a, { c, m }) {
   }
   const map = {
     not_found: ['nicht gefunden', 'mute'], nourl: ['URL fehlt', 'mute'], pending: ['ausstehend', 'mute'],
-    blocked: ['gesperrt', 'err'], error: ['Fehler', 'err'],
+    blocked: ['gesperrt', 'err'], review: ['zu prüfen', ''], error: ['Fehler', 'err'],
   };
   const [label, cls] = map[m.status] ?? [m.status, 'mute'];
   return h('td', { title: [m.error, tip].filter(Boolean).join('\n') }, h('span', { class: `tag ${cls}` }, label));
@@ -136,8 +140,8 @@ function renderPrices(root) {
       h('select', { 'aria-label': 'Hersteller', onchange: (e) => { state.brand = e.target.value; renderTable(); } },
         h('option', { value: '' }, 'Alle Hersteller'), brands.map((b) => h('option', { value: b, selected: b === state.brand }, b))),
       h('select', { 'aria-label': 'Sortierung', onchange: (e) => { state.sort = e.target.value; renderTable(); } },
-        [['name', 'Sortiert nach Name'], ['gap', 'Größter Rückstand zuerst'], ['lead', 'Größter Vorsprung zuerst'], ['price', 'Preis absteigend']]
-          .filter(([v]) => !noComps || v === 'name' || v === 'price').map(([v, l]) => h('option', { value: v, selected: v === state.sort }, l))),
+        [['name', 'Sortiert nach Name'], ['gap', 'Größter Rückstand zuerst'], ['lead', 'Größter Vorsprung zuerst'], ['gappct', 'Größter Rückstand in %'], ['price', 'Preis absteigend'], ['priceAsc', 'Preis aufsteigend']]
+          .filter(([v]) => !noComps || v === 'name' || v === 'price' || v === 'priceAsc').map(([v, l]) => h('option', { value: v, selected: v === state.sort }, l))),
       h('span', { class: 'spacer' }),
       h('a', { class: 'btn', href: '/api/export.csv' }, 'CSV-Export')),
     h('div', { class: 'toolbar' },
@@ -153,7 +157,22 @@ function renderPrices(root) {
       chip('undercut', 'teurer als ein Mitbewerber', count((r) => r.a.kind === 'undercut'), 'bad'),
       chip('cheapest', 'günstigster Preis', count((r) => r.a.kind === 'cheapest'), 'good'),
       chip('none', 'ohne Vergleichspreis', count((r) => r.a.kind === 'none')),
-      chip('review', 'zu prüfen', count((r) => r.a.review), 'warn'))),
+      chip('review', 'zu prüfen', count((r) => r.a.review), 'warn'),
+      chip('equal', 'gleichauf', count((r) => r.a.kind === 'cheapest' && r.a.gap != null && Math.abs(r.p.price - r.a.min) < 0.005)),
+      chip('moved', 'Preis geändert', count((r) => r.a.moved)),
+      chip('problem', 'Fehler/gesperrt', count((r) => r.a.problem), 'bad'),
+      chip('notFound', 'nicht gefunden', count((r) => r.a.notFound)),
+      chip('oos', 'Mitbewerber ausverkauft', count((r) => r.a.oos)))),
+    noComps ? null : h('div', { class: 'toolbar' },
+      h('select', { 'aria-label': 'Günstiger bei', onchange: (e) => { state.comp = e.target.value; renderTable(); } },
+        h('option', { value: '' }, 'Günstiger bei: jeder'), d.competitors.map((c) => h('option', { value: c.id, selected: String(c.id) === String(state.comp) }, `Günstiger bei ${c.name}`))),
+      h('select', { 'aria-label': 'Status', onchange: (e) => { state.status = e.target.value; renderTable(); } },
+        [['', 'Jeder Status'], ['ok', 'mit Preis'], ['review', 'zu prüfen'], ['not_found', 'nicht gefunden'], ['nourl', 'URL fehlt'], ['pending', 'ausstehend'], ['error', 'Fehler'], ['blocked', 'gesperrt']]
+          .map(([v, l]) => h('option', { value: v, selected: v === state.status }, l))),
+      h('input', { type: 'number', min: 0, step: 'any', placeholder: 'Preis ab €', value: state.minP, 'aria-label': 'Preis ab', class: 'num', oninput: (e) => { state.minP = e.target.value; renderTable(); } }),
+      h('input', { type: 'number', min: 0, step: 'any', placeholder: 'Preis bis €', value: state.maxP, 'aria-label': 'Preis bis', class: 'num', oninput: (e) => { state.maxP = e.target.value; renderTable(); } }),
+      h('input', { type: 'number', step: 'any', placeholder: 'Abstand ab %', value: state.gapMin, 'aria-label': 'Mindestabstand in Prozent', class: 'num', title: 'Nur Artikel, bei denen ich mindestens so viel Prozent teurer bin', oninput: (e) => { state.gapMin = e.target.value; renderTable(); } }),
+      h('button', { class: 'btn small', onclick: () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '' }); render(); } }, 'Filter zurücksetzen')),
     h('div', { class: 'tablewrap', id: 'tablewrap' }));
   renderTable();
 }
@@ -175,7 +194,13 @@ function renderTable() {
   let rows = d.products.map((p) => ({ p, a: analyse(p, d.competitors) }));
   rows = rows.filter(({ p, a }) => {
     if (state.brand && p.manufacturer !== state.brand) return false;
-    if (state.filter !== 'all' && !(state.filter === 'review' ? a.review : a.kind === state.filter)) return false;
+    const F = { all: () => true, review: () => a.review, equal: () => a.kind === 'cheapest' && Math.abs(p.price - a.min) < 0.005, moved: () => a.moved, problem: () => a.problem, notFound: () => a.notFound, oos: () => a.oos };
+    if (!(F[state.filter] ?? (() => a.kind === state.filter))()) return false;
+    if (state.comp && !(a.cells.find(({ c }) => String(c.id) === String(state.comp))?.m?.price < p.price && a.cells.find(({ c }) => String(c.id) === String(state.comp))?.m?.status === 'ok')) return false;
+    if (state.status && !a.cells.some(({ m }) => m && m.status === state.status)) return false;
+    if (state.minP !== '' && !(p.price >= Number(state.minP))) return false;
+    if (state.maxP !== '' && !(p.price <= Number(state.maxP))) return false;
+    if (state.gapMin !== '' && !(a.gapPct != null && a.gapPct >= Number(state.gapMin))) return false;
     if (q && ![p.name, p.number, p.ean, p.mpn, p.manufacturer].some((v) => String(v ?? '').toLowerCase().includes(q))) return false;
     return true;
   });
@@ -183,7 +208,9 @@ function renderTable() {
     name: (x, y) => (x.p.manufacturer ?? '').localeCompare(y.p.manufacturer ?? '', 'de') || x.p.name.localeCompare(y.p.name, 'de'),
     gap: (x, y) => (y.a.gap ?? -Infinity) - (x.a.gap ?? -Infinity),
     lead: (x, y) => (x.a.gap ?? Infinity) - (y.a.gap ?? Infinity),
+    gappct: (x, y) => (y.a.gapPct ?? -Infinity) - (x.a.gapPct ?? -Infinity),
     price: (x, y) => (y.p.price ?? 0) - (x.p.price ?? 0),
+    priceAsc: (x, y) => (x.p.price ?? Infinity) - (y.p.price ?? Infinity),
   };
   rows.sort(sorters[state.sort]);
   state.visibleIds = rows.map(({ p }) => p.id);
@@ -273,7 +300,7 @@ async function openDrawer(id) {
       h('button', { class: 'btn small', onclick: guard(async () => { await api('/api/scrape', { body: { product_id: p.id } }); toast('Abruf gestartet'); await refresh(); }) }, 'Jetzt prüfen')),
     h('h3', { style: 'margin-top:18px' }, 'Preisverlauf'), histBox,
     h('h3', { style: 'margin-top:22px' }, 'Mitbewerber'),
-    a.cells.map(({ c, m }) => {
+    ...a.cells.map(({ c, m }) => {
       const input = h('input', { type: 'url', placeholder: 'Produkt-URL beim Mitbewerber (optional, überschreibt die Suche)', value: m?.url ?? '', 'aria-label': `URL bei ${c.name}` });
       return h('div', { class: 'mrow' },
         h('div', { class: 'line' }, h('strong', {}, c.name),
@@ -515,29 +542,160 @@ async function showAuth(info) {
 
 
 // ---------- Analyse (Regelwerk) ----------
-const ACTION_TAG = { senken: ['Preis senken', 'err'], halten: ['Preis halten', 'mute'], 'erhöhen': ['Preis erhöhen', ''], 'prüfen': ['Prüfen', ''] };
+const ACTION_TAG = { senken: ['Preis senken', 'err'], halten: ['Preis halten', 'mute'], 'erhöhen': ['Preis erhöhen', 'good'], 'prüfen': ['Prüfen', 'warn'] };
+const fmtPct = (v, d = 1) => (v == null ? '–' : `${v > 0 ? '+' : ''}${v.toFixed(d).replace('.', ',')} %`);
+const aState = { action: 'actionable', comp: '', brand: '', q: '', sort: 'gap' };
+
+function kpiTile(label, value, sub, cls = '') {
+  return h('div', { class: `kpi ${cls}` }, h('div', { class: 'kpi-v' }, value), h('div', { class: 'kpi-l' }, label), sub ? h('div', { class: 'kpi-s' }, sub) : null);
+}
+
+/** Verteilung des Abstands: Blau = wir sind günstiger, Rot = wir sind teurer, Grau = gleichauf. */
+function histogramChart(hist) {
+  const max = Math.max(1, ...hist.map((b) => b.count));
+  const total = hist.reduce((s, b) => s + b.count, 0);
+  const rowsEl = hist.map((b) => {
+    const w = (b.count / max) * 100;
+    return h('div', { class: 'hrow', title: `${b.label}: ${b.count} Artikel` },
+      h('div', { class: 'hlabel' }, b.label),
+      h('div', { class: 'htrack' }, h('div', { class: `hbar ${b.side}`, style: `width:${w}%` })),
+      h('div', { class: 'hval' }, String(b.count), h('small', {}, total ? ` ${Math.round((b.count / total) * 100)} %` : '')));
+  });
+  return h('div', { class: 'panel' },
+    h('h3', {}, 'Wo stehe ich gegenüber dem günstigsten Mitbewerber?'),
+    h('p', { class: 'pmeta' }, 'Anzahl Artikel je Abstandsklasse. Blau: ich bin günstiger, Rot: ich bin teurer.'),
+    h('div', { class: 'hist' }, rowsEl),
+    h('details', { class: 'tview' }, h('summary', {}, 'Als Tabelle'),
+      h('table', { class: 'mini' }, h('tbody', {}, hist.map((b) => h('tr', {}, h('td', {}, b.label), h('td', {}, String(b.count))))))));
+}
+
+function competitorTable(a) {
+  if (!a.competitors.length) return null;
+  const head = ['Mitbewerber', 'Abdeckung', 'bestätigt', 'zu prüfen', 'nicht gefunden', 'Fehler/gesperrt', 'Ø Abstand', 'billiger als ich', 'Günstigster bei', 'Preisbewegung 7 Tage', 'zuletzt geprüft'];
+  return h('div', { class: 'panel flush' },
+    h('div', { class: 'panelhead' }, h('h3', {}, 'Mitbewerber im Vergleich'), h('p', { class: 'pmeta' }, 'Ø Abstand: positiv bedeutet, ich bin im Schnitt teurer als dieser Mitbewerber.')),
+    h('div', { class: 'tablewrap', style: 'max-height:none' }, h('table', { class: 'prices', style: 'min-width:0' },
+      h('thead', {}, h('tr', {}, head.map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
+      h('tbody', {}, a.competitors.map((c) => h('tr', {},
+        h('td', { class: 'prod' }, h('div', { class: 'pname' }, c.name)),
+        h('td', {}, h('div', { class: 'cov' }, h('div', { class: 'covbar', style: `width:${Math.min(100, c.coverage)}%` })), h('small', {}, `${String(c.coverage).replace('.', ',')} %`)),
+        h('td', {}, String(c.ok)), h('td', {}, String(c.review)), h('td', {}, String(c.not_found)), h('td', {}, String(c.error + c.blocked)),
+        h('td', { class: c.avg_gap_vs_us == null ? '' : c.avg_gap_vs_us > 2 ? 'gap bad' : c.avg_gap_vs_us < -2 ? 'gap cool' : 'gap' }, fmtPct(c.avg_gap_vs_us)),
+        h('td', {}, String(c.cheaper_than_us)), h('td', {}, String(c.holds_lowest)),
+        h('td', {}, c.drops || c.rises ? [h('span', { class: 'delta cheaper' }, `▼ ${c.drops}`), ' ', h('span', { class: 'delta dearer' }, `▲ ${c.rises}`)] : '–'),
+        h('td', {}, c.last_checked ? dt.format(new Date(c.last_checked)) : '–')))))));
+}
+
+function brandTable(a) {
+  if (!a.brands.length) return null;
+  return h('div', { class: 'panel flush' },
+    h('div', { class: 'panelhead' }, h('h3', {}, 'Marken'), h('p', { class: 'pmeta' }, 'Klick auf eine Marke filtert die Empfehlungen darunter.')),
+    h('div', { class: 'tablewrap', style: 'max-height:360px' }, h('table', { class: 'prices', style: 'min-width:0' },
+      h('thead', {}, h('tr', {}, ['Marke', 'verglichen', 'Ø Abstand', 'senken', 'erhöhen', 'günstigster'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
+      h('tbody', {}, a.brands.slice(0, 60).map((b) => h('tr', { onclick: () => { aState.brand = b.brand; aState.action = 'all'; render(); } },
+        h('td', { class: 'prod' }, h('div', { class: 'pname' }, b.brand)), h('td', {}, String(b.compared)),
+        h('td', { class: b.avg_gap > 2 ? 'gap bad' : b.avg_gap < -2 ? 'gap cool' : 'gap' }, fmtPct(b.avg_gap)),
+        h('td', {}, String(b.senken)), h('td', {}, String(b.erhoehen)), h('td', {}, String(b.cheapest))))))));
+}
+
+function movesPanel(a) {
+  if (!a.moves.length) return null;
+  return h('div', { class: 'panel flush' },
+    h('div', { class: 'panelhead' }, h('h3', {}, `Preisbewegungen der letzten ${a.rules.moveDays} Tage`), h('p', { class: 'pmeta' }, 'Änderungen bei bestätigten Mitbewerberpreisen, größte zuerst.')),
+    h('div', { class: 'tablewrap', style: 'max-height:340px' }, h('table', { class: 'prices', style: 'min-width:0' },
+      h('thead', {}, h('tr', {}, ['Artikel', 'Mitbewerber', 'vorher', 'jetzt', 'Änderung', 'Mein Preis'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
+      h('tbody', {}, a.moves.map((m) => h('tr', { onclick: () => { state.tab = 'preise'; render(); openDrawer(m.id); } },
+        h('td', { class: 'prod' }, h('div', { class: 'pname' }, m.name), h('div', { class: 'pmeta' }, m.number)),
+        h('td', {}, m.competitor), h('td', {}, eur.format(m.from)), h('td', {}, eur.format(m.to)),
+        h('td', {}, h('span', { class: `delta ${m.pct < 0 ? 'cheaper' : 'dearer'}` }, fmtPct(m.pct))),
+        h('td', {}, m.own_price != null ? eur.format(m.own_price) : '–')))))));
+}
+
+function recommendations(a) {
+  const q = aState.q.trim().toLowerCase();
+  const compOf = (r) => r.prices.some((p) => p.competitor === aState.comp);
+  let rows = a.rows.filter((r) => {
+    if (aState.action === 'actionable' ? r.action === 'halten' : aState.action !== 'all' && r.action !== aState.action) return false;
+    if (aState.brand && (r.brand || 'ohne Marke') !== aState.brand) return false;
+    if (aState.comp && r.cheapest_competitor !== aState.comp) return false;
+    if (q && ![r.name, r.number, r.brand].some((v) => String(v ?? '').toLowerCase().includes(q))) return false;
+    return true;
+  });
+  const sorters = {
+    gap: (x, y) => Math.abs(y.gap_percent) - Math.abs(x.gap_percent),
+    diff: (x, y) => Math.abs(y.diff) - Math.abs(x.diff),
+    price: (x, y) => y.own_price - x.own_price,
+    name: (x, y) => x.name.localeCompare(y.name, 'de'),
+  };
+  rows = [...rows].sort(sorters[aState.sort]);
+  const cnt = (k) => a.rows.filter((r) => r.action === k).length;
+  const chipA = (key, label, n, cls = '') => h('button', { class: `chip ${cls}${aState.action === key ? ' on' : ''}`, onclick: () => { aState.action = key; render(); } }, h('b', {}, String(n)), label);
+  const brands = a.brands.map((b) => b.brand);
+  const tableEl = rows.length
+    ? h('div', { class: 'tablewrap', style: 'max-height:none' }, h('table', { class: 'prices', style: 'min-width:0' },
+      h('thead', {}, h('tr', {}, ['Artikel', 'Aktion', 'Mein Preis', 'Günstigster', 'Abstand', 'Vorschlag', 'Begründung'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '', style: i === 6 ? 'text-align:left' : '' }, t)))),
+      h('tbody', {}, rows.slice(0, 300).map((x) => {
+        const [label, cls] = ACTION_TAG[x.action] ?? [x.action, ''];
+        return h('tr', { tabindex: 0, onclick: () => { state.tab = 'preise'; render(); openDrawer(x.id); } },
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, x.name), h('div', { class: 'pmeta' }, [x.brand, x.number].filter(Boolean).join(' · '))),
+          h('td', {}, h('span', { class: `tag ${cls}` }, label)),
+          h('td', {}, eur.format(x.own_price)),
+          h('td', {}, eur.format(x.cheapest), h('div', { class: 'pmeta' }, x.cheapest_competitor)),
+          h('td', { class: x.gap_percent > aRules(a).tolerance ? 'gap bad' : x.gap_percent < 0 ? 'gap cool' : 'gap' }, fmtPct(x.gap_percent)),
+          h('td', { style: 'font-weight:700' }, x.suggested_price != null ? eur.format(x.suggested_price) : '–'),
+          h('td', { style: 'text-align:left;white-space:normal;min-width:260px;max-width:480px' }, x.reason));
+      }))))
+    : h('div', { class: 'empty' }, 'Keine Artikel für diesen Filter.');
+  return h('div', { class: 'panel flush' },
+    h('div', { class: 'panelhead' }, h('h3', {}, 'Empfehlungen'), h('p', { class: 'pmeta' }, `${rows.length} Artikel${rows.length > 300 ? ', die ersten 300 werden gezeigt' : ''}`)),
+    h('div', { class: 'toolbar inpanel' },
+      h('div', { class: 'seg' },
+        chipA('actionable', 'mit Handlungsbedarf', cnt('senken') + cnt('erhöhen') + cnt('prüfen')),
+        chipA('senken', 'senken', cnt('senken'), 'bad'), chipA('erhöhen', 'erhöhen', cnt('erhöhen'), 'good'),
+        chipA('prüfen', 'prüfen', cnt('prüfen'), 'warn'), chipA('halten', 'halten', cnt('halten')), chipA('all', 'alle', a.rows.length)),
+      h('span', { class: 'spacer' }),
+      h('input', { type: 'search', placeholder: 'Suche', value: aState.q, 'aria-label': 'Suche', oninput: (e) => { aState.q = e.target.value; refreshRecs(); } }),
+      h('select', { 'aria-label': 'Marke', onchange: (e) => { aState.brand = e.target.value; refreshRecs(); } }, h('option', { value: '' }, 'Alle Marken'), brands.map((b) => h('option', { value: b, selected: b === aState.brand }, b))),
+      h('select', { 'aria-label': 'Günstigster Mitbewerber', onchange: (e) => { aState.comp = e.target.value; refreshRecs(); } }, h('option', { value: '' }, 'Jeder Mitbewerber'), a.competitors.map((c) => h('option', { value: c.name, selected: c.name === aState.comp }, `${c.name} günstigster`))),
+      h('select', { 'aria-label': 'Sortierung', onchange: (e) => { aState.sort = e.target.value; refreshRecs(); } },
+        [['gap', 'Größter Abstand in %'], ['diff', 'Größter Abstand in €'], ['price', 'Preis absteigend'], ['name', 'Name']].map(([v, l]) => h('option', { value: v, selected: v === aState.sort }, l)))),
+    tableEl);
+}
+const aRules = (a) => a.rules;
+let lastAnalysis = null;
+function refreshRecs() {
+  const old = document.getElementById('recs');
+  if (!old || !lastAnalysis) return;
+  const q = document.activeElement?.type === 'search' ? document.activeElement.selectionStart : null;
+  const fresh = recommendations(lastAnalysis);
+  fresh.id = 'recs';
+  old.replaceWith(fresh);
+  if (q != null) { const el = fresh.querySelector('input[type=search]'); el?.focus(); el?.setSelectionRange(q, q); }
+}
 
 async function renderAnalysis(root) {
-  const d = state.data;
   const a = await api('/api/analysis');
-  const byNumber = new Map(d.products.map((p) => [p.number, p]));
+  lastAnalysis = a;
+  const k = a.kpi;
   root.append(h('h2', {}, 'Analyse'),
-    h('p', { class: 'sub' }, `Feste Regeln auf Basis der bestätigten Mitbewerberpreise: bis ${a.rules.tolerance} % über dem Günstigsten gilt als konkurrenzfähig, mehr als ${a.rules.raiseAbove} % darunter ist Spielraum für eine Erhöhung, Abweichungen über ${a.rules.outlier} % werden als mögliche Fehlzuordnung markiert. Einkaufspreise und Margen kennt die App nicht, Senkungen bitte immer gegen die Marge prüfen.`));
-  root.append(h('div', { class: 'panel' }, h('p', { style: 'max-width:80ch;margin:0' }, a.summary)));
+    h('p', { class: 'sub' }, `Feste Regeln auf Basis bestätigter Mitbewerberpreise (lieferbar bevorzugt): bis ${a.rules.tolerance} % über dem Günstigsten gilt als konkurrenzfähig, mehr als ${a.rules.raiseAbove} % darunter ist Spielraum für eine Erhöhung, Abweichungen über ${a.rules.outlier} % gelten als mögliche Fehlzuordnung. Einkaufspreise und Margen kennt die App nicht, Senkungen bitte immer gegen die Marge prüfen.`),
+    h('div', { class: 'panel' }, h('p', { style: 'max-width:80ch;margin:0' }, a.summary)));
+  if (a.hints.length) root.append(h('ul', { class: 'hints' }, a.hints.map((x) => h('li', { class: x.level }, x.text))));
   if (!a.rows.length) return;
-  root.append(h('div', { class: 'tablewrap', style: 'max-height:none;margin-bottom:16px' }, h('table', { class: 'prices', style: 'min-width:0' },
-    h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Artikel'), h('th', {}, 'Aktion'), h('th', {}, 'Mein Preis'), h('th', {}, 'Günstigster'), h('th', {}, 'Abstand'), h('th', {}, 'Vorschlag'), h('th', { style: 'text-align:left' }, 'Begründung'))),
-    h('tbody', {}, a.rows.map((x) => {
-      const [label, cls] = ACTION_TAG[x.action] ?? [x.action, ''];
-      return h('tr', { onclick: () => byNumber.get(x.number) && (state.tab = 'preise', render(), openDrawer(x.id)) },
-        h('td', { class: 'prod' }, h('div', { class: 'pname' }, x.name), h('div', { class: 'pmeta' }, x.number)),
-        h('td', {}, h('span', { class: `tag ${cls}` }, label)),
-        h('td', {}, eur.format(x.own_price)),
-        h('td', {}, eur.format(x.cheapest), h('div', { class: 'pmeta' }, x.cheapest_competitor)),
-        h('td', {}, `${x.gap_percent > 0 ? '+' : ''}${x.gap_percent.toString().replace('.', ',')} %`),
-        h('td', { style: 'font-weight:700' }, x.suggested_price != null ? eur.format(x.suggested_price) : '–'),
-        h('td', { style: 'text-align:left;white-space:normal;min-width:260px' }, x.reason));
-    })))));
+  root.append(
+    h('div', { class: 'kpis' },
+      kpiTile('Abdeckung', `${String(k.coverage).replace('.', ',')} %`, `${k.compared} von ${k.tracked} Artikeln verglichen`),
+      kpiTile('Konkurrenzfähig', k.share_competitive == null ? '–' : `${String(k.share_competitive).replace('.', ',')} %`, 'höchstens 2 % über dem Günstigsten', 'cool'),
+      kpiTile('Günstigster oder gleichauf', k.cheapest_share == null ? '–' : `${String(k.cheapest_share).replace('.', ',')} %`, 'der verglichenen Artikel'),
+      kpiTile('Ø Abstand', fmtPct(k.avg_gap), `Median ${fmtPct(k.median_gap)}`, k.avg_gap > 2 ? 'warm' : ''),
+      kpiTile('Zu teuer', String(k.senken), k.gap_sum_down ? `${eur.format(k.gap_sum_down)} Differenz je Stück gesamt` : '', k.senken ? 'warm' : ''),
+      kpiTile('Spielraum nach oben', String(k.erhoehen), k.gap_sum_up ? `${eur.format(k.gap_sum_up)} je Stück gesamt` : '', 'cool')),
+    h('div', { class: 'grid2' }, histogramChart(a.histogram), competitorTable(a)),
+    movesPanel(a),
+    brandTable(a));
+  const recs = recommendations(a);
+  recs.id = 'recs';
+  root.append(recs);
 }
 
 // ---------- Benutzer ----------
