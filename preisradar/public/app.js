@@ -300,6 +300,38 @@ function discoverBtn(getBase, getField) {
   return h('span', { class: 'row' }, btn, msg);
 }
 
+/** Artikelbasis aus der eigenen Sitemap importieren (Hintergrundjob mit Fortschrittsanzeige). */
+function ownImportControls() {
+  const msg = h('span', { class: 'hint' });
+  const limit = h('input', { type: 'number', min: 1, placeholder: 'alle', style: 'width:90px' });
+  const show = (s) => {
+    const base = `${s.done.toLocaleString('de-DE')} von ${s.total.toLocaleString('de-DE')} Seiten · ${s.created} neu, ${s.updated} aktualisiert, ${s.skipped} übersprungen${s.errors ? `, ${s.errors} Fehler` : ''}`;
+    msg.textContent = s.running ? `Läuft: ${base}` : s.startedAt ? `Fertig: ${base}${s.lastError ? ` · letzter Fehler: ${s.lastError}` : ''}` : '';
+  };
+  let timer = null;
+  const poll = () => {
+    clearInterval(timer);
+    timer = setInterval(async () => {
+      if (!document.contains(msg)) return clearInterval(timer);
+      try {
+        const s = await api('/api/import/sitemap/status');
+        show(s);
+        start.disabled = s.running;
+        if (!s.running) { clearInterval(timer); await refresh(); }
+      } catch { clearInterval(timer); }
+    }, 2000);
+  };
+  const start = h('button', { class: 'btn small primary', type: 'button', onclick: guard(async () => {
+    await api('/api/import/sitemap', { method: 'POST', body: { limit: Number(limit.value) || 0 } });
+    start.disabled = true;
+    toast('Import gestartet, läuft im Hintergrund');
+    poll();
+  }) }, 'Produkte importieren');
+  const stop = h('button', { class: 'btn small', type: 'button', onclick: guard(async () => { await api('/api/import/sitemap/stop', { method: 'POST', body: {} }); }) }, 'Stoppen');
+  api('/api/import/sitemap/status').then((s) => { show(s); start.disabled = s.running; if (s.running) poll(); }).catch(() => {});
+  return { limit, start, stop, msg };
+}
+
 function competitorPanel(c) {
   const f = (label, name, value, { hint, type = 'text', ph } = {}) => h('div', { class: 'field' }, h('label', {}, label), h('input', { name, type, value: value ?? '', placeholder: ph ?? '' }), hint ? h('span', { class: 'hint' }, hint) : null);
   const form = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() });
@@ -492,6 +524,7 @@ async function renderSettings(root) {
   const form = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() });
   const vals = () => Object.fromEntries(new FormData(form));
   const owm = h('span', { class: 'hint' });
+  const imp = ownImportControls();
   form.append(
     h('h3', {}, 'Dein Shop'),
     h('div', { class: 'grid' }, f('Anzeigename', 'own_name', cur.own_name, { hint: 'Spaltenüberschrift im Dashboard' }), f('Shop-URL', 'own_url', cur.own_url, { type: 'url', ph: 'https://www.belkai.de', hint: 'Für Links zu deinen Produkten' })),
@@ -506,7 +539,11 @@ async function renderSettings(root) {
           owm.textContent = `${r.count.toLocaleString('de-DE')} URLs eingelesen, ${r.assigned} Artikeln zugeordnet${bad.length ? ` · Fehler: ${bad.map((x) => `${x.url.split('/').pop().slice(-40)} (${x.error})`).join(', ')}` : ''}`;
           await refresh();
         }) }, 'Einlesen & zuordnen'), owm),
-      discoverBtn(() => form.elements.own_url.value, () => form.elements.own_sitemap_url)),
+      discoverBtn(() => form.elements.own_url.value, () => form.elements.own_sitemap_url),
+      h('div', { class: 'row', style: 'margin-top:8px' },
+        h('label', { class: 'pmeta' }, 'Anzahl begrenzen (leer = alle)'),
+        imp.limit,
+        imp.start, imp.stop, imp.msg)),
     h('h3', { style: 'margin-top:20px' }, 'Shopware-Zugang'),
     h('p', { class: 'sub' }, 'In Shopware unter Einstellungen → System → Integrationen eine Integration anlegen (Lesezugriff auf Produkte genügt). Das Secret wird verschlüsselt gespeichert und nie wieder angezeigt.'),
     cur.shopware_from_env ? h('p', { class: 'pmeta' }, 'Aktuell werden die Zugangsdaten aus der Server-Umgebung verwendet. Wenn du hier speicherst, gelten deine Eingaben.') : null,

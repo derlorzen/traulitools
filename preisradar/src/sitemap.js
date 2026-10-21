@@ -178,7 +178,7 @@ export const hasSitemap = (db, compId) => entries(db, compId).length > 0;
 /** Die ähnlichsten Produkt-URLs zu einem eigenen Produkt (Marke + Name gegen URL-Bezeichnung). */
 export function sitemapCandidates(db, compId, product, { limit = 5, min = 0.25 } = {}) {
   const want = tokens(`${product.manufacturer ?? ''} ${product.name}`);
-  const brand = [...tokens(product.manufacturer)];
+  const brand = [...tokens(product.manufacturer)].slice(0, 1); // erstes Markenwort („HSK - Die Badexperten“ → hsk)
   if (!want.size) return [];
   const scored = [];
   for (const e of entries(db, compId)) {

@@ -43,8 +43,11 @@ function mockShop() {
     if (u.pathname === '/s/kategorien.xml') return send(200, '<urlset><url><loc>http://x/kategorie</loc></url></urlset>', 'application/xml');
     if (u.pathname === '/own-sitemap.xml') {
       const o = `http://${req.headers.host}`;
-      return send(200, `<urlset><url><loc>${o}/kludi-showersystem-logo-basic-dual/10484/</loc></url></urlset>`, 'application/xml');
+      return send(200, `<urlset><url><loc>${o}/kludi-showersystem-logo-basic-dual/10484/</loc></url><url><loc>${o}/neues-produkt/20001/</loc></url><url><loc>${o}/kategorie/unterkategorie/</loc></url></urlset>`, 'application/xml');
     }
+    const own = (sku, name, ean, price) => `<html><head><title>${name} | Shop</title></head><body><h1>${name}</h1><span itemprop="sku">${sku}</span><meta itemprop="gtin13" content="${ean}"><meta itemprop="mpn" content="MPN-${sku}"><meta property="product:brand" content="Testmarke"><meta property="product:price:amount" content="${price}"><meta property="product:price:currency" content="EUR"></body></html>`;
+    if (u.pathname === '/neues-produkt/20001/') return send(200, own('20001', 'Neues Produkt', '4000000000017', '99.9'));
+    if (u.pathname === '/kludi-showersystem-logo-basic-dual/10484/') return send(200, own('10484', 'KLUDI Showersystem Logo Basic Dual', '4015241210108', '239.00'));
     if (u.pathname === '/redir') { res.writeHead(302, { location: '/admin/suche' }); return res.end(); }
     // Shop ohne maschinenlesbare Produktdaten: nur die KI kann ihn auslesen
     if (u.pathname === '/ki-search') {
@@ -227,8 +230,20 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     await call('/api/settings', { own_sitemap_url: `${base}/own-sitemap.xml` }, 'PUT');
     assert.equal((await call('/api/settings')).json.own_sitemap_url, `${base}/own-sitemap.xml`);
     const own = (await call('/api/settings/own-sitemap/refresh', {})).json;
-    assert.deepEqual([own.count, own.assigned], [1, 1]);
+    assert.deepEqual([own.count, own.assigned], [3, 1]);
     assert.match((await call('/api/overview')).json.products.find((p) => p.number === '10484').url, /\/10484\/$/);
+
+    // Artikelbasis aus der eigenen Sitemap importieren (nur Produktseiten, Hintergrundjob)
+    assert.equal((await call('/api/import/sitemap', { limit: 0 })).status, 200);
+    for (let i = 0; i < 100; i++) { if (!(await call('/api/import/sitemap/status')).json.running) break; await new Promise((r) => setTimeout(r, 100)); }
+    const ist = (await call('/api/import/sitemap/status')).json;
+    assert.deepEqual([ist.running, ist.total, ist.created, ist.updated, ist.errors], [false, 2, 1, 1, 0]);
+    const np = (await call('/api/overview')).json.products.find((p) => p.number === '20001');
+    assert.deepEqual([np.name, np.manufacturer, np.ean, np.mpn, np.price], ['Neues Produkt', 'Testmarke', '4000000000017', 'MPN-20001', 99.9]);
+    // zweiter Lauf: bereits importierte Seiten werden übersprungen
+    await call('/api/import/sitemap', { limit: 0 });
+    for (let i = 0; i < 100; i++) { if (!(await call('/api/import/sitemap/status')).json.running) break; await new Promise((r) => setTimeout(r, 100)); }
+    assert.equal((await call('/api/import/sitemap/status')).json.total, 0);
 
     // Weiterleitung auf eine per robots.txt gesperrte Seite wird nicht abgerufen
     const rd = (await call('/api/competitors/test', { search_url: `${base}/redir?q={q}`, query: 'x' })).json;

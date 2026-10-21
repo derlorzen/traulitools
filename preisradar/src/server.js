@@ -9,6 +9,7 @@ import { fetchText, robotsAllows } from './fetcher.js';
 import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
 import { aiConfig, testAi, DEFAULT_MODEL } from './ai.js';
 import { analyse } from './analysis.js';
+import { startOwnImport, ownImportState } from './ownimport.js';
 import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList } from './sitemap.js';
 import { pageDigest, aiExtract } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
@@ -152,6 +153,16 @@ export function createApp(db, { dataDir = null } = {}) {
     try { base = new URL(req.body?.base_url).origin; } catch { throw bad('Shop-URL ungültig (mit https:// angeben)'); }
     res.json({ sitemaps: await discoverSitemaps(base) });
   }));
+  // Artikelbasis aus der eigenen Sitemap importieren (Hintergrundjob)
+  app.post('/api/import/sitemap', wrap((req, res) => {
+    const n = db.prepare('SELECT COUNT(*) AS n FROM own_sitemap_urls').get().n;
+    if (!n) throw bad('Eigene Sitemap erst einlesen (Einstellungen → Dein Shop)');
+    const limit = Math.max(0, Math.floor(Number(req.body?.limit) || 0)) || null;
+    if (!startOwnImport(db, { limit, all: req.body?.all === true })) throw bad('Es läuft bereits ein Import', 409);
+    res.json({ ok: true, ...ownImportState });
+  }));
+  app.post('/api/import/sitemap/stop', wrap((_req, res) => { ownImportState.stop = true; res.json({ ok: true }); }));
+  app.get('/api/import/sitemap/status', wrap((_req, res) => res.json(ownImportState)));
   app.post('/api/settings/own-sitemap/refresh', wrap(async (req, res) => {
     const urls = sitemapList({ sitemap_url: getSetting(db, 'own_sitemap_url') });
     if (!urls.length) throw bad('Keine eigene Sitemap hinterlegt (erst speichern)');
