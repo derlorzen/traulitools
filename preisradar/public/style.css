@@ -175,3 +175,4 @@ tr[onclick], tbody tr { cursor: pointer; }
 
 .toolbar input[type=search] { min-width: 260px; }
 .grid2 { grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); }
+code.secret { display: block; word-break: break-all; user-select: all; background: var(--petrol-soft); padding: 8px 10px; border-radius: 6px; margin: 4px 0 10px; font-size: 12px; }

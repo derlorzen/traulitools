@@ -801,13 +801,34 @@ async function renderSettings(root) {
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: { schedule: Object.fromEntries(new FormData(plan)) } }); toast('Abrufplan gespeichert'); await refresh(); }) }, 'Speichern')));
 
+  const mcpOut = h('div', {});
+  const mcpUrl = `${location.origin}/mcp`;
+  const mcp = h('div', { class: 'panel' },
+    h('h3', {}, 'Claude-Zugang (MCP)'),
+    h('p', { class: 'sub' }, 'Damit kannst du Preisradar in Claude lesen und bedienen: Analyse und Empfehlungen abfragen, Artikel suchen, Abrufe starten, Artikel beobachten. Preise im Shop werden nie geändert. Der Token wird nur einmal angezeigt, gespeichert wird nur sein Hash. Ein neuer Token ersetzt den alten.'),
+    h('p', { class: 'pmeta' }, cur.mcp_enabled ? 'Zugang ist aktiv.' : 'Zugang ist aus.'),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => {
+        if (cur.mcp_enabled && !confirm('Der bisherige Token wird ungültig. Neuen Token erzeugen?')) return;
+        const { token } = await api('/api/settings/mcp-token', { method: 'POST', body: {} });
+        mcpOut.replaceChildren(
+          h('p', {}, h('strong', {}, 'Token (jetzt kopieren, wird nicht mehr angezeigt):')), h('code', { class: 'secret' }, token),
+          h('p', { class: 'pmeta' }, 'In Claude unter Einstellungen → Konnektoren → „Benutzerdefinierten Konnektor hinzufügen“ diese URL eintragen:'),
+          h('code', { class: 'secret' }, `${mcpUrl}?token=${token}`),
+          h('p', { class: 'pmeta' }, 'Für Claude Code (Token im Header):'),
+          h('code', { class: 'secret' }, `claude mcp add --transport http preisradar ${mcpUrl} --header "Authorization: Bearer ${token}"`),
+          h('p', { class: 'pmeta' }, 'Die URL mit Token ist ein Passwort: nicht weitergeben.'));
+      }) }, cur.mcp_enabled ? 'Neuen Token erzeugen' : 'Zugang aktivieren'),
+      cur.mcp_enabled ? h('button', { class: 'btn danger', type: 'button', onclick: guard(async () => { if (confirm('Claude-Zugang abschalten?')) { await api('/api/settings/mcp-token', { method: 'DELETE' }); toast('Zugang abgeschaltet'); await refresh(); } }) }, 'Abschalten') : null),
+    mcpOut);
+
   const pw = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
     h('h3', {}, 'Passwort ändern'),
     h('div', { class: 'grid' }, f('Aktuelles Passwort', 'current', '', { type: 'password' }), f('Neues Passwort (mind. 10 Zeichen)', 'password', '', { type: 'password' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
   const up = h('div', { id: 'userpanel' }, await userPanel());
-  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, ki, up, pw));
+  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, ki, mcp, up, pw));
 }
 
 // ---------- Laufleiste ----------

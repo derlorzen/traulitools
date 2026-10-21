@@ -16,6 +16,7 @@ import { pageDigest, aiExtract } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState } from './scraper.js';
+import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SCRAPE_HOURS = String(process.env.SCRAPE_HOURS ?? '6,18').split(',').map((x) => Number(x.trim())).filter((x) => x >= 0 && x < 24);
@@ -73,6 +74,7 @@ export function createApp(db, { dataDir = null } = {}) {
   app.post('/api/auth/logout', (req, res) => { destroySession(db, req, res); res.json({ ok: true }); });
 
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
+  mountMcp(app, db, { ownName, schedule: () => scheduleConfig(db) }); // eigene Token-Prüfung, vor der Sitzungsprüfung
   app.use(express.static(path.join(here, '..', 'public')));
 
   // Ab hier nur mit Anmeldung
@@ -328,6 +330,7 @@ export function createApp(db, { dataDir = null } = {}) {
       shopware_client_id: cfg.clientId,
       shopware_secret_set: Boolean(cfg.clientSecret),
       shopware_from_env: !hasSetting(db, 'shopware_url') && Boolean(process.env.SHOPWARE_URL),
+      mcp_enabled: mcpEnabled(db),
       openai_key_set: Boolean(aiConfig(db).key),
       openai_from_env: !hasSetting(db, 'openai_api_key') && Boolean(process.env.OPENAI_API_KEY),
       openai_model: aiConfig(db).model,
@@ -358,6 +361,8 @@ export function createApp(db, { dataDir = null } = {}) {
     if (b.openai_remove_key) setSetting(db, 'openai_api_key', '');
     res.json({ ok: true });
   }));
+  app.post('/api/settings/mcp-token', wrap((_req, res) => res.json({ token: createMcpToken(db) })));
+  app.delete('/api/settings/mcp-token', wrap((_req, res) => { revokeMcpToken(db); res.json({ ok: true }); }));
   app.post('/api/settings/shopware/test', wrap(async (req, res) => {
     const b = req.body ?? {};
     const stored = shopwareConfig(db);

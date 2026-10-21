@@ -55,3 +55,9 @@ Im Tab Mitbewerber den Link zu einem Produkt des Mitbewerbers einfügen: Preisra
 - Die **robots.txt** der Mitbewerber wird immer beachtet; gesperrte Seiten erscheinen als „gesperrt". Pausen zwischen Abrufen pro Shop einstellbar (Standard 3 s).
 - Seiten, die den Preis nur per JavaScript nachladen, liefern ohne Preis-Selektor nichts. Dafür wäre ein Browser-Modus (Playwright) die Erweiterung.
 - Nutzung im Rahmen der Nutzungsbedingungen der jeweiligen Shops; bei Beschränkungen besser Preisvergleichsportale/Feeds nutzen.
+
+## Claude-Zugang (MCP)
+
+Unter Einstellungen → „Claude-Zugang (MCP)" einen Token erzeugen (wird nur einmal angezeigt, gespeichert wird der Hash). Endpunkt: `POST /mcp` (Streamable HTTP, JSON-RPC), Token als `Authorization: Bearer …` oder `?token=…`.
+Lesen: `overview`, `analysis_summary`, `recommendations`, `search_products`, `get_product`, `list_competitors`, `list_runs`. Ändern: `start_scrape`, `stop_scrape`, `track_products`. Preise im Shop werden nie geändert.
+Claude Code: `claude mcp add --transport http preisradar https://<host>/mcp --header "Authorization: Bearer <token>"`.
