@@ -284,6 +284,22 @@ function closeDrawer() { state.selected = null; document.getElementById('drawer'
 document.addEventListener('keydown', (e) => e.key === 'Escape' && closeDrawer());
 
 // ---------- Mitbewerber ----------
+/** Sitemaps eines Shops automatisch finden (robots.txt und übliche Pfade) und ins Textfeld übernehmen. */
+function discoverBtn(getBase, getField) {
+  const msg = h('span', { class: 'hint' });
+  const btn = h('button', { class: 'btn small', type: 'button', onclick: guard(async () => {
+    msg.textContent = 'Suche …';
+    const r = await api('/api/sitemaps/discover', { body: { base_url: getBase() } });
+    const field = getField();
+    if (!r.sitemaps.length) { msg.textContent = 'Keine Sitemap gefunden. Trage die URL manuell ein.'; return; }
+    const have = new Set(field.value.split(/\s+/).filter(Boolean));
+    for (const s of r.sitemaps) have.add(s.url);
+    field.value = [...have].join('\n');
+    msg.textContent = `${r.sitemaps.length} gefunden (${r.sitemaps.map((s) => (s.kind === 'index' ? 'Index' : `${s.entries.toLocaleString('de-DE')} URLs`)).join(', ')}). Zum Übernehmen speichern.`;
+  }) }, 'Sitemaps automatisch finden');
+  return h('span', { class: 'row' }, btn, msg);
+}
+
 function competitorPanel(c) {
   const f = (label, name, value, { hint, type = 'text', ph } = {}) => h('div', { class: 'field' }, h('label', {}, label), h('input', { name, type, value: value ?? '', placeholder: ph ?? '' }), hint ? h('span', { class: 'hint' }, hint) : null);
   const form = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() });
@@ -322,7 +338,8 @@ function competitorPanel(c) {
           const bad = r.report.filter((x) => x.error);
           sm.textContent = `${r.count.toLocaleString('de-DE')} URLs eingelesen${bad.length ? ` · Fehler: ${bad.map((x) => `${x.url.split('/').pop()} (${x.error})`).join(', ')}` : ''}`;
           toast(r.count ? 'Sitemap eingelesen' : 'Keine URLs gefunden', !r.count);
-        }) }, 'Sitemap jetzt einlesen'), sm) : null),
+        }) }, 'Sitemap jetzt einlesen'), sm) : null,
+        h('div', { class: 'row' }, discoverBtn(() => form.elements.base_url.value, form.elements.sitemap_url ? () => form.elements.sitemap_url : () => null))),
       h('div', { class: 'field' }, h('label', {}, 'KI beim Auslesen'),
         h('select', { name: 'ai_mode' },
           [['fallback', 'Bei Bedarf'], ['always', 'Immer prüfen'], ['off', 'Aus']].map(([v, t]) => h('option', { value: v, selected: (c?.ai_mode ?? 'fallback') === v }, t))),
@@ -474,9 +491,22 @@ async function renderSettings(root) {
   const out = h('div', { class: 'result', hidden: true });
   const form = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() });
   const vals = () => Object.fromEntries(new FormData(form));
+  const owm = h('span', { class: 'hint' });
   form.append(
     h('h3', {}, 'Dein Shop'),
     h('div', { class: 'grid' }, f('Anzeigename', 'own_name', cur.own_name, { hint: 'Spaltenüberschrift im Dashboard' }), f('Shop-URL', 'own_url', cur.own_url, { type: 'url', ph: 'https://www.belkai.de', hint: 'Für Links zu deinen Produkten' })),
+    h('div', { class: 'field', style: 'margin-top:12px' }, h('label', {}, 'Eigene Sitemap-URLs (optional, eine pro Zeile)'),
+      h('textarea', { name: 'own_sitemap_url', rows: 2, placeholder: 'https://www.belkai.de/sitemap.xml' }, cur.own_sitemap_url ?? ''),
+      h('span', { class: 'hint' }, 'Auch .xml.gz und Index-Sitemaps. Die URLs werden deinen Artikeln zugeordnet (Artikelnummer im Pfad oder sehr ähnlicher Name), damit „im Shop öffnen“ auf die richtige Seite führt.'),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn small', type: 'button', onclick: guard(async () => {
+          await api('/api/settings', { method: 'PUT', body: { own_sitemap_url: form.elements.own_sitemap_url.value } });
+          const r = await api('/api/settings/own-sitemap/refresh', { method: 'POST', body: {} });
+          const bad = r.report.filter((x) => x.error);
+          owm.textContent = `${r.count.toLocaleString('de-DE')} URLs eingelesen, ${r.assigned} Artikeln zugeordnet${bad.length ? ` · Fehler: ${bad.map((x) => `${x.url.split('/').pop().slice(-40)} (${x.error})`).join(', ')}` : ''}`;
+          await refresh();
+        }) }, 'Einlesen & zuordnen'), owm),
+      discoverBtn(() => form.elements.own_url.value, () => form.elements.own_sitemap_url)),
     h('h3', { style: 'margin-top:20px' }, 'Shopware-Zugang'),
     h('p', { class: 'sub' }, 'In Shopware unter Einstellungen → System → Integrationen eine Integration anlegen (Lesezugriff auf Produkte genügt). Das Secret wird verschlüsselt gespeichert und nie wieder angezeigt.'),
     cur.shopware_from_env ? h('p', { class: 'pmeta' }, 'Aktuell werden die Zugangsdaten aus der Server-Umgebung verwendet. Wenn du hier speicherst, gelten deine Eingaben.') : null,

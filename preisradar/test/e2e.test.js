@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import zlib from 'node:zlib';
 process.env.MIN_DELAY_MS = '0';
 import { openDb } from '../src/db.js';
 import { createApp } from '../src/server.js';
@@ -13,7 +14,7 @@ function mockShop() {
   return http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     const send = (code, body, type = 'text/html') => { res.writeHead(code, { 'content-type': type }); res.end(body); };
-    if (u.pathname === '/robots.txt') return send(200, 'User-agent: *\nDisallow: /admin\n', 'text/plain');
+    if (u.pathname === '/robots.txt') return send(200, `User-agent: *\nDisallow: /admin\nSitemap: http://${req.headers.host}/sitemap-index.xml\n`, 'text/plain');
     if (u.pathname === '/search') {
       const q = u.searchParams.get('q');
       if (q === '4015241210108') return send(200, '<div class="product-box"><a href="/p/wrong">w</a></div><div class="product-box"><a href="/p/kludi">k</a></div>');
@@ -29,6 +30,21 @@ function mockShop() {
     }
     if (u.pathname.startsWith('/bad/duschsysteme/kludi-logo')) return send(200, page('KLUDI LOGO Duschsystem Dual Shower Thermostat', '259.00', { gtin13: '4015241210108' }));
     if (u.pathname.startsWith('/bad/xx/')) return send(200, page('KLUDI Ersatzteil Dichtung', '4.90', { gtin13: '2222222222222' }));
+    if (u.pathname === '/sitemap-index.xml') {
+      const o = `http://${req.headers.host}`;
+      return send(200, `<sitemapindex><sitemap><loc>${o}/s/kategorien.xml</loc></sitemap><sitemap><loc>${o}/s/artikel-1.xml.gz</loc></sitemap></sitemapindex>`, 'application/xml');
+    }
+    if (u.pathname === '/s/artikel-1.xml.gz') {
+      const o = `http://${req.headers.host}`;
+      const gz = zlib.gzipSync(`<urlset><url><loc>${o}/bad/duschsysteme/kludi-logo-thermostat-dual-shower-system_192921_179614/</loc></url><url><loc>${o}/bad/xx/kludi-ersatzteil-dichtung_9_9/</loc></url></urlset>`);
+      res.writeHead(200, { 'content-type': 'application/x-gzip' });
+      return res.end(gz);
+    }
+    if (u.pathname === '/s/kategorien.xml') return send(200, '<urlset><url><loc>http://x/kategorie</loc></url></urlset>', 'application/xml');
+    if (u.pathname === '/own-sitemap.xml') {
+      const o = `http://${req.headers.host}`;
+      return send(200, `<urlset><url><loc>${o}/kludi-showersystem-logo-basic-dual/10484/</loc></url></urlset>`, 'application/xml');
+    }
     if (u.pathname === '/redir') { res.writeHead(302, { location: '/admin/suche' }); return res.end(); }
     // Shop ohne maschinenlesbare Produktdaten: nur die KI kann ihn auslesen
     if (u.pathname === '/ki-search') {
@@ -199,6 +215,20 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.match(sm.url, /kludi-logo-thermostat/);
     const sh = (await call('/api/overview')).json.products.find((p) => p.number === '10276-001').matches[sc.json.id];
     assert.equal(sh.status, 'not_found');
+
+    // Sitemaps automatisch finden (robots.txt), Index + .gz lesen, nur Artikel-Teil-Sitemaps
+    const dis = (await call('/api/sitemaps/discover', { base_url: base })).json.sitemaps;
+    assert.ok(dis.some((d) => d.kind === 'index' && d.url.endsWith('/sitemap-index.xml')));
+    assert.ok(dis.some((d) => d.kind === 'urlset' && d.url.endsWith('/sitemap.xml')));
+    const gz = await call('/api/competitors', { name: 'Index-Shop', base_url: base, sitemap_url: `${base}/sitemap-index.xml`, delay_ms: 1, ai_mode: 'off' });
+    assert.equal((await call(`/api/competitors/${gz.json.id}/sitemap/refresh`, {})).json.count, 2);
+
+    // Eigene Sitemap: URLs werden eigenen Artikeln zugeordnet (Artikelnummer im Pfad)
+    await call('/api/settings', { own_sitemap_url: `${base}/own-sitemap.xml` }, 'PUT');
+    assert.equal((await call('/api/settings')).json.own_sitemap_url, `${base}/own-sitemap.xml`);
+    const own = (await call('/api/settings/own-sitemap/refresh', {})).json;
+    assert.deepEqual([own.count, own.assigned], [1, 1]);
+    assert.match((await call('/api/overview')).json.products.find((p) => p.number === '10484').url, /\/10484\/$/);
 
     // Weiterleitung auf eine per robots.txt gesperrte Seite wird nicht abgerufen
     const rd = (await call('/api/competitors/test', { search_url: `${base}/redir?q={q}`, query: 'x' })).json;

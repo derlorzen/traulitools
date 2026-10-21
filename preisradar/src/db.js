@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS sitemap_urls (
   slug TEXT NOT NULL,
   PRIMARY KEY (competitor_id, url)
 );
+CREATE TABLE IF NOT EXISTS own_sitemap_urls (
+  url TEXT PRIMARY KEY,
+  slug TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS matches (
   id INTEGER PRIMARY KEY,
   product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,

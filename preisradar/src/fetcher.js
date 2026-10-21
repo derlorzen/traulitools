@@ -5,7 +5,7 @@ const UA =
 const robotsCache = new Map(); // host -> { at, rules }
 const ROBOTS_TTL = 6 * 3600 * 1000;
 
-export async function fetchText(url, { timeout = 20000, headers = {} } = {}) {
+export async function fetchText(url, { timeout = 20000, headers = {}, raw = false } = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeout);
   try {
@@ -19,8 +19,9 @@ export async function fetchText(url, { timeout = 20000, headers = {} } = {}) {
         ...headers,
       },
     });
-    const text = await res.text();
-    return { status: res.status, text, finalUrl: res.url || url, contentType: res.headers.get('content-type') || '' };
+    const buf = raw ? Buffer.from(await res.arrayBuffer()) : null;
+    const text = raw ? '' : await res.text();
+    return { status: res.status, text, buf, finalUrl: res.url || url, contentType: res.headers.get('content-type') || '' };
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('Zeitüberschreitung beim Abruf');
     throw new Error(`Abruf fehlgeschlagen: ${e.cause?.code || e.message}`);

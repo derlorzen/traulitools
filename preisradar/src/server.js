@@ -9,7 +9,7 @@ import { fetchText, robotsAllows } from './fetcher.js';
 import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
 import { aiConfig, testAi, DEFAULT_MODEL } from './ai.js';
 import { analyse } from './analysis.js';
-import { refreshSitemaps } from './sitemap.js';
+import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList } from './sitemap.js';
 import { pageDigest, aiExtract } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
@@ -147,6 +147,16 @@ export function createApp(db, { dataDir = null } = {}) {
     db.prepare('UPDATE competitors SET name=?, base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=?, sitemap_url=? WHERE id=?').run(...compFields(req.body), Number(req.params.id));
     res.json({ ok: true });
   }));
+  app.post('/api/sitemaps/discover', wrap(async (req, res) => {
+    let base;
+    try { base = new URL(req.body?.base_url).origin; } catch { throw bad('Shop-URL ungültig (mit https:// angeben)'); }
+    res.json({ sitemaps: await discoverSitemaps(base) });
+  }));
+  app.post('/api/settings/own-sitemap/refresh', wrap(async (req, res) => {
+    const urls = sitemapList({ sitemap_url: getSetting(db, 'own_sitemap_url') });
+    if (!urls.length) throw bad('Keine eigene Sitemap hinterlegt (erst speichern)');
+    res.json(await refreshOwnSitemap(db, urls));
+  }));
   app.post('/api/competitors/:id/sitemap/refresh', wrap(async (req, res) => {
     const comp = db.prepare('SELECT * FROM competitors WHERE id=?').get(Number(req.params.id));
     if (!comp) throw bad('Mitbewerber nicht gefunden', 404);
@@ -265,6 +275,7 @@ export function createApp(db, { dataDir = null } = {}) {
     res.json({
       own_name: ownName(),
       own_url: getSetting(db, 'own_url') || process.env.OWN_SHOP_URL || '',
+      own_sitemap_url: getSetting(db, 'own_sitemap_url') || '',
       shopware_url: cfg.url,
       shopware_client_id: cfg.clientId,
       shopware_secret_set: Boolean(cfg.clientSecret),
@@ -283,6 +294,7 @@ export function createApp(db, { dataDir = null } = {}) {
     const b = req.body ?? {};
     if (b.own_name !== undefined) setSetting(db, 'own_name', String(b.own_name).trim());
     if (b.own_url !== undefined) setSetting(db, 'own_url', cleanUrl(b.own_url));
+    if (b.own_sitemap_url !== undefined) setSetting(db, 'own_sitemap_url', sitemapField(b.own_sitemap_url));
     if (b.shopware_url !== undefined) setSetting(db, 'shopware_url', cleanUrl(b.shopware_url));
     if (b.shopware_client_id !== undefined) setSetting(db, 'shopware_client_id', String(b.shopware_client_id).trim());
     if (b.shopware_client_secret) setSetting(db, 'shopware_client_secret', String(b.shopware_client_secret).trim(), { secret: true });
