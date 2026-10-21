@@ -1,6 +1,6 @@
 import zlib from 'node:zlib';
 import { fetchText, robotsAllows } from './fetcher.js';
-import { tokens, jaccard } from './util.js';
+import { tokens, jaccard, normId } from './util.js';
 
 /**
  * Produkt-URLs eines Mitbewerbers aus seinen Sitemaps. Für Shops, deren Suche gesperrt oder nur per
@@ -168,23 +168,72 @@ export function sitemapDue(db, comp) {
 
 function entries(db, compId) {
   if (!cache.has(compId)) {
-    cache.set(compId, db.prepare('SELECT url, slug FROM sitemap_urls WHERE competitor_id=?').all(compId).map((r) => ({ url: r.url, slug: r.slug, tokens: tokens(r.slug) })));
+    cache.set(compId, db.prepare('SELECT url, slug FROM sitemap_urls WHERE competitor_id=?').all(compId).map((r) => {
+      let path = r.url;
+      try { path = decodeURIComponent(new URL(r.url).pathname); } catch { /* Rohwert */ }
+      const parts = path.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      return { url: r.url, slug: r.slug, tokens: tokens(r.slug), parts, norm: parts.join('') };
+    }));
   }
   return cache.get(compId);
 }
 
 export const hasSitemap = (db, compId) => entries(db, compId).length > 0;
 
-/** Die ähnlichsten Produkt-URLs zu einem eigenen Produkt (Marke + Name gegen URL-Bezeichnung). */
+/** Kennungen des eigenen Artikels, die in einer fremden URL vorkommen können (EAN, Herstellernummer, Artikelnummer). */
+export function productIds(product) {
+  const out = [];
+  const add = (v, kind, minLen) => {
+    const n = normId(v);
+    if (n.length >= minLen && /\d/.test(n) && !out.some((x) => x.id === n)) out.push({ id: n, kind });
+  };
+  add(product.ean, 'EAN', 8);
+  add(product.mpn, 'Herstellernummer', 6);
+  add(product.number, 'Artikelnummer', 6);
+  return out;
+}
+
+/** Kommt die Kennung als zusammenhängende Folge ganzer URL-Bestandteile vor? („hs-48206090-01-50-52-l“ enthält 48206090015052l) */
+function idInUrl(e, id) {
+  if (!e.norm.includes(id)) return false;
+  for (let i = 0; i < e.parts.length; i++) {
+    let s = '';
+    for (let j = i; j < e.parts.length && s.length < id.length; j++) {
+      s += e.parts[j];
+      if (s === id) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Passende Produkt-URLs zu einem eigenen Artikel. Zuerst Treffer über EAN, Herstellernummer oder Artikelnummer
+ * in der URL (eindeutig, unabhängig von der Schreibweise des Namens), danach die ähnlichsten Namen (Marke + Name gegen URL-Bezeichnung).
+ */
 export function sitemapCandidates(db, compId, product, { limit = 5, min = 0.25 } = {}) {
   const want = tokens(`${product.manufacturer ?? ''} ${product.name}`);
   const brand = [...tokens(product.manufacturer)].slice(0, 1); // erstes Markenwort („HSK - Die Badexperten“ → hsk)
-  if (!want.size) return [];
+  const ids = productIds(product);
+  const byId = [];
   const scored = [];
   for (const e of entries(db, compId)) {
-    if (brand.length && !brand.every((b) => e.slug.toLowerCase().includes(b))) continue;
+    const hit = ids.find((x) => idInUrl(e, x.id));
+    if (hit) { byId.push({ url: e.url, slug: e.slug, score: 2, via: hit.kind }); continue; }
+    if (!want.size || (brand.length && !brand.every((b) => e.slug.toLowerCase().includes(b)))) continue;
     const s = jaccard(want, e.tokens);
     if (s >= min) scored.push({ url: e.url, slug: e.slug, score: s });
   }
-  return scored.sort((a, b) => b.score - a.score).slice(0, limit);
+  // Viele ID-Treffer heißen: Kennung zu unspezifisch (z. B. Teil vieler Varianten) – dann nur als normale Kandidaten
+  const ids1 = byId.length <= 6 ? byId : [];
+  // gleiche Seite unter www/ohne www nur einmal
+  const seen = new Set();
+  const out = [];
+  for (const c of [...ids1, ...scored.sort((a, b) => b.score - a.score)]) {
+    let key = c.url;
+    try { const u = new URL(c.url); key = u.hostname.replace(/^www\./, '') + u.pathname.replace(/\/$/, ''); } catch { /* Rohwert */ }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out.slice(0, Math.max(limit, ids1.length ? Math.min(ids1.length, 6) : 0));
 }

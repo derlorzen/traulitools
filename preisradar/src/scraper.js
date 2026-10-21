@@ -263,9 +263,21 @@ function isDue(m, force, now, minH = MIN_INTERVAL_H) {
  * limitPerCompetitor: höchstens so viele Prüfungen je Mitbewerber (Rolling-Modus, die ältesten zuerst).
  * minIntervalH: Mindestabstand zwischen zwei Prüfungen desselben Artikels.
  */
+const STALE_MS = 3 * 60 * 1000;
+/**
+ * Läufe, die nicht mehr laufen (Neustart, Absturz), als unterbrochen abschließen. Läuft ein Lauf mit frischem
+ * Lebenszeichen (z. B. in einem zweiten Container während eines Deploys), gilt er als aktiv.
+ */
+export function closeStaleRuns(db, now = Date.now()) {
+  const cutoff = new Date(now - STALE_MS).toISOString();
+  db.prepare("UPDATE runs SET finished_at=COALESCE(heartbeat, started_at), note=COALESCE(note, 'unterbrochen') WHERE finished_at IS NULL AND COALESCE(heartbeat, started_at) < ?").run(cutoff);
+  return db.prepare('SELECT id FROM runs WHERE finished_at IS NULL').get() ?? null;
+}
+
 export function startScrape(db, { trigger = 'manual', competitorId = null, productId = null, force = false, limitPerCompetitor = null, minIntervalH = MIN_INTERVAL_H } = {}) {
   if (scrapeState.running) return false;
   const now = Date.now();
+  if (closeStaleRuns(db, now)) return false; // ein anderer Lauf ist noch aktiv: erst nach dessen Ende starten
 
   const comps = db.prepare(`SELECT * FROM competitors WHERE enabled=1 ${competitorId ? 'AND id=?' : ''} ORDER BY position, id`).all(...(competitorId ? [competitorId] : []));
   const prods = db.prepare(`SELECT * FROM products WHERE active=1 ${productId ? 'AND id=?' : 'AND tracked=1'}`).all(...(productId ? [productId] : []));
@@ -290,7 +302,9 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
   const total = queues.reduce((s, q) => s + q.items.length, 0);
   if (trigger === 'rolling' && !total) return false; // nichts fällig: keinen leeren Lauf protokollieren
   const startedAt = new Date().toISOString();
-  const runId = db.prepare('INSERT INTO runs(started_at, trigger, total) VALUES (?,?,?)').run(startedAt, trigger, total).lastInsertRowid;
+  const runId = db.prepare('INSERT INTO runs(started_at, trigger, total, heartbeat) VALUES (?,?,?,?)').run(startedAt, trigger, total, startedAt).lastInsertRowid;
+  const beat = setInterval(() => { try { db.prepare('UPDATE runs SET heartbeat=?, checked=? WHERE id=?').run(new Date().toISOString(), scrapeState.done, runId); } catch { /* DB geschlossen */ } }, 30000);
+  beat.unref?.();
   Object.assign(scrapeState, { running: true, stop: false, runId, trigger, total, done: 0, found: 0, errors: 0, startedAt, current: null });
 
   (async () => {
@@ -316,6 +330,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
   })()
     .catch((e) => console.error('Scrape-Lauf abgebrochen:', e))
     .finally(() => {
+      clearInterval(beat);
       db.prepare('UPDATE runs SET finished_at=?, checked=?, found=?, errors=?, note=? WHERE id=?').run(
         new Date().toISOString(),
         scrapeState.done,
@@ -326,6 +341,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
       );
       scrapeState.running = false;
       scrapeState.current = null;
+      scrapeState.finishedAt = Date.now();
     });
   return true;
 }

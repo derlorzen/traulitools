@@ -16,7 +16,7 @@ import { pageDigest, aiExtract } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import crypto from 'node:crypto';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
-import { startScrape, scrapeState } from './scraper.js';
+import { startScrape, scrapeState, closeStaleRuns } from './scraper.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -464,20 +464,30 @@ export function scheduleConfig(db) {
 
 export function startScheduler(db) {
   const done = new Set(); // "YYYY-MM-DD-HH" – pro Zeitfenster nur ein Lauf (Modus slots)
+  let pause = null; // Pause nach dem Ende des letzten Laufs (Sekunden), je Lücke neu ausgewürfelt
   const tick = () => {
-    let next = 60;
+    let next = 30;
     try {
       const cfg = scheduleConfig(db);
       if (cfg.mode === 'rolling') {
-        if (!scrapeState.running) startScrape(db, { trigger: 'rolling', limitPerCompetitor: cfg.batch, minIntervalH: cfg.refresh });
-        next = cfg.interval + Math.random() * cfg.jitter;
+        // Neuer Lauf erst, wenn der vorige beendet ist (auch der eigene Artikel-Import) und danach die Pause verstrichen ist
+        if (!scrapeState.running && !ownImportState.running) {
+          pause ??= cfg.interval + Math.random() * cfg.jitter;
+          const since = scrapeState.finishedAt ? (Date.now() - scrapeState.finishedAt) / 1000 : Infinity;
+          if (since >= pause) {
+            startScrape(db, { trigger: 'rolling', limitPerCompetitor: cfg.batch, minIntervalH: cfg.refresh });
+            pause = null;
+            if (!scrapeState.running) scrapeState.finishedAt = Date.now(); // nichts fällig: eine Pause abwarten
+          } else next = Math.max(5, pause - since);
+        }
       } else {
         const d = new Date();
         const slot = `${d.toISOString().slice(0, 10)}-${d.getHours()}`;
-        if (SCRAPE_HOURS.includes(d.getHours()) && !done.has(slot) && startScrape(db, { trigger: 'schedule' })) {
+        if (SCRAPE_HOURS.includes(d.getHours()) && !done.has(slot) && !ownImportState.running && startScrape(db, { trigger: 'schedule' })) {
           done.add(slot);
           if (done.size > 10) done.delete(done.values().next().value);
         }
+        next = 60;
       }
     } catch (e) {
       console.error('Zeitplan:', e.message);
@@ -547,6 +557,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (seeded) console.log(`${seeded} Mitbewerber aus Datei übernommen`);
   const port = Number(process.env.PORT || 3000);
   createApp(db, { dataDir: path.dirname(process.env.DB_PATH || './data/preisradar.db') }).listen(port, () => console.log(`Preisradar läuft auf Port ${port}`));
+  closeStaleRuns(db); // Läufe eines vorherigen Prozesses abschließen
   startScheduler(db);
   applyBootstrap(db).catch((e) => console.error('Bootstrap fehlgeschlagen:', e.message));
 }
