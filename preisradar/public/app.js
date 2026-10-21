@@ -805,7 +805,7 @@ async function renderSettings(root) {
   const mcpUrl = `${location.origin}/mcp`;
   const mcp = h('div', { class: 'panel' },
     h('h3', {}, 'Claude-Zugang (MCP)'),
-    h('p', { class: 'sub' }, 'Damit kannst du Preisradar in Claude lesen und bedienen: Analyse und Empfehlungen abfragen, Artikel suchen, Abrufe starten, Artikel beobachten. Preise im Shop werden nie geändert. Der Token wird nur einmal angezeigt, gespeichert wird nur sein Hash. Ein neuer Token ersetzt den alten.'),
+    h('p', { class: 'sub' }, 'Damit kannst du Preisradar in Claude lesen und bedienen: Analyse und Empfehlungen abfragen, Artikel suchen, Importe starten, Einstellungen und Mitbewerber ändern, Abrufe starten, Treffer bestätigen. Preise im Shop werden nie geändert, Zugangsdaten (API-Keys, Passwörter) kann Claude nicht setzen. Der Token wird nur einmal angezeigt, gespeichert wird nur sein Hash. Ein neuer Token ersetzt den alten.'),
     h('p', { class: 'pmeta' }, cur.mcp_enabled ? 'Zugang ist aktiv.' : 'Zugang ist aus.'),
     h('div', { class: 'row' },
       h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => {

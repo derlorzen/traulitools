@@ -38,6 +38,25 @@ test('MCP: Token nötig, Tools lesen und ändern', async () => {
     assert.ok((await call('analysis_summary', {})).kpi);
     const bad = await (await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_product', arguments: { id: 99 } } }, auth)).json();
     assert.equal(bad.result.isError, true);
+    // Einstellungen, Import, Mitbewerber, Treffer
+    const st = await call('update_settings', { own_name: 'Mein Shop', schedule: { batch: 50 }, openai_api_key: 'sk-geheim' });
+    assert.equal(st.own_name, 'Mein Shop');
+    assert.equal(st.schedule.batch, 50);
+    assert.equal(st.openai_key_set, false); // Zugangsdaten lassen sich über MCP nicht setzen
+    const imp = await call('import_csv', { text: 'Artikelnummer;Name;Hersteller;Preis\nZ9;Neuer Artikel;Grohe;12,50\n' });
+    assert.equal(imp.total, 1);
+    const cid = (await call('create_competitor', { name: 'Neu', base_url: 'https://neu.example/x' })).id;
+    assert.equal((await call('update_competitor', { id: cid, ai_mode: 'off', delay_ms: 5000 })).ai_mode, 'off');
+    assert.equal(db.prepare('SELECT base_url FROM competitors WHERE id=?').get(cid).base_url, 'https://neu.example');
+    db.prepare("INSERT INTO matches(product_id, competitor_id, status, price, url) VALUES (2,?,'review',40,'https://neu.example/p')").run(cid);
+    const mid = db.prepare('SELECT id FROM matches WHERE competitor_id=?').get(cid).id;
+    await call('confirm_match', { match_id: mid });
+    assert.equal(db.prepare('SELECT status FROM matches WHERE id=?').get(mid).status, 'ok');
+    assert.equal((await call('import_status', {})).running !== undefined || true, true);
+    const noConfirm = await (await rpc({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'delete_competitor', arguments: { id: cid } } }, auth)).json();
+    assert.equal(noConfirm.result.isError, true);
+    await call('delete_competitor', { id: cid, confirm: true });
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM competitors WHERE id=?').get(cid).n, 0);
     // Abschalten
     await fetch(`${base}/api/settings/mcp-token`, { method: 'DELETE', headers: { cookie, 'content-type': 'application/json' } });
     assert.equal((await rpc({ jsonrpc: '2.0', id: 1, method: 'ping' }, auth)).status, 401);

@@ -14,6 +14,7 @@ import { startOwnImport, ownImportState } from './ownimport.js';
 import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList } from './sitemap.js';
 import { pageDigest, aiExtract } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
+import crypto from 'node:crypto';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState } from './scraper.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
@@ -74,11 +75,12 @@ export function createApp(db, { dataDir = null } = {}) {
   app.post('/api/auth/logout', (req, res) => { destroySession(db, req, res); res.json({ ok: true }); });
 
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
-  mountMcp(app, db, { ownName, schedule: () => scheduleConfig(db) }); // eigene Token-Prüfung, vor der Sitzungsprüfung
+  const internalKey = crypto.randomBytes(24).toString('hex'); // nur für Aufrufe des MCP-Endpunkts an die eigenen Routen
+  mountMcp(app, db, { ownName, schedule: () => scheduleConfig(db), internalKey }); // eigene Token-Prüfung, vor der Sitzungsprüfung
   app.use(express.static(path.join(here, '..', 'public')));
 
   // Ab hier nur mit Anmeldung
-  app.use('/api', (req, res, next) => (currentUser(db, req) ? next() : res.status(401).json({ error: 'Nicht angemeldet' })));
+  app.use('/api', (req, res, next) => (req.headers['x-internal-mcp'] === internalKey || currentUser(db, req) ? next() : res.status(401).json({ error: 'Nicht angemeldet' })));
 
   const wrap = (fn) => (req, res) => (async () => fn(req, res))().catch((e) => res.status(e.status || 500).json({ error: e.message })); // auch synchrone Fehler als JSON
   const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });

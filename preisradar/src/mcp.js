@@ -63,10 +63,48 @@ const TOOLS = [
     description: 'Artikel zur Beobachtung hinzufügen oder entfernen (nur beobachtete Artikel werden abgeglichen). Auswahl per ids, Artikelnummern oder Marke.',
     inputSchema: obj({ ids: { type: 'array', items: { type: 'integer' } }, numbers: { type: 'array', items: { type: 'string' } }, brand: { type: 'string' }, tracked: { type: 'boolean' } }, ['tracked']),
   },
+  // --- Einstellungen, Import, Mitbewerber, Zuordnungen (über die App-eigenen Routen, mit deren Prüfungen) ---
+  { name: 'get_settings', description: 'Einstellungen lesen: Shop-Name/-URL, eigene Sitemap, Abrufplan, ob Shopware/KI/MCP eingerichtet sind (Zugangsdaten werden nie ausgegeben).', inputSchema: obj() },
+  {
+    name: 'update_settings',
+    description: 'Einstellungen ändern: Shop-Name, Shop-URL, eigene Sitemap-URL(s) (mehrere durch Leerzeichen/Zeilenumbruch) und Abrufplan. Zugangsdaten (API-Keys, Passwörter) lassen sich hier bewusst nicht setzen.',
+    inputSchema: obj({
+      own_name: { type: 'string' }, own_url: { type: 'string' }, own_sitemap_url: { type: 'string' },
+      schedule: { type: 'object', properties: { mode: { type: 'string', enum: ['rolling', 'slots'] }, batch: { type: 'integer' }, interval: { type: 'integer', description: 'Sekunden zwischen Paketen' }, jitter: { type: 'integer', description: 'zufälliger Aufschlag in Sekunden' }, refresh: { type: 'integer', description: 'Mindestabstand je Artikel in Stunden' } }, additionalProperties: false },
+    }),
+  },
+  { name: 'refresh_own_sitemap', description: 'Eigene Sitemap(s) neu einlesen (Voraussetzung für den Sitemap-Import).', inputSchema: obj() },
+  { name: 'import_status', description: 'Stand des laufenden oder letzten Sitemap-Imports eigener Artikel.', inputSchema: obj() },
+  {
+    name: 'import_from_sitemap',
+    description: 'Eigene Artikel aus der Sitemap importieren (Hintergrundjob). limit = nur die ersten N, all = auch bereits vorhandene aktualisieren, tracked = neue Artikel gleich beobachten.',
+    inputSchema: obj({ limit: { type: 'integer', minimum: 1 }, all: { type: 'boolean' }, tracked: { type: 'boolean' } }),
+  },
+  { name: 'stop_import', description: 'Laufenden Sitemap-Import stoppen.', inputSchema: obj() },
+  { name: 'import_shopware', description: 'Artikel über die Shopware-API importieren (Zugang muss unter Einstellungen eingerichtet sein).', inputSchema: obj() },
+  { name: 'import_csv', description: 'Artikel aus CSV-Text importieren. Spalten: Artikelnummer, Name (Pflicht), EAN, Herstellernummer, Hersteller, Preis, URL.', inputSchema: obj({ text: { type: 'string' } }, ['text']) },
+  { name: 'import_competitor_urls', description: 'Bekannte Mitbewerber-Produktlinks per CSV-Text setzen. Spalten: Artikelnummer, Mitbewerber, URL.', inputSchema: obj({ text: { type: 'string' } }, ['text']) },
+  {
+    name: 'create_competitor',
+    description: 'Mitbewerber anlegen. Entweder search_url (mit {q}) und/oder sitemap_url(s). ai_mode: off | fallback | always.',
+    inputSchema: obj({ name: { type: 'string' }, base_url: { type: 'string' }, search_url: { type: 'string' }, sitemap_url: { type: 'string' }, result_selector: { type: 'string' }, price_selector: { type: 'string' }, delay_ms: { type: 'integer' }, ai_mode: { type: 'string', enum: ['off', 'fallback', 'always'] } }, ['name', 'base_url']),
+  },
+  {
+    name: 'update_competitor',
+    description: 'Mitbewerber ändern (nur angegebene Felder).',
+    inputSchema: obj({ id: { type: 'integer' }, name: { type: 'string' }, base_url: { type: 'string' }, search_url: { type: 'string' }, sitemap_url: { type: 'string' }, result_selector: { type: 'string' }, price_selector: { type: 'string' }, delay_ms: { type: 'integer' }, enabled: { type: 'boolean' }, ai_mode: { type: 'string', enum: ['off', 'fallback', 'always'] } }, ['id']),
+  },
+  { name: 'delete_competitor', description: 'Mitbewerber samt Treffern und Preisverlauf löschen (nicht umkehrbar). Nur mit confirm=true.', inputSchema: obj({ id: { type: 'integer' }, confirm: { type: 'boolean' } }, ['id', 'confirm']) },
+  { name: 'autosetup_competitor', description: 'Mitbewerber aus einem Produktlink seines Shops einrichten. create=false analysiert nur, create=true legt ihn an.', inputSchema: obj({ product_url: { type: 'string' }, create: { type: 'boolean' }, name: { type: 'string' } }, ['product_url']) },
+  { name: 'discover_sitemaps', description: 'Sitemaps eines Shops finden (robots.txt und übliche Pfade).', inputSchema: obj({ base_url: { type: 'string' } }, ['base_url']) },
+  { name: 'refresh_competitor_sitemap', description: 'Sitemap eines Mitbewerbers neu einlesen.', inputSchema: obj({ id: { type: 'integer' } }, ['id']) },
+  { name: 'confirm_match', description: 'Einen unbestätigten Treffer („zu prüfen“) bestätigen; er fließt dann in die Analyse ein.', inputSchema: obj({ match_id: { type: 'integer' } }, ['match_id']) },
+  { name: 'reject_match', description: 'Einen Treffer verwerfen (falsches Produkt).', inputSchema: obj({ match_id: { type: 'integer' } }, ['match_id']) },
+  { name: 'set_match_url', description: 'Produktlink eines Mitbewerbers für einen Artikel setzen (leer = Zuordnung zurücksetzen) und direkt abrufen.', inputSchema: obj({ product_id: { type: 'integer' }, competitor_id: { type: 'integer' }, url: { type: 'string' } }, ['product_id', 'competitor_id']) },
 ];
-const WRITE = new Set(['start_scrape', 'stop_scrape', 'track_products']);
+const WRITE = new Set(['start_scrape', 'stop_scrape', 'track_products', 'update_settings', 'refresh_own_sitemap', 'import_from_sitemap', 'stop_import', 'import_shopware', 'import_csv', 'import_competitor_urls', 'create_competitor', 'update_competitor', 'delete_competitor', 'autosetup_competitor', 'refresh_competitor_sitemap', 'confirm_match', 'reject_match', 'set_match_url']);
 
-function handlers(db, ownName, schedule) {
+function handlers(db, ownName, schedule, call) {
   const counts = () => db.prepare('SELECT COUNT(*) AS gesamt, COALESCE(SUM(tracked),0) AS beobachtet FROM products WHERE active=1').get();
   const matchesOf = (ids) => {
     if (!ids.length) return new Map();
@@ -77,6 +115,34 @@ function handlers(db, ownName, schedule) {
   };
   const slim = (p, by) => ({ id: p.id, number: p.number, name: p.name, brand: p.manufacturer, ean: p.ean, price: p.price, tracked: Boolean(p.tracked), competitors: by.get(p.id) ?? [] });
   return {
+    get_settings: () => call('GET', '/api/settings'),
+    update_settings: (a = {}) => {
+      const body = {};
+      for (const k of ['own_name', 'own_url', 'own_sitemap_url', 'schedule']) if (a[k] !== undefined) body[k] = a[k];
+      if (!Object.keys(body).length) throw new Error('Nichts zu ändern');
+      return call('PUT', '/api/settings', body).then(() => call('GET', '/api/settings'));
+    },
+    refresh_own_sitemap: () => call('POST', '/api/settings/own-sitemap/refresh', {}),
+    import_status: () => call('GET', '/api/import/sitemap/status'),
+    import_from_sitemap: (a = {}) => call('POST', '/api/import/sitemap', { limit: a.limit, all: a.all === true, tracked: a.tracked === true }),
+    stop_import: () => call('POST', '/api/import/sitemap/stop', {}),
+    import_shopware: () => call('POST', '/api/import/shopware', {}),
+    import_csv: (a = {}) => call('POST', '/api/import/csv', { text: a.text }),
+    import_competitor_urls: (a = {}) => call('POST', '/api/import/urls', { text: a.text }),
+    create_competitor: (a = {}) => call('POST', '/api/competitors', a),
+    update_competitor: async ({ id, ...rest } = {}) => {
+      const cur = db.prepare('SELECT * FROM competitors WHERE id=?').get(id);
+      if (!cur) throw new Error('Mitbewerber nicht gefunden');
+      await call('PUT', `/api/competitors/${id}`, { ...cur, ...rest });
+      return db.prepare('SELECT id, name, base_url, search_url, sitemap_url, delay_ms, enabled, ai_mode FROM competitors WHERE id=?').get(id);
+    },
+    delete_competitor: ({ id, confirm } = {}) => { if (confirm !== true) throw new Error('confirm=true nötig'); return call('DELETE', `/api/competitors/${id}`); },
+    autosetup_competitor: (a = {}) => call('POST', '/api/competitors/autosetup', a),
+    discover_sitemaps: (a = {}) => call('POST', '/api/sitemaps/discover', a),
+    refresh_competitor_sitemap: (a = {}) => call('POST', `/api/competitors/${a.id}/sitemap/refresh`, {}),
+    confirm_match: (a = {}) => call('POST', `/api/matches/${a.match_id}/confirm`, {}),
+    reject_match: (a = {}) => call('POST', `/api/matches/${a.match_id}/reject`, {}),
+    set_match_url: (a = {}) => call('PUT', '/api/matches', a),
     overview: () => ({
       shop: ownName(), artikel: counts(),
       mitbewerber: db.prepare('SELECT id, name, enabled FROM competitors ORDER BY position, id').all(),
@@ -132,12 +198,19 @@ function handlers(db, ownName, schedule) {
   };
 }
 
-export function mountMcp(app, db, { ownName, schedule }) {
-  const h = handlers(db, ownName, schedule);
+export function mountMcp(app, db, { ownName, schedule, internalKey }) {
   app.get('/mcp', (_req, res) => res.status(405).set('Allow', 'POST').json({ error: 'Nur POST (MCP Streamable HTTP)' }));
   app.delete('/mcp', (_req, res) => res.status(405).end());
   app.post('/mcp', async (req, res) => {
     if (!tokenOk(db, req)) return res.status(401).set('WWW-Authenticate', 'Bearer').json({ jsonrpc: '2.0', error: { code: -32001, message: 'Token fehlt oder ungültig' }, id: null });
+    // Ruft die App-eigenen Routen über Loopback auf (mit allen Prüfungen), nur für diese Anfrage gültig
+    const call = async (method, path, body) => {
+      const r = await fetch(`http://127.0.0.1:${req.socket.localPort}${path}`, { method, headers: { 'content-type': 'application/json', 'x-internal-mcp': internalKey }, body: method === 'GET' ? undefined : JSON.stringify(body ?? {}) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `Fehler ${r.status}`);
+      return j;
+    };
+    const h = handlers(db, ownName, schedule, call);
     const msgs = Array.isArray(req.body) ? req.body : [req.body];
     const out = [];
     for (const m of msgs) {
@@ -145,7 +218,7 @@ export function mountMcp(app, db, { ownName, schedule }) {
       if (m.id === undefined) continue; // Notification
       const reply = (result) => out.push({ jsonrpc: '2.0', id: m.id, result });
       const fail = (code, message) => out.push({ jsonrpc: '2.0', id: m.id, error: { code, message } });
-      if (m.method === 'initialize') reply({ protocolVersion: ['2025-06-18', '2025-03-26', '2024-11-05'].includes(m.params?.protocolVersion) ? m.params.protocolVersion : '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'preisradar', version: '1.0.0' }, instructions: 'Preisradar: Preisvergleich für den eigenen Shop gegenüber Mitbewerbern. Lesen: overview, analysis_summary, recommendations, search_products, get_product. Ändern: start_scrape, stop_scrape, track_products. Preise im Shop selbst werden nicht geändert.' });
+      if (m.method === 'initialize') reply({ protocolVersion: ['2025-06-18', '2025-03-26', '2024-11-05'].includes(m.params?.protocolVersion) ? m.params.protocolVersion : '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'preisradar', version: '1.0.0' }, instructions: 'Preisradar: Preisvergleich für den eigenen Shop gegenüber Mitbewerbern. Lesen: overview, analysis_summary, recommendations, search_products, get_product, get_settings, list_competitors, list_runs, import_status. Ändern: Abrufe, Beobachtung, Import (Sitemap/CSV/Shopware), Einstellungen, Mitbewerber, Treffer. Preise im Shop selbst werden nie geändert, Zugangsdaten nicht gesetzt.' });
       else if (m.method === 'ping') reply({});
       else if (m.method === 'tools/list') reply({ tools: TOOLS.map((t) => ({ ...t, annotations: { readOnlyHint: !WRITE.has(t.name) } })) });
       else if (m.method === 'tools/call') {

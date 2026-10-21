@@ -59,5 +59,5 @@ Im Tab Mitbewerber den Link zu einem Produkt des Mitbewerbers einfügen: Preisra
 ## Claude-Zugang (MCP)
 
 Unter Einstellungen → „Claude-Zugang (MCP)" einen Token erzeugen (wird nur einmal angezeigt, gespeichert wird der Hash). Endpunkt: `POST /mcp` (Streamable HTTP, JSON-RPC), Token als `Authorization: Bearer …` oder `?token=…`.
-Lesen: `overview`, `analysis_summary`, `recommendations`, `search_products`, `get_product`, `list_competitors`, `list_runs`. Ändern: `start_scrape`, `stop_scrape`, `track_products`. Preise im Shop werden nie geändert.
+Lesen: `overview`, `analysis_summary`, `recommendations`, `search_products`, `get_product`, `list_competitors`, `list_runs`. Ändern: Abrufe (`start_scrape`, `stop_scrape`), Beobachtung (`track_products`), Import (`import_from_sitemap`, `import_csv`, `import_shopware`, `import_competitor_urls`, `refresh_own_sitemap`), Einstellungen (`get_settings`, `update_settings`), Mitbewerber (`create_/update_/delete_competitor`, `autosetup_competitor`, `discover_sitemaps`), Treffer (`confirm_match`, `reject_match`, `set_match_url`). Preise im Shop werden nie geändert, Zugangsdaten (API-Keys, Passwörter) lassen sich über MCP nicht setzen.
 Claude Code: `claude mcp add --transport http preisradar https://<host>/mcp --header "Authorization: Bearer <token>"`.
