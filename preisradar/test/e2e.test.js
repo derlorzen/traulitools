@@ -23,6 +23,7 @@ function mockShop() {
     if (u.pathname === '/p/wrong') return send(200, page('Anderes Produkt', '19.90', { gtin13: '1111111111116' }));
     if (u.pathname === '/p/kludi') return send(200, page('KLUDI Showersystem Logo', '215.00', { gtin13: '4015241210108' }));
     if (u.pathname === '/p/hsk') return send(200, page('HSK Duschsystem RS 200 AquaSwitch Rund Ablage weiß', '640.00'));
+    if (u.pathname === '/redir') { res.writeHead(302, { location: '/admin/suche' }); return res.end(); }
     // Shop ohne maschinenlesbare Produktdaten: nur die KI kann ihn auslesen
     if (u.pathname === '/ki-search') {
       return u.searchParams.get('q') === '10276-001'
@@ -178,6 +179,11 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.equal(kh.price, 640);
     assert.match(kh.ai_note, /KI \(95 %\)/);
     assert.ok(aiCalls.some((x) => x.auth === 'Bearer sk-test-123' && x.model === 'test-model' && x.json === 'json_object'));
+
+    // Weiterleitung auf eine per robots.txt gesperrte Seite wird nicht abgerufen
+    const rd = (await call('/api/competitors/test', { search_url: `${base}/redir?q={q}`, query: 'x' })).json;
+    assert.equal(rd.blocked, true);
+    assert.match(rd.message, /weiter/);
 
     // Einrichtungshilfe: Seite mit KI auslesen
     const t = (await call('/api/competitors/test', { product_url: `${base}/x/hsk-ai`, use_ai: true })).json;

@@ -50,6 +50,8 @@ function recordPrice(db, matchId, price, now) {
 async function loadPage(url) {
   if (!(await robotsAllows(url))) return { blocked: true };
   const r = await fetchText(url);
+  // Auch das Ziel einer Weiterleitung muss laut robots.txt erlaubt sein
+  if (r.finalUrl && r.finalUrl !== url && !(await robotsAllows(r.finalUrl))) return { blocked: true };
   if (r.status === 404 || r.status === 410) return { gone: true };
   if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
   return { r };

@@ -150,6 +150,7 @@ export function createApp(db, { dataDir = null } = {}) {
     if (product_url) {
       if (!(await robotsAllows(product_url))) return res.json({ blocked: true, message: 'robots.txt untersagt den Abruf dieser URL.' });
       const r = await fetchText(product_url);
+      if (r.finalUrl !== product_url && !(await robotsAllows(r.finalUrl))) return res.json({ blocked: true, message: 'robots.txt untersagt das Weiterleitungsziel dieser URL.' });
       const e = extractProduct(r.text, { priceSelector: price_selector });
       out.product = { http: r.status, found: e.found, price: e.price, title: e.title, source: e.source, availability: e.availability, ids: [...e.ids].slice(0, 8) };
       if (req.body.use_ai) {
@@ -164,6 +165,7 @@ export function createApp(db, { dataDir = null } = {}) {
       const url = tpl.replace('{q}', encodeURIComponent(query));
       if (!(await robotsAllows(url))) return res.json({ ...out, blocked: true, message: 'robots.txt untersagt die Suche unter dieser URL.' });
       const r = await fetchText(url);
+      if (r.finalUrl !== url && !(await robotsAllows(r.finalUrl))) return res.json({ ...out, blocked: true, message: `Die Suche leitet auf ${new URL(r.finalUrl).pathname} weiter, und die robots.txt untersagt dieses Ziel.` });
       out.search = { url, http: r.status, candidates: findCandidates(r.text, r.finalUrl, { resultSelector: result_selector }) };
     }
     res.json(out);
