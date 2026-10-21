@@ -3,12 +3,16 @@
  * In Shopware unter Einstellungen -> System -> Integrationen eine Integration anlegen
  * (Lesezugriff auf Produkte reicht) und Client-ID/Secret als Umgebungsvariablen setzen.
  */
-export function shopwareConfig() {
-  const url = (process.env.SHOPWARE_URL || '').replace(/\/+$/, '');
+import { getSetting } from './settings.js';
+
+export function shopwareConfig(db) {
+  const g = (k, env) => (db ? getSetting(db, k) : null) || process.env[env] || '';
+  const url = g('shopware_url', 'SHOPWARE_URL').replace(/\/+$/, '');
   return {
     url,
-    clientId: process.env.SHOPWARE_CLIENT_ID || '',
-    clientSecret: process.env.SHOPWARE_CLIENT_SECRET || '',
+    clientId: g('shopware_client_id', 'SHOPWARE_CLIENT_ID'),
+    clientSecret: g('shopware_client_secret', 'SHOPWARE_CLIENT_SECRET'),
+    ownUrl: (g('own_url', 'OWN_SHOP_URL') || url).replace(/\/+$/, ''),
     get configured() {
       return Boolean(this.url && this.clientId && this.clientSecret);
     },
@@ -39,8 +43,15 @@ async function api(cfg, path, { token, body } = {}) {
   return json;
 }
 
-export async function fetchShopwareProducts(cfg = shopwareConfig()) {
-  if (!cfg.configured) throw new Error('Shopware-Zugang fehlt (SHOPWARE_URL, SHOPWARE_CLIENT_ID, SHOPWARE_CLIENT_SECRET)');
+export async function testShopware(cfg) {
+  if (!cfg.configured) throw new Error('Bitte Shop-URL, Client-ID und Secret ausfüllen');
+  const tok = await api(cfg, '/oauth/token', { body: { grant_type: 'client_credentials', client_id: cfg.clientId, client_secret: cfg.clientSecret } });
+  const res = await api(cfg, '/search/product', { token: tok.access_token, body: { limit: 1, 'total-count-mode': 1, filter: [{ type: 'equals', field: 'active', value: true }], includes: { product: ['id'] } } });
+  return { products: res.total ?? 0 };
+}
+
+export async function fetchShopwareProducts(cfg) {
+  if (!cfg.configured) throw new Error('Shopware-Zugang fehlt (Einstellungen → Shopware)');
   const tok = await api(cfg, '/oauth/token', {
     body: { grant_type: 'client_credentials', client_id: cfg.clientId, client_secret: cfg.clientSecret },
   });
@@ -87,7 +98,7 @@ export async function fetchShopwareProducts(cfg = shopwareConfig()) {
       mpn: p.manufacturerNumber || parent?.manufacturerNumber || null,
       name,
       manufacturer: p.manufacturer?.translated?.name || p.manufacturer?.name || parent?.manufacturer?.translated?.name || null,
-      url: `${process.env.OWN_SHOP_URL?.replace(/\/+$/, '') || cfg.url}/detail/${p.id}`,
+      url: `${cfg.ownUrl || cfg.url}/detail/${p.id}`,
       price,
     });
   }

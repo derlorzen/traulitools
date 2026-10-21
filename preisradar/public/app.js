@@ -24,13 +24,17 @@ function s(tag, attrs = {}, ...kids) {
   return el;
 }
 
+class AuthError extends Error {}
+
 async function api(path, opts = {}) {
+  const method = opts.method || (opts.body ? 'POST' : 'GET');
   const res = await fetch(path, {
-    method: opts.method || (opts.body ? 'POST' : 'GET'),
-    headers: opts.body ? { 'content-type': 'application/json' } : undefined,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    method,
+    headers: method === 'GET' ? undefined : { 'content-type': 'application/json' },
+    body: opts.body ? JSON.stringify(opts.body) : method === 'GET' ? undefined : '{}',
   });
   const json = await res.json().catch(() => ({}));
+  if (res.status === 401 && !path.startsWith('/api/auth/')) { showAuth(); throw new AuthError('Nicht angemeldet'); }
   if (!res.ok) throw new Error(json.error || `Fehler ${res.status}`);
   return json;
 }
@@ -44,7 +48,7 @@ function toast(msg, err = false) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (t.hidden = true), err ? 6000 : 3000);
 }
-const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
+const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof AuthError)) toast(e.message, true); } };
 
 const state = { data: null, tab: 'preise', q: '', brand: '', filter: 'all', sort: 'name', selected: null, runs: [] };
 
@@ -361,6 +365,71 @@ async function renderImport(root) {
     h('p', { class: 'pmeta', style: 'margin-top:8px' }, `Automatischer Abruf zweimal täglich (${d.config.scrapeHours.map((x) => String(x).padStart(2, '0') + ':00').join(' und ')} Uhr).`)));
 }
 
+// ---------- Anmeldung ----------
+async function showAuth(info) {
+  clearInterval(pollTimer);
+  closeDrawer();
+  document.body.classList.add('noauth');
+  info ??= await fetch('/api/auth/state').then((r) => r.json());
+  const setup = info.setup;
+  const err = h('p', { class: 'err', role: 'alert' });
+  const f = (label, name, type = 'text', extra = {}) => h('div', { class: 'field' }, h('label', { for: name }, label), h('input', { id: name, name, type, required: true, ...extra }));
+  const form = h('form', { class: 'panel authbox', onsubmit: async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    const v = Object.fromEntries(new FormData(form));
+    if (setup && v.password !== v.password2) { err.textContent = 'Die Passwörter stimmen nicht überein.'; return; }
+    try {
+      await api(setup ? '/api/auth/setup' : '/api/auth/login', { body: v });
+      await boot();
+    } catch (x) { err.textContent = x.message; }
+  } },
+    h('h2', {}, setup ? 'Preisradar einrichten' : 'Anmelden'),
+    h('p', { class: 'sub' }, setup ? 'Lege deinen Zugang an. Das Konto gilt für diese Installation; Shopware-Zugangsdaten folgen danach unter Einstellungen.' : 'Bitte mit deinem Konto anmelden.'),
+    f('Benutzername', 'username', 'text', { autocomplete: 'username', autofocus: true }),
+    f(setup ? 'Passwort (mindestens 10 Zeichen)' : 'Passwort', 'password', 'password', { autocomplete: setup ? 'new-password' : 'current-password', minlength: setup ? 10 : 1 }),
+    setup ? f('Passwort wiederholen', 'password2', 'password', { autocomplete: 'new-password' }) : null,
+    setup && info.setupTokenRequired ? f('Einrichtungscode', 'setup_token', 'password', { autocomplete: 'off' }) : null,
+    err,
+    h('button', { class: 'btn primary', type: 'submit' }, setup ? 'Konto anlegen' : 'Anmelden'));
+  document.getElementById('main').replaceChildren(form);
+}
+
+// ---------- Einstellungen ----------
+async function renderSettings(root) {
+  const cur = await api('/api/settings');
+  const f = (label, name, value, { type = 'text', hint, ph } = {}) => h('div', { class: 'field' }, h('label', {}, label), h('input', { name, type, value: value ?? '', placeholder: ph ?? '', autocomplete: 'off' }), hint ? h('span', { class: 'hint' }, hint) : null);
+  const out = h('div', { class: 'result', hidden: true });
+  const form = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() });
+  const vals = () => Object.fromEntries(new FormData(form));
+  form.append(
+    h('h3', {}, 'Dein Shop'),
+    h('div', { class: 'grid' }, f('Anzeigename', 'own_name', cur.own_name, { hint: 'Spaltenüberschrift im Dashboard' }), f('Shop-URL', 'own_url', cur.own_url, { type: 'url', ph: 'https://www.belkai.de', hint: 'Für Links zu deinen Produkten' })),
+    h('h3', { style: 'margin-top:20px' }, 'Shopware-Zugang'),
+    h('p', { class: 'sub' }, 'In Shopware unter Einstellungen → System → Integrationen eine Integration anlegen (Lesezugriff auf Produkte genügt). Das Secret wird verschlüsselt gespeichert und nie wieder angezeigt.'),
+    cur.shopware_from_env ? h('p', { class: 'pmeta' }, 'Aktuell werden die Zugangsdaten aus der Server-Umgebung verwendet. Wenn du hier speicherst, gelten deine Eingaben.') : null,
+    h('div', { class: 'grid' },
+      f('Shopware-URL', 'shopware_url', cur.shopware_url, { type: 'url', ph: 'https://www.belkai.de' }),
+      f('Client-ID', 'shopware_client_id', cur.shopware_client_id),
+      f('Client-Secret', 'shopware_client_secret', '', { type: 'password', ph: cur.shopware_secret_set ? '•••••••• (gespeichert)' : '', hint: cur.shopware_secret_set ? 'Leer lassen, um das gespeicherte Secret zu behalten' : '' })),
+    h('div', { class: 'row', style: 'margin-top:14px' },
+      h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
+        out.hidden = false; out.textContent = 'Verbindung wird geprüft …';
+        try { const r = await api('/api/settings/shopware/test', { body: vals() }); out.textContent = `Verbunden: ${r.products} aktive Produkte gefunden.`; }
+        catch (e) { out.textContent = `Fehlgeschlagen: ${e.message}`; }
+      }) }, 'Verbindung testen'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: vals() }); toast('Einstellungen gespeichert'); await refresh(); }) }, 'Speichern')),
+    out);
+
+  const pw = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
+    h('h3', {}, 'Passwort ändern'),
+    h('div', { class: 'grid' }, f('Aktuelles Passwort', 'current', '', { type: 'password' }), f('Neues Passwort (mind. 10 Zeichen)', 'password', '', { type: 'password' })),
+    h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
+      h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
+  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, pw));
+}
+
 // ---------- Laufleiste ----------
 function renderRunbar() {
   const sc = state.data.scrape;
@@ -388,6 +457,7 @@ function render() {
   main.replaceChildren();
   if (state.tab === 'preise') renderPrices(main);
   else if (state.tab === 'mitbewerber') renderCompetitors(main);
+  else if (state.tab === 'einstellungen') renderSettings(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
   else renderImport(main);
   main.scrollTop = keep;
 }
@@ -414,4 +484,13 @@ async function refresh() {
   }
 }
 
-refresh().catch((e) => toast(e.message, true));
+document.getElementById('logout').addEventListener('click', async () => { await fetch('/api/auth/logout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); await boot(); });
+
+async function boot() {
+  const info = await fetch('/api/auth/state').then((r) => r.json());
+  if (!info.authenticated) return showAuth(info);
+  document.body.classList.remove('noauth');
+  document.getElementById('logout').hidden = false;
+  await refresh();
+}
+boot().catch((e) => toast(e.message, true));

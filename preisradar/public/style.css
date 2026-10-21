@@ -124,3 +124,11 @@ table.plain { border-collapse: collapse; width: 100%; }
   main { padding: 14px 12px 50px; }
   .prices td.prod, .prices th.prod { width: 200px; max-width: 200px; }
 }
+
+.noauth #tabs, .noauth #runbar, .noauth #logout { display: none; }
+.authbox { max-width: 400px; margin: 8vh auto 0; }
+.authbox .field { margin-bottom: 12px; }
+.authbox .btn { width: 100%; padding: 10px; }
+.authbox .err { color: var(--bad); min-height: 1.4em; margin: 6px 0 0; }
+.field input[type=password], .field input[type=text], .field input[type=url] { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 7px 10px; }
+.settings { max-width: 640px; }

@@ -12,9 +12,9 @@ Node 22, SQLite (eingebaut), keine externen Dienste, keine Tracker oder Fremd-Fo
    - Manuelle Produkt-URLs (Detailansicht oder URL-CSV) haben Vorrang und werden nie überschrieben.
 4. **Abgleich** zweimal täglich (`SCRAPE_HOURS=6,18`) und per Knopf. Preise werden aus JSON-LD, Meta-Tags oder einem eigenen CSS-Selektor gelesen. Der Preisverlauf wird bei Änderung gespeichert.
 
-## Shopware einrichten
-Shopware-Admin → Einstellungen → System → Integrationen → Integration anlegen (Lesezugriff reicht).
-Client-ID und Secret in `SHOPWARE_CLIENT_ID` / `SHOPWARE_CLIENT_SECRET`, dazu `SHOPWARE_URL`.
+## Erster Start und Shopware
+Beim ersten Aufruf legst du im Browser Benutzername und Passwort an (nur einmal möglich; mit `SETUP_TOKEN` zusätzlich per Einrichtungscode geschützt).
+Danach unter **Einstellungen** den Shopware-Zugang eintragen: Shopware-Admin → Einstellungen → System → Integrationen → Integration anlegen (Lesezugriff reicht), Client-ID und Secret kopieren. „Verbindung testen" prüft den Zugang. Das Secret wird verschlüsselt in der Datenbank gespeichert (Schlüssel: `SECRET_KEY` oder automatisch `/data/secret.key`).
 Importiert werden aktive, kaufbare Produkte (Varianten erben Preis/EAN vom Hauptprodukt). Preise aus Preislisten/Regeln werden nicht berücksichtigt, nur der Standard-Bruttopreis.
 
 ## Starten
@@ -32,7 +32,7 @@ Voraussetzung: Node >= 22.13 (`.node-version` liegt bei). Start: `npm ci --omit=
 - Health-Check: `/healthz`.
 
 ## Wichtig
-- `APP_USER`/`APP_PASSWORD` setzen: ohne sie ist die App ungeschützt (Warnung beim Start).
+- Anmeldung per Session-Cookie, Passwörter mit scrypt gehasht, Login-Versuche begrenzt. Bei öffentlicher URL `SETUP_TOKEN` setzen und die Einrichtung sofort durchführen.
 - Die **robots.txt** der Mitbewerber wird immer beachtet; gesperrte Seiten erscheinen als „gesperrt". Pausen zwischen Abrufen pro Shop einstellbar (Standard 3 s).
 - Seiten, die den Preis nur per JavaScript nachladen, liefern ohne Preis-Selektor nichts. Dafür wäre ein Browser-Modus (Playwright) die Erweiterung.
 - Nutzung im Rahmen der Nutzungsbedingungen der jeweiligen Shops; bei Beschränkungen besser Preisvergleichsportale/Feeds nutzen.

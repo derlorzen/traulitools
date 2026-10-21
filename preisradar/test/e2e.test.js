@@ -35,12 +35,35 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
   const app = createApp(db);
   const srv = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
   const api = `http://127.0.0.1:${srv.address().port}`;
+  let cookie = '';
   const call = async (path, body, method) => {
-    const res = await fetch(api + path, { method: method || (body ? 'POST' : 'GET'), headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const res = await fetch(api + path, { method: method || (body ? 'POST' : 'GET'), headers: { 'content-type': 'application/json', cookie }, body: body ? JSON.stringify(body) : undefined });
+    const sc = res.headers.getSetCookie?.()[0];
+    if (sc && !sc.includes('Max-Age=0')) cookie = sc.split(';')[0];
     return { status: res.status, json: await res.json() };
   };
 
   try {
+    // Ohne Anmeldung kein Zugriff, Einrichtung nur einmal
+    assert.equal((await call('/api/overview')).status, 401);
+    assert.equal((await call('/api/auth/state')).json.setup, true);
+    assert.equal((await call('/api/auth/setup', { username: 'marco', password: 'kurz' })).status, 400);
+    assert.equal((await call('/api/auth/setup', { username: 'marco', password: 'ein-langes-passwort' })).status, 200);
+    assert.equal((await call('/api/overview')).status, 200);
+    assert.equal((await call('/api/auth/setup', { username: 'x1x', password: 'ein-langes-passwort' })).status, 409);
+    const saved = cookie; cookie = '';
+    assert.equal((await call('/api/auth/login', { username: 'marco', password: 'falsch' })).status, 401);
+    assert.equal((await call('/api/auth/login', { username: 'marco', password: 'ein-langes-passwort' })).status, 200);
+    assert.ok(cookie && cookie !== saved);
+
+    // Einstellungen: Secret wird nie zurückgegeben
+    await call('/api/settings', { own_name: 'BelKai', own_url: 'https://www.belkai.de/x', shopware_url: 'https://www.belkai.de', shopware_client_id: 'SWIA123', shopware_client_secret: 'geheim' }, 'PUT');
+    const st = (await call('/api/settings')).json;
+    assert.equal(st.shopware_secret_set, true);
+    assert.equal(st.own_url, 'https://www.belkai.de');
+    assert.ok(!JSON.stringify(st).includes('geheim'));
+    assert.equal((await call('/api/overview')).json.config.shopware, true);
+
     const csv = 'Artikelnummer;Name;EAN;Hersteller;Preis\n10484;KLUDI Showersystem Logo Basic Dual;4015241210108;KLUDI;239,00\n10276-001;HSK Duschsystem RS 200 AquaSwitch Rund Ablage weiß;;HSK;669,00\n';
     const imp = await call('/api/import/csv', { text: csv });
     assert.deepEqual([imp.json.created, imp.json.updated], [2, 0]);
@@ -68,7 +91,7 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.equal(hist.series[0].points.length, 1);
     assert.equal(hist.own.length, 1);
 
-    const csvOut = await (await fetch(api + '/api/export.csv')).text();
+    const csvOut = await (await fetch(api + '/api/export.csv', { headers: { cookie } })).text();
     assert.match(csvOut, /215,00/);
   } finally {
     srv.closeAllConnections(); srv.close(); shop.closeAllConnections(); shop.close();

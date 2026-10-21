@@ -2,50 +2,75 @@ import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import crypto from 'node:crypto';
 import { openDb, upsertProducts, tx } from './db.js';
 import { parseCsv, pick, parsePrice, csvEscape } from './util.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { fetchText, robotsAllows } from './fetcher.js';
-import { fetchShopwareProducts, shopwareConfig } from './shopware.js';
+import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
+import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
+import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState } from './scraper.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const OWN_NAME = process.env.OWN_SHOP_NAME || 'BelKai';
 const SCRAPE_HOURS = String(process.env.SCRAPE_HOURS ?? '6,18').split(',').map((x) => Number(x.trim())).filter((x) => x >= 0 && x < 24);
 
-export function createApp(db) {
+export function createApp(db, { dataDir = null } = {}) {
+  initSecrets(dataDir);
+  const ownName = () => getSetting(db, 'own_name') || process.env.OWN_SHOP_NAME || 'BelKai';
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '25mb' }));
+  app.use((req, res, next) => {
+    res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin' });
+    // Schreibende Anfragen nur als JSON (schützt zusätzlich vor Formular-Angriffen von fremden Seiten)
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !String(req.headers['content-type'] || '').includes('application/json')) {
+      return res.status(415).json({ error: 'Nur JSON erlaubt' });
+    }
+    next();
+  });
 
-  // --- Zugangsschutz (HTTP Basic) ---
-  const user = process.env.APP_USER;
-  const pass = process.env.APP_PASSWORD;
-  if (user && pass) {
-    const safeEq = (a, b) => {
-      const A = crypto.createHash('sha256').update(a).digest();
-      const B = crypto.createHash('sha256').update(b).digest();
-      return crypto.timingSafeEqual(A, B);
-    };
-    app.use((req, res, next) => {
-      if (req.path === '/healthz') return next();
-      const h = req.headers.authorization || '';
-      if (h.startsWith('Basic ')) {
-        const [u, ...rest] = Buffer.from(h.slice(6), 'base64').toString().split(':');
-        if (safeEq(u, user) && safeEq(rest.join(':'), pass)) return next();
-      }
-      res.set('WWW-Authenticate', 'Basic realm="Preisradar"').status(401).send('Anmeldung erforderlich');
-    });
-  } else {
-    console.warn('WARNUNG: APP_USER/APP_PASSWORD nicht gesetzt – die App ist ohne Passwort erreichbar.');
-  }
-
-  const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => res.status(e.status || 500).json({ error: e.message }));
-  const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
+  // --- Anmeldung: Benutzer wird beim ersten Aufruf angelegt ---
+  const bad0 = (msg, status = 400) => Object.assign(new Error(msg), { status });
+  const setupToken = process.env.SETUP_TOKEN || '';
+  app.get('/api/auth/state', (req, res) => {
+    const user = currentUser(db, req);
+    res.json({ setup: !hasUsers(db), setupTokenRequired: Boolean(setupToken) && !hasUsers(db), authenticated: Boolean(user), username: user?.username ?? null });
+  });
+  app.post('/api/auth/setup', (req, res) => {
+    try {
+      if (hasUsers(db)) throw bad0('Die Einrichtung ist bereits abgeschlossen', 409);
+      if (tooManyAttempts(req)) throw bad0('Zu viele Versuche, bitte später erneut probieren', 429);
+      const { username, password, setup_token } = req.body ?? {};
+      if (setupToken && setup_token !== setupToken) throw bad0('Einrichtungscode falsch', 403);
+      if (!/^[\w.@-]{3,64}$/.test(username ?? '')) throw bad0('Benutzername: 3–64 Zeichen (Buchstaben, Zahlen, . _ - @)');
+      if (String(password ?? '').length < 10) throw bad0('Das Passwort braucht mindestens 10 Zeichen');
+      const id = db.prepare('INSERT INTO users(username, password_hash, created_at) VALUES (?,?,?)').run(username, hashPassword(password), new Date().toISOString()).lastInsertRowid;
+      createSession(db, Number(id), req, res);
+      res.json({ ok: true });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+  app.post('/api/auth/login', (req, res) => {
+    try {
+      if (tooManyAttempts(req)) throw bad0('Zu viele Versuche, bitte später erneut probieren', 429);
+      const { username, password } = req.body ?? {};
+      const u = db.prepare('SELECT * FROM users WHERE username=?').get(String(username ?? ''));
+      if (!u || !verifyPassword(String(password ?? ''), u.password_hash)) throw bad0('Benutzername oder Passwort falsch', 401);
+      clearAttempts(req);
+      createSession(db, u.id, req, res);
+      res.json({ ok: true });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+  app.post('/api/auth/logout', (req, res) => { destroySession(db, req, res); res.json({ ok: true }); });
 
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
   app.use(express.static(path.join(here, '..', 'public')));
+
+  // Ab hier nur mit Anmeldung
+  app.use('/api', (req, res, next) => (currentUser(db, req) ? next() : res.status(401).json({ error: 'Nicht angemeldet' })));
+
+  const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => res.status(e.status || 500).json({ error: e.message }));
+  const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
 
   // --- Übersicht ---
   app.get('/api/overview', wrap((_req, res) => {
@@ -66,12 +91,12 @@ export function createApp(db) {
       };
     }
     res.json({
-      own: { name: OWN_NAME },
+      own: { name: ownName() },
       competitors,
       products: products.map((p) => ({ ...p, matches: byProduct.get(p.id) ?? {} })),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig().configured, scrapeHours: SCRAPE_HOURS },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS },
     });
   }));
 
@@ -155,7 +180,7 @@ export function createApp(db) {
 
   // --- Import ---
   app.post('/api/import/shopware', wrap(async (_req, res) => {
-    const rows = await fetchShopwareProducts();
+    const rows = await fetchShopwareProducts(shopwareConfig(db));
     res.json({ total: rows.length, ...upsertProducts(db, rows, 'shopware') });
   }));
   app.post('/api/import/csv', wrap((req, res) => {
@@ -204,6 +229,54 @@ export function createApp(db) {
   app.get('/api/scrape/status', (_req, res) => res.json({ ...scrapeState }));
   app.get('/api/runs', wrap((_req, res) => res.json(db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 30').all())));
 
+  // --- Einstellungen ---
+  app.get('/api/settings', wrap((_req, res) => {
+    const cfg = shopwareConfig(db);
+    res.json({
+      own_name: ownName(),
+      own_url: getSetting(db, 'own_url') || process.env.OWN_SHOP_URL || '',
+      shopware_url: cfg.url,
+      shopware_client_id: cfg.clientId,
+      shopware_secret_set: Boolean(cfg.clientSecret),
+      shopware_from_env: !hasSetting(db, 'shopware_url') && Boolean(process.env.SHOPWARE_URL),
+    });
+  }));
+  const cleanUrl = (u) => {
+    if (!u?.trim()) return '';
+    try { return new URL(u.trim()).origin; } catch { throw bad('URL ungültig (mit https:// angeben)'); }
+  };
+  app.put('/api/settings', wrap((req, res) => {
+    const b = req.body ?? {};
+    setSetting(db, 'own_name', String(b.own_name ?? '').trim());
+    setSetting(db, 'own_url', cleanUrl(b.own_url));
+    setSetting(db, 'shopware_url', cleanUrl(b.shopware_url));
+    setSetting(db, 'shopware_client_id', String(b.shopware_client_id ?? '').trim());
+    if (b.shopware_client_secret) setSetting(db, 'shopware_client_secret', String(b.shopware_client_secret).trim(), { secret: true });
+    res.json({ ok: true });
+  }));
+  app.post('/api/settings/shopware/test', wrap(async (req, res) => {
+    const b = req.body ?? {};
+    const stored = shopwareConfig(db);
+    const cfg = {
+      url: cleanUrl(b.shopware_url) || stored.url,
+      clientId: String(b.shopware_client_id || stored.clientId).trim(),
+      clientSecret: String(b.shopware_client_secret || stored.clientSecret).trim(),
+    };
+    Object.defineProperty(cfg, 'configured', { get: () => Boolean(cfg.url && cfg.clientId && cfg.clientSecret) });
+    res.json({ ok: true, ...(await testShopware(cfg)) });
+  }));
+  app.post('/api/auth/password', wrap((req, res) => {
+    const { current, password } = req.body ?? {};
+    const user = currentUser(db, req);
+    const u = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+    if (!verifyPassword(String(current ?? ''), u.password_hash)) throw bad('Aktuelles Passwort falsch', 401);
+    if (String(password ?? '').length < 10) throw bad('Das neue Passwort braucht mindestens 10 Zeichen');
+    db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(password), u.id);
+    db.prepare('DELETE FROM sessions WHERE user_id=?').run(u.id);
+    createSession(db, u.id, req, res);
+    res.json({ ok: true });
+  }));
+
   // --- Export ---
   app.get('/api/export.csv', wrap((_req, res) => {
     const comps = db.prepare('SELECT * FROM competitors ORDER BY position, id').all();
@@ -211,7 +284,7 @@ export function createApp(db) {
     const ms = db.prepare('SELECT * FROM matches').all();
     const key = new Map(ms.map((m) => [`${m.product_id}:${m.competitor_id}`, m]));
     const fmt = (n) => (n == null ? '' : Number(n).toFixed(2).replace('.', ','));
-    const lines = [['Artikelnummer', 'EAN', 'Hersteller', 'Name', `${OWN_NAME} Preis`, ...comps.flatMap((c) => [`${c.name} Preis`, `${c.name} URL`])].map(csvEscape).join(';')];
+    const lines = [['Artikelnummer', 'EAN', 'Hersteller', 'Name', `${ownName()} Preis`, ...comps.flatMap((c) => [`${c.name} Preis`, `${c.name} URL`])].map(csvEscape).join(';')];
     for (const p of products) {
       lines.push([p.number, p.ean, p.manufacturer, p.name, fmt(p.price), ...comps.flatMap((c) => {
         const m = key.get(`${p.id}:${c.id}`);
@@ -259,6 +332,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const seeded = seedCompetitors(db);
   if (seeded) console.log(`${seeded} Mitbewerber aus Datei übernommen`);
   const port = Number(process.env.PORT || 3000);
-  createApp(db).listen(port, () => console.log(`Preisradar läuft auf Port ${port}`));
+  createApp(db, { dataDir: path.dirname(process.env.DB_PATH || './data/preisradar.db') }).listen(port, () => console.log(`Preisradar läuft auf Port ${port}`));
   startScheduler(db);
 }
