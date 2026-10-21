@@ -31,11 +31,14 @@ Voraussetzung: Node >= 22.13 (`.node-version` liegt bei). Start: `npm ci --omit=
 - Zeitzone für den Zeitplan: `TZ=Europe/Berlin`.
 - Health-Check: `/healthz`.
 
-## KI-Analyse (OpenAI)
+## KI-Scraping (OpenAI) und Analyse
 Unter **Einstellungen → KI** trägst du den OpenAI-API-Schlüssel und das Modell ein (verschlüsselt gespeichert; Abrechnung nach Verbrauch bei OpenAI, nicht über ein ChatGPT-Abo).
-- **Analyse starten:** wertet bis zu 120 Produkte mit bestätigten Mitbewerberpreisen aus und liefert Zusammenfassung, Preisempfehlungen (senken/halten/erhöhen/prüfen) und Auffälligkeiten. Einkaufspreise sind der KI unbekannt, Vorschläge immer gegen die Marge prüfen.
-- **Unsichere Zuordnungen prüfen lassen:** beurteilt „zu prüfen"-Treffer; ab 85 % Sicherheit wird bestätigt bzw. verworfen, der Rest bleibt mit KI-Notiz zur manuellen Entscheidung.
-- Übermittelt werden nur Artikelnummer, Name, Marke und Preise. Kosten pro Analyse sind gering (ein Aufruf).
+- **Die KI scrapt, die Analyse läuft per Regelwerk.** Beim Abruf der Mitbewerber liest die KI Seiten aus (Prinzip wie bei AI-Scrapern): Sie wählt in den Suchergebnissen den passenden Treffer und liest Preis, Titel und Verfügbarkeit ohne CSS-Selektoren. Ein von der KI genannter Preis zählt nur, wenn er wörtlich auf der Seite steht.
+- **Pro Mitbewerber einstellbar:** *Bei Bedarf* (Regeln zuerst, KI nur wenn nichts gefunden wird, sparsam), *Immer prüfen* (KI beurteilt auch unsichere Treffer) oder *Aus*. Begrenzung: ca. 400 KI-Anfragen pro Lauf (`AI_MAX_CALLS_PER_RUN`).
+- **Einrichtungshilfe:** Beim Mitbewerber unter „Einrichtung testen" zeigt „Mit KI auslesen", was die KI auf einer Produktseite erkennt.
+- Übermittelt werden Produktname, Marke, Nummern und der bereinigte Text der Mitbewerber-Seite, keine Kundendaten.
+- Grenze: Die App lädt Seiten ohne Browser. Shops, die Preise erst per JavaScript nachladen, sind für Regeln und KI unsichtbar (Browser-Automatisierung wie browser-use bräuchte Python und Chromium auf dem Server).
+- **Analyse:** feste Regeln (`src/analysis.js`): bis 2 % über dem Günstigsten konkurrenzfähig, ab 5 % darunter Erhöhung möglich, über 40 % Abweichung als mögliche Fehlzuordnung markiert. Keine KI beteiligt.
 
 ## Wichtig
 - Anmeldung per Session-Cookie, Passwörter mit scrypt gehasht, Login-Versuche begrenzt. Bei öffentlicher URL `SETUP_TOKEN` setzen und die Einrichtung sofort durchführen.

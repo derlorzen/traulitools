@@ -23,6 +23,14 @@ function mockShop() {
     if (u.pathname === '/p/wrong') return send(200, page('Anderes Produkt', '19.90', { gtin13: '1111111111116' }));
     if (u.pathname === '/p/kludi') return send(200, page('KLUDI Showersystem Logo', '215.00', { gtin13: '4015241210108' }));
     if (u.pathname === '/p/hsk') return send(200, page('HSK Duschsystem RS 200 AquaSwitch Rund Ablage weiß', '640.00'));
+    // Shop ohne maschinenlesbare Produktdaten: nur die KI kann ihn auslesen
+    if (u.pathname === '/ki-search') {
+      return u.searchParams.get('q') === '10276-001'
+        ? send(200, '<html><body><ul><li><a href="/x/other">Duschstange Basic</a> 19,90 €</li><li><a href="/x/hsk-ai">HSK Duschsystem RS 200 AquaSwitch Rund Ablage weiß</a> 640,00 €</li></ul></body></html>')
+        : send(200, '<html><body>keine Treffer</body></html>');
+    }
+    if (u.pathname === '/x/hsk-ai') return send(200, '<html><head><title>HSK Duschsystem</title></head><body><h1>HSK Duschsystem RS 200 AquaSwitch Rund Ablage weiß</h1><p>Unser Preis: 640,00 € inkl. MwSt.</p></body></html>');
+    if (u.pathname === '/x/other') return send(200, '<html><body><h1>Duschstange Basic</h1><p>19,90 €</p></body></html>');
     send(404, 'nope');
   });
 }
@@ -37,11 +45,12 @@ function mockOpenAi(calls) {
       const sys = j.messages[0].content;
       const user = JSON.parse(j.messages[1].content === 'Test' ? '{}' : j.messages[1].content);
       let out = { ok: true };
-      if (sys.includes('Preisanalyst')) {
-        const first = user.products[0];
-        out = { summary: 'Test-Zusammenfassung', recommendations: [{ number: first.number, action: 'senken', suggested_price: 219.9, reason: 'Mitbewerber ist günstiger' }, { number: 'GIBTSNICHT', action: 'halten', suggested_price: 1, reason: 'x' }], warnings: [{ number: first.number, issue: 'Test-Warnung' }] };
-      } else if (sys.includes('prüfst')) {
-        out = { results: user.pairs.map((p) => ({ id: p.id, same: true, confidence: 0.95, reason: 'Gleiche Serie und Maße' })) };
+      if (sys.includes('nummerierte Liste')) {
+        const hit = user.links.find((l) => l.text.includes('HSK'));
+        out = { index: hit ? hit.index : null, confidence: 0.9, reason: 'Gleiche Serie' };
+      } else if (sys.includes('liest die Produktseite')) {
+        const ok = user.page.url.includes('/x/hsk-ai');
+        out = { is_product_page: ok, title: 'HSK Duschsystem RS 200', price: ok ? 640 : 19.9, availability: 'in_stock', same_product: ok, confidence: ok ? 0.95 : 0.1, reason: ok ? 'Gleiche Serie und Maße' : 'Anderes Produkt' };
       }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(out) } }], usage: { total_tokens: 42 } }));
@@ -132,8 +141,15 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.equal(mh.status, 'review');        // nur per Namensähnlichkeit gefunden
     assert.equal(mh.price, 640);
 
-    // KI: ohne Schlüssel Fehler, dann Zugang speichern, testen, Zuordnung prüfen lassen, analysieren
-    assert.match((await call('/api/ai/analyze', {})).json.error, /Schlüssel fehlt/);
+    // Regelanalyse: nur bestätigte Preise zählen, unsichere Treffer werden vermerkt
+    const an = (await call('/api/analysis')).json;
+    assert.equal(an.stats.compared, 1);
+    assert.equal(an.stats.unconfirmedOnly, 1);
+    assert.equal(an.rows[0].action, 'senken');
+    assert.equal(an.rows[0].suggested_price, 215);
+    assert.equal(an.rows[0].gap_percent, 11.2);
+
+    // KI-Zugang speichern (Schlüssel wird nie zurückgegeben)
     await call('/api/settings', { openai_api_key: 'sk-test-123', openai_model: 'test-model' }, 'PUT');
     const st2 = (await call('/api/settings')).json;
     assert.equal(st2.openai_key_set, true);
@@ -141,20 +157,34 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.ok(!JSON.stringify(st2).includes('sk-test-123'));
     assert.equal(st2.own_name, 'BelKai'); // teilweises Speichern lässt andere Einstellungen unberührt
     assert.equal((await call('/api/settings/openai/test', {})).json.ok, true);
-    const ver = (await call('/api/ai/verify-reviews', {})).json;
-    assert.deepEqual([ver.checked, ver.confirmed, ver.rejected], [1, 1, 0]);
-    const afterVerify = (await call('/api/overview')).json.products.find((p) => p.number === '10276-001').matches[c.json.id];
-    assert.equal(afterVerify.status, 'ok');
-    assert.match(afterVerify.ai_note, /KI \(95 %\)/);
-    const rep = (await call('/api/ai/analyze', {})).json.report;
-    assert.equal(rep.result.summary, 'Test-Zusammenfassung');
-    assert.equal(rep.result.recommendations.length, 1); // unbekannte Artikelnummer verworfen
-    assert.equal(rep.result.recommendations[0].suggested_price, 219.9);
-    assert.equal((await call('/api/ai/report')).json.report.id, rep.id);
-    assert.ok(aiCalls.every((x) => x.auth === 'Bearer sk-test-123' && x.model === 'test-model' && x.json === 'json_object'));
 
     const confirm = await call(`/api/matches/${mh.id}/confirm`, {});
     assert.equal(confirm.status, 200);
+    assert.equal((await call('/api/analysis')).json.stats.compared, 2);
+
+    // KI-Scraping: Shop ohne Produktdaten, Regeln finden nichts, die KI wählt den Treffer und liest den Preis
+    const kc = await call('/api/competitors', { name: 'KI-Shop', base_url: base, search_url: `${base}/ki-search?q={q}`, delay_ms: 1, ai_mode: 'off' });
+    const runAll = async () => {
+      assert.equal((await call('/api/scrape', { force: true })).status, 200);
+      for (let i = 0; i < 300 && scrapeState.running; i++) await new Promise((r) => setTimeout(r, 100));
+    };
+    await runAll();
+    let kh = (await call('/api/overview')).json.products.find((p) => p.number === '10276-001').matches[kc.json.id];
+    assert.equal(kh.status, 'not_found'); // KI aus: nichts gefunden
+    await call(`/api/competitors/${kc.json.id}`, { name: 'KI-Shop', base_url: base, search_url: `${base}/ki-search?q={q}`, delay_ms: 1, ai_mode: 'fallback' }, 'PUT');
+    await runAll();
+    kh = (await call('/api/overview')).json.products.find((p) => p.number === '10276-001').matches[kc.json.id];
+    assert.equal(kh.status, 'ok');
+    assert.equal(kh.price, 640);
+    assert.match(kh.ai_note, /KI \(95 %\)/);
+    assert.ok(aiCalls.some((x) => x.auth === 'Bearer sk-test-123' && x.model === 'test-model' && x.json === 'json_object'));
+
+    // Einrichtungshilfe: Seite mit KI auslesen
+    const t = (await call('/api/competitors/test', { product_url: `${base}/x/hsk-ai`, use_ai: true })).json;
+    assert.equal(t.product.found, false);
+    assert.equal(t.ai.price, 640);
+    assert.equal(t.ai.isProductPage, true);
+
     const hist = (await call(`/api/products/${kludi.id}/history`)).json;
     assert.equal(hist.series[0].points.length, 1);
     assert.equal(hist.own.length, 1);

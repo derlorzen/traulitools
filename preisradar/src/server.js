@@ -7,7 +7,9 @@ import { parseCsv, pick, parsePrice, csvEscape } from './util.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { fetchText, robotsAllows } from './fetcher.js';
 import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
-import { aiConfig, testAi, analyze, latestReport, verifyReviews, DEFAULT_MODEL } from './ai.js';
+import { aiConfig, testAi, DEFAULT_MODEL } from './ai.js';
+import { analyse } from './analysis.js';
+import { pageDigest, aiExtract } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState } from './scraper.js';
@@ -124,15 +126,16 @@ export function createApp(db, { dataDir = null } = {}) {
     return [
       b.name.trim(), base, b.search_url?.trim() || null, b.result_selector?.trim() || null, b.price_selector?.trim() || null,
       Math.max(Number(process.env.MIN_DELAY_MS ?? 1000), Number(b.delay_ms) || 3000), b.enabled === false || b.enabled === 0 ? 0 : 1,
+      ['off', 'fallback', 'always'].includes(b.ai_mode) ? b.ai_mode : 'fallback',
     ];
   };
   app.post('/api/competitors', wrap((req, res) => {
     const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
-    const r = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, position) VALUES (?,?,?,?,?,?,?,?)').run(...compFields(req.body), pos);
+    const r = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, position) VALUES (?,?,?,?,?,?,?,?,?)').run(...compFields(req.body), pos);
     res.json({ id: Number(r.lastInsertRowid) });
   }));
   app.put('/api/competitors/:id', wrap((req, res) => {
-    db.prepare('UPDATE competitors SET name=?, base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=? WHERE id=?').run(...compFields(req.body), Number(req.params.id));
+    db.prepare('UPDATE competitors SET name=?, base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=? WHERE id=?').run(...compFields(req.body), Number(req.params.id));
     res.json({ ok: true });
   }));
   app.delete('/api/competitors/:id', wrap((req, res) => {
@@ -149,6 +152,12 @@ export function createApp(db, { dataDir = null } = {}) {
       const r = await fetchText(product_url);
       const e = extractProduct(r.text, { priceSelector: price_selector });
       out.product = { http: r.status, found: e.found, price: e.price, title: e.title, source: e.source, availability: e.availability, ids: [...e.ids].slice(0, 8) };
+      if (req.body.use_ai) {
+        const cfg = aiConfig(db);
+        const sample = { name: String(req.body.sample_name ?? ''), manufacturer: null, number: null, ean: req.body.sample_ean || null, mpn: null };
+        const a = await aiExtract(cfg, sample, pageDigest(r.text), r.finalUrl);
+        out.ai = a && { isProductPage: a.isProductPage, title: a.title, price: a.price, priceUngrounded: a.priceUngrounded, availability: a.availability, same: a.same, confidence: a.confidence, reason: a.reason };
+      }
     }
     if (search_url && query) {
       const tpl = search_url.includes('{q}') ? search_url : `${search_url}${search_url.includes('?') ? '&' : '?'}q={q}`;
@@ -325,15 +334,7 @@ export function createApp(db, { dataDir = null } = {}) {
     if (b.openai_model) cfg.model = String(b.openai_model).trim();
     res.json(await testAi(cfg));
   }));
-  app.get('/api/ai/report', wrap((_req, res) => res.json({ report: latestReport(db) })));
-  let aiBusy = false;
-  const exclusive = (fn) => async (req, res) => {
-    if (aiBusy) throw bad('Es läuft bereits eine KI-Anfrage', 409);
-    aiBusy = true;
-    try { return await fn(req, res); } finally { aiBusy = false; }
-  };
-  app.post('/api/ai/analyze', wrap(exclusive(async (_req, res) => res.json({ report: await analyze(db, aiConfig(db)) }))));
-  app.post('/api/ai/verify-reviews', wrap(exclusive(async (_req, res) => res.json(await verifyReviews(db, aiConfig(db))))));
+  app.get('/api/analysis', wrap((_req, res) => res.json(analyse(db))));
 
   // --- Export ---
   app.get('/api/export.csv', wrap((_req, res) => {
@@ -377,9 +378,9 @@ export function seedCompetitors(db, file = process.env.COMPETITORS_FILE || './da
     if (!c?.name || !c?.base_url) continue;
     const base = new URL(c.base_url).origin;
     const row = db.prepare('SELECT id FROM competitors WHERE name=?').get(c.name);
-    const vals = [base, c.search_url ?? null, c.result_selector ?? null, c.price_selector ?? null, Number(c.delay_ms) || 3000, c.enabled === false ? 0 : 1];
-    if (row) db.prepare('UPDATE competitors SET base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=? WHERE id=?').run(...vals, row.id);
-    else db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, position) VALUES (?,?,?,?,?,?,?,?)').run(c.name, ...vals, 100 + n);
+    const vals = [base, c.search_url ?? null, c.result_selector ?? null, c.price_selector ?? null, Number(c.delay_ms) || 3000, c.enabled === false ? 0 : 1, ['off', 'fallback', 'always'].includes(c.ai_mode) ? c.ai_mode : 'fallback'];
+    if (row) db.prepare('UPDATE competitors SET base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=? WHERE id=?').run(...vals, row.id);
+    else db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, position) VALUES (?,?,?,?,?,?,?,?,?)').run(c.name, ...vals, 100 + n);
     n++;
   }
   return n;

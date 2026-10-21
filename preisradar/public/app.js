@@ -295,13 +295,14 @@ function competitorPanel(c) {
   const show = (nodes) => { out.hidden = false; out.replaceChildren(...[].concat(nodes)); };
   const test = guard(async (kind) => {
     const v = val();
-    const body = kind === 'product' ? { product_url: form.elements.t_url.value, price_selector: v.price_selector } : { search_url: v.search_url, query: form.elements.t_q.value, result_selector: v.result_selector };
+    const body = kind !== 'search' ? { product_url: form.elements.t_url.value, price_selector: v.price_selector, use_ai: kind === 'ai' } : { search_url: v.search_url, query: form.elements.t_q.value, result_selector: v.result_selector };
     show('Wird abgerufen …');
     const r = await api('/api/competitors/test', { body });
     if (r.blocked) return show(`⚠ ${r.message}`);
     const nodes = [];
     if (r.product) nodes.push(h('div', {}, r.product.found ? `Preis ${eur.format(r.product.price)} gefunden (Quelle: ${r.product.source}).` : `Kein Preis gefunden (HTTP ${r.product.http}). Ein Preis-Selektor kann helfen.`, h('br'), `Titel: ${r.product.title ?? '–'}`, h('br'), `Kennungen: ${r.product.ids.join(', ') || 'keine'}`));
     if (r.search) nodes.push(h('div', {}, `Suche (HTTP ${r.search.http}): ${r.search.candidates.length} Treffer-Links`, h('ul', {}, r.search.candidates.map((u) => h('li', {}, h('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, u))))));
+    if (r.ai) nodes.push(h('div', { style: 'margin-top:8px' }, h('strong', {}, 'KI: '), r.ai.price != null ? `Preis ${eur.format(r.ai.price)}` : r.ai.priceUngrounded ? 'Preis nicht auf der Seite belegt, verworfen' : 'kein Preis erkannt', ` · ${r.ai.isProductPage ? 'Produktseite' : 'keine Produktseite'} · Titel: ${r.ai.title ?? '–'}`));
     show(nodes.length ? nodes : 'Bitte eine Test-URL oder einen Suchbegriff eingeben.');
   });
   form.append(
@@ -311,7 +312,11 @@ function competitorPanel(c) {
       f('Such-URL', 'search_url', c?.search_url, { ph: 'https://…/search?search={q}', hint: '{q} wird durch EAN bzw. Herstellernummer ersetzt. Shopware-Shops: …/search?search={q}' }),
       f('Ergebnis-Selektor (optional)', 'result_selector', c?.result_selector, { ph: 'a.product-name', hint: 'CSS-Selektor der Produktlinks auf der Suchseite' }),
       f('Preis-Selektor (optional)', 'price_selector', c?.price_selector, { ph: '.product-detail-price', hint: 'Nur nötig, wenn der Preis nicht automatisch erkannt wird' }),
-      f('Pause zwischen Abrufen (ms)', 'delay_ms', c?.delay_ms ?? 3000, { type: 'number' })),
+      f('Pause zwischen Abrufen (ms)', 'delay_ms', c?.delay_ms ?? 3000, { type: 'number' }),
+      h('div', { class: 'field' }, h('label', {}, 'KI beim Auslesen'),
+        h('select', { name: 'ai_mode' },
+          [['fallback', 'Bei Bedarf (Regeln zuerst, KI wenn nichts gefunden wird)'], ['always', 'Immer prüfen (KI beurteilt auch unsichere Treffer)'], ['off', 'Aus']].map(([v, t]) => h('option', { value: v, selected: (c?.ai_mode ?? 'fallback') === v }, t))),
+        h('div', { class: 'hint' }, 'Benötigt den OpenAI-Zugang unter Einstellungen. Die KI findet Produkte und liest Preise ohne CSS-Selektoren aus.'))),
     h('div', { class: 'row', style: 'margin-top:12px' },
       h('label', { class: 'row' }, h('input', { type: 'checkbox', name: 'enabled', checked: c ? Boolean(c.enabled) : true }), 'Aktiv'),
       h('span', { class: 'spacer' }),
@@ -319,7 +324,7 @@ function competitorPanel(c) {
       h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { const v = val(); if (c) await api(`/api/competitors/${c.id}`, { method: 'PUT', body: v }); else await api('/api/competitors', { body: v }); toast('Gespeichert'); await refresh(); }) }, c ? 'Speichern' : 'Mitbewerber anlegen')),
     h('details', { style: 'margin-top:12px' }, h('summary', {}, 'Einrichtung testen'),
       h('div', { class: 'grid', style: 'margin-top:10px' },
-        h('div', { class: 'field' }, h('label', {}, 'Produktseite testen'), h('input', { name: 't_url', type: 'url', placeholder: 'https://…/produkt' }), h('button', { class: 'btn small', type: 'button', onclick: () => test('product') }, 'Preis auslesen')),
+        h('div', { class: 'field' }, h('label', {}, 'Produktseite testen'), h('input', { name: 't_url', type: 'url', placeholder: 'https://…/produkt' }), h('div', { class: 'row' }, h('button', { class: 'btn small', type: 'button', onclick: () => test('product') }, 'Preis auslesen'), h('button', { class: 'btn small', type: 'button', onclick: () => test('ai') }, 'Mit KI auslesen'))),
         h('div', { class: 'field' }, h('label', {}, 'Suche testen'), h('input', { name: 't_q', placeholder: 'EAN oder Herstellernummer' }), h('button', { class: 'btn small', type: 'button', onclick: () => test('search') }, 'Suche ausführen'))),
       out));
   return form;
@@ -400,63 +405,30 @@ async function showAuth(info) {
 }
 
 
-// ---------- KI-Analyse ----------
+// ---------- Analyse (Regelwerk) ----------
 const ACTION_TAG = { senken: ['Preis senken', 'err'], halten: ['Preis halten', 'mute'], 'erhöhen': ['Preis erhöhen', ''], 'prüfen': ['Prüfen', ''] };
 
-async function renderAi(root) {
+async function renderAnalysis(root) {
   const d = state.data;
-  const { report } = await api('/api/ai/report');
-  const reviewCount = d.products.reduce((n, p) => n + Object.values(p.matches).filter((m) => m.status === 'review').length, 0);
+  const a = await api('/api/analysis');
   const byNumber = new Map(d.products.map((p) => [p.number, p]));
-  const busy = (btn, label, fn) => guard(async () => {
-    const old = btn.textContent;
-    document.querySelectorAll('#aiactions button').forEach((b) => (b.disabled = true));
-    btn.textContent = label;
-    try { await fn(); } finally { document.querySelectorAll('#aiactions button').forEach((b) => (b.disabled = false)); btn.textContent = old; }
-  });
-
-  const analyzeBtn = h('button', { class: 'btn primary', disabled: !d.config.ai });
-  analyzeBtn.textContent = 'Analyse starten';
-  analyzeBtn.onclick = busy(analyzeBtn, 'Analysiere … (bis zu 1 Minute)', async () => { await api('/api/ai/analyze', { method: 'POST', body: {} }); toast('Analyse fertig'); render(); });
-  const verifyBtn = h('button', { class: 'btn', disabled: !d.config.ai || !reviewCount });
-  verifyBtn.textContent = `Unsichere Zuordnungen prüfen lassen (${reviewCount})`;
-  verifyBtn.onclick = busy(verifyBtn, 'Prüfe …', async () => {
-    const r = await api('/api/ai/verify-reviews', { method: 'POST', body: {} });
-    toast(`${r.confirmed} bestätigt, ${r.rejected} verworfen, ${r.unclear} unklar`);
-    await refresh();
-  });
-
-  root.append(h('h2', {}, 'KI-Analyse'),
-    h('p', { class: 'sub' }, 'Die KI wertet deine Preise gegen die bestätigten Mitbewerberpreise aus und schlägt Anpassungen vor. Übermittelt werden nur Artikelnummer, Name, Marke und Preise, keine Kundendaten. Einkaufspreise und Margen kennt sie nicht, Preissenkungen bitte immer gegen die Marge prüfen.'));
-  if (!d.config.ai) root.append(h('div', { class: 'panel head' }, h('div', {}, 'Es ist noch kein OpenAI-Zugang hinterlegt.'), h('span', { class: 'spacer' }), h('button', { class: 'btn primary', onclick: () => setTab('einstellungen') }, 'Zu den Einstellungen')));
-  root.append(h('div', { class: 'row', id: 'aiactions', style: 'margin-bottom:16px' }, analyzeBtn, verifyBtn));
-
-  if (!report) {
-    root.append(h('div', { class: 'panel empty' }, h('h3', {}, 'Noch keine Analyse'), h('p', {}, 'Sobald Mitbewerberpreise vorliegen, startest du hier die erste Auswertung.')));
-    return;
-  }
-  const r = report.result;
-  root.append(h('div', { class: 'panel' },
-    h('p', { class: 'pmeta' }, `Stand ${dt.format(new Date(report.created_at))} · ${report.model} · ${report.analysed} von ${report.product_count} Produkten mit Vergleichspreisen`),
-    h('p', { style: 'max-width:80ch;margin:8px 0 0' }, r.summary || 'Keine Zusammenfassung.')));
-  if (r.recommendations.length) {
-    root.append(h('div', { class: 'tablewrap', style: 'max-height:none;margin-bottom:16px' }, h('table', { class: 'prices', style: 'min-width:0' },
-      h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Empfehlung'), h('th', {}, 'Aktion'), h('th', {}, 'Mein Preis'), h('th', {}, 'Vorschlag'), h('th', { style: 'text-align:left' }, 'Begründung'))),
-      h('tbody', {}, r.recommendations.map((x) => {
-        const p = byNumber.get(x.number);
-        const [label, cls] = ACTION_TAG[x.action] ?? [x.action, ''];
-        return h('tr', { onclick: () => p && (state.tab = 'preise', render(), openDrawer(p.id)) },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, p?.name ?? x.number), h('div', { class: 'pmeta' }, x.number)),
-          h('td', {}, h('span', { class: `tag ${cls}` }, label)),
-          h('td', {}, p?.price != null ? eur.format(p.price) : '–'),
-          h('td', { style: 'font-weight:700' }, x.suggested_price != null ? eur.format(x.suggested_price) : '–'),
-          h('td', { style: 'text-align:left;white-space:normal;min-width:260px' }, x.reason));
-      })))));
-  }
-  if (r.warnings.length) {
-    root.append(h('div', { class: 'panel' }, h('h3', {}, 'Auffälligkeiten'),
-      h('ul', { style: 'margin:0;padding-left:18px' }, r.warnings.map((w) => h('li', {}, h('strong', {}, byNumber.get(w.number)?.name ?? w.number), ': ', w.issue)))));
-  }
+  root.append(h('h2', {}, 'Analyse'),
+    h('p', { class: 'sub' }, `Feste Regeln auf Basis der bestätigten Mitbewerberpreise: bis ${a.rules.tolerance} % über dem Günstigsten gilt als konkurrenzfähig, mehr als ${a.rules.raiseAbove} % darunter ist Spielraum für eine Erhöhung, Abweichungen über ${a.rules.outlier} % werden als mögliche Fehlzuordnung markiert. Einkaufspreise und Margen kennt die App nicht, Senkungen bitte immer gegen die Marge prüfen.`));
+  root.append(h('div', { class: 'panel' }, h('p', { style: 'max-width:80ch;margin:0' }, a.summary)));
+  if (!a.rows.length) return;
+  root.append(h('div', { class: 'tablewrap', style: 'max-height:none;margin-bottom:16px' }, h('table', { class: 'prices', style: 'min-width:0' },
+    h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Artikel'), h('th', {}, 'Aktion'), h('th', {}, 'Mein Preis'), h('th', {}, 'Günstigster'), h('th', {}, 'Abstand'), h('th', {}, 'Vorschlag'), h('th', { style: 'text-align:left' }, 'Begründung'))),
+    h('tbody', {}, a.rows.map((x) => {
+      const [label, cls] = ACTION_TAG[x.action] ?? [x.action, ''];
+      return h('tr', { onclick: () => byNumber.get(x.number) && (state.tab = 'preise', render(), openDrawer(x.id)) },
+        h('td', { class: 'prod' }, h('div', { class: 'pname' }, x.name), h('div', { class: 'pmeta' }, x.number)),
+        h('td', {}, h('span', { class: `tag ${cls}` }, label)),
+        h('td', {}, eur.format(x.own_price)),
+        h('td', {}, eur.format(x.cheapest), h('div', { class: 'pmeta' }, x.cheapest_competitor)),
+        h('td', {}, `${x.gap_percent > 0 ? '+' : ''}${x.gap_percent.toString().replace('.', ',')} %`),
+        h('td', { style: 'font-weight:700' }, x.suggested_price != null ? eur.format(x.suggested_price) : '–'),
+        h('td', { style: 'text-align:left;white-space:normal;min-width:260px' }, x.reason));
+    })))));
 }
 
 // ---------- Benutzer ----------
@@ -515,7 +487,7 @@ async function renderSettings(root) {
   const kout = h('div', { class: 'result', hidden: true });
   const ki = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
     h('h3', {}, 'KI (OpenAI / ChatGPT API)'),
-    h('p', { class: 'sub' }, 'API-Schlüssel aus dem OpenAI-Dashboard (platform.openai.com → API keys). Der Schlüssel wird verschlüsselt gespeichert und nie wieder angezeigt. Die Nutzung wird von OpenAI nach Verbrauch abgerechnet, nicht über ein ChatGPT-Abo.'),
+    h('p', { class: 'sub' }, 'API-Schlüssel aus dem OpenAI-Dashboard (platform.openai.com → API keys). Der Schlüssel wird verschlüsselt gespeichert und nie wieder angezeigt. Die KI liest die Seiten der Mitbewerber aus und wählt Treffer in den Suchergebnissen (pro Mitbewerber einstellbar, begrenzt auf ca. 400 Anfragen pro Lauf). Die Nutzung wird von OpenAI nach Verbrauch abgerechnet, nicht über ein ChatGPT-Abo.'),
     cur.openai_from_env ? h('p', { class: 'pmeta' }, 'Aktuell wird der Schlüssel aus der Server-Umgebung verwendet.') : null,
     h('div', { class: 'grid' },
       f('API-Schlüssel', 'openai_api_key', '', { type: 'password', ph: cur.openai_key_set ? '•••••••• (gespeichert)' : 'sk-…', hint: cur.openai_key_set ? 'Leer lassen, um den gespeicherten Schlüssel zu behalten' : '' }),
@@ -566,7 +538,7 @@ function render() {
   const keep = main.scrollTop;
   main.replaceChildren();
   if (state.tab === 'preise') renderPrices(main);
-  else if (state.tab === 'ki') renderAi(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
+  else if (state.tab === 'analyse') renderAnalysis(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
   else if (state.tab === 'mitbewerber') renderCompetitors(main);
   else if (state.tab === 'einstellungen') renderSettings(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
   else renderImport(main);

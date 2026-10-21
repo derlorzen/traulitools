@@ -1,6 +1,8 @@
 import { fetchText, robotsAllows } from './fetcher.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { normId, sleep, tokens, jaccard } from './util.js';
+import { aiConfig } from './ai.js';
+import { pageDigest, linkList, aiPick, aiExtract, aiVerdict, aiNote, aiBudgetLeft, resetAiBudget, CONFIDENT } from './aiscrape.js';
 
 export const scrapeState = {
   running: false,
@@ -64,8 +66,14 @@ function searchQueries(product) {
 }
 
 /** Einen Treffer (Produkt x Mitbewerber) prüfen: erst bekannte URL, sonst Suche. */
-export async function processItem(db, comp, product, match, now = new Date().toISOString()) {
-  const save = (ext, url, verdict) => {
+export async function processItem(db, comp, product, match, now = new Date().toISOString(), ai = null) {
+  let aiErr = null;
+  /** Seite von der KI auslesen lassen; Fehler der KI brechen den Abruf nicht ab. */
+  const aiRead = async (url, html) => {
+    if (!ai || !aiBudgetLeft()) return null;
+    try { return await aiExtract(ai.cfg, product, pageDigest(html), url); } catch (e) { aiErr = e.message; return null; }
+  };
+  const save = (ext, url, verdict, note = null) => {
     updateMatch(db, match.id, {
       url,
       status: verdict === 'match' ? 'ok' : 'review',
@@ -74,12 +82,13 @@ export async function processItem(db, comp, product, match, now = new Date().toI
       availability: ext.availability,
       last_checked: now,
       last_error: null,
+      ai_note: note,
     });
     recordPrice(db, match.id, ext.price, now);
     return { found: true };
   };
   const fail = (status, msg) => {
-    updateMatch(db, match.id, { status, last_checked: now, last_error: msg, ...(status === 'not_found' ? { price: null } : {}) });
+    updateMatch(db, match.id, { status, last_checked: now, last_error: aiErr ? `${msg} (KI: ${aiErr})` : msg, ...(status === 'not_found' ? { price: null } : {}) });
     return { found: false, error: status === 'error' };
   };
 
@@ -90,8 +99,13 @@ export async function processItem(db, comp, product, match, now = new Date().toI
       if (p.blocked) return fail('blocked', 'robots.txt des Mitbewerbers untersagt den Abruf dieser Seite');
       if (!p.gone) {
         const ext = extractProduct(p.r.text, { priceSelector: comp.price_selector });
-        if (!ext.found) return fail('error', 'Kein Preis auf der Seite gefunden (ggf. Preis-Selektor setzen)');
-        return save(ext, p.r.finalUrl, match.status === 'review' ? 'maybe' : 'match');
+        const verdict = match.status === 'review' ? 'maybe' : 'match';
+        if (!ext.found) {
+          const a = await aiRead(p.r.finalUrl, p.r.text);
+          if (a?.price != null) return save({ price: a.price, title: a.title, availability: a.availability }, p.r.finalUrl, verdict, aiNote(a));
+          return fail('error', 'Kein Preis auf der Seite gefunden (ggf. Preis-Selektor setzen oder KI aktivieren)');
+        }
+        return save(ext, p.r.finalUrl, verdict);
       }
       if (match.source === 'manual') return fail('error', 'Seite nicht mehr erreichbar (404)');
       updateMatch(db, match.id, { url: null });
@@ -103,6 +117,8 @@ export async function processItem(db, comp, product, match, now = new Date().toI
     let pages = 0;
     let bestMaybe = null;
     let sawBlocked = false;
+    let aiTried = false;
+    const tried = new Set();
     for (const q of searchQueries(product)) {
       const su = searchUrl(comp, q);
       const sp = await loadPage(su);
@@ -122,20 +138,61 @@ export async function processItem(db, comp, product, match, now = new Date().toI
         pages++;
         await sleep(comp.delay_ms);
         if (cp.blocked || cp.gone) continue;
-        const ext = extractProduct(cp.r.text, { priceSelector: comp.price_selector });
+        tried.add(url).add(cp.r.finalUrl);
+        let ext = extractProduct(cp.r.text, { priceSelector: comp.price_selector });
+        let v = ext.found ? verify(product, ext) : 'no';
+        let note = null;
+        // KI: Seite ohne erkannten Preis auslesen, unsichere Treffer (Modus "immer") beurteilen
+        if (ai && (!ext.found || (v === 'maybe' && ai.mode === 'always'))) {
+          const a = await aiRead(cp.r.finalUrl, cp.r.text);
+          if (a?.isProductPage && a.price != null && !ext.found) {
+            ext = { found: true, price: a.price, title: a.title, availability: a.availability };
+            v = aiVerdict(a);
+            note = aiNote(a);
+          } else if (a && ext.found && a.confidence >= CONFIDENT) {
+            v = a.same ? 'match' : 'no';
+            note = aiNote(a);
+          }
+        }
         if (ext.found) cands.push({ url: cp.r.finalUrl, ext });
-        const v = ext.found ? verify(product, ext) : 'no';
-        if (v === 'match') return save(ext, cp.r.finalUrl, 'match');
-        if (v === 'maybe' && !bestMaybe) bestMaybe = { url: cp.r.finalUrl, ext };
+        if (v === 'match') return save(ext, cp.r.finalUrl, 'match', note);
+        if (v === 'maybe' && !bestMaybe) bestMaybe = { url: cp.r.finalUrl, ext, note };
       }
       for (const c of cands.filter((c) => c.url === sp.r.finalUrl)) {
         const v = verify(product, c.ext);
         if (v === 'match') return save(c.ext, c.url, 'match');
         if (v === 'maybe' && !bestMaybe) bestMaybe = c;
       }
+      // KI: Regeln haben nichts Brauchbares gefunden, die KI wählt den Treffer aus der Ergebnisseite
+      if (ai && !aiTried && !bestMaybe && aiBudgetLeft()) {
+        const links = linkList(sp.r.text, sp.r.finalUrl).filter((l) => !tried.has(l.url));
+        if (links.length) {
+          aiTried = true;
+          let pick = null;
+          try { pick = await aiPick(ai.cfg, product, links); } catch (e) { aiErr = e.message; }
+          if (pick && pick.confidence >= 0.5) {
+            const cp = await loadPage(pick.url);
+            pages++;
+            await sleep(comp.delay_ms);
+            if (!cp.blocked && !cp.gone) {
+              const ext = extractProduct(cp.r.text, { priceSelector: comp.price_selector });
+              const a = await aiRead(cp.r.finalUrl, cp.r.text);
+              const price = ext.found ? ext.price : a?.price;
+              let v = ext.found ? verify(product, ext) : 'no';
+              let note = null;
+              if (a && v !== 'match') { v = aiVerdict(a); note = aiNote(a); }
+              if (price != null && v !== 'no') {
+                const e = ext.found ? ext : { price, title: a.title, availability: a.availability };
+                if (v === 'match') return save(e, cp.r.finalUrl, 'match', note);
+                bestMaybe = { url: cp.r.finalUrl, ext: e, note };
+              }
+            }
+          }
+        }
+      }
       if (pages >= MAX_PAGES_PER_ITEM) break;
     }
-    if (bestMaybe) return save(bestMaybe.ext, bestMaybe.url, 'maybe');
+    if (bestMaybe) return save(bestMaybe.ext, bestMaybe.url, 'maybe', bestMaybe.note);
     if (sawBlocked) return fail('blocked', 'robots.txt des Mitbewerbers untersagt die Suche');
     return fail('not_found', 'Kein passendes Produkt gefunden');
   } catch (e) {
@@ -165,6 +222,8 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
   for (const c of comps) for (const p of prods) ensure.run(p.id, c.id);
   db.exec('COMMIT');
 
+  resetAiBudget();
+  const aiCfg = aiConfig(db);
   const queues = comps.map((c) => {
     const rows = db.prepare('SELECT * FROM matches WHERE competitor_id=?').all(c.id);
     const byProduct = new Map(rows.map((r) => [r.product_id, r]));
@@ -186,7 +245,8 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
         for (const { p, m } of items) {
           if (scrapeState.stop) break;
           scrapeState.current = `${comp.name}: ${p.name}`;
-          const r = await processItem(db, comp, p, m);
+          const ai = aiCfg.key && comp.ai_mode !== 'off' ? { cfg: aiCfg, mode: comp.ai_mode } : null;
+          const r = await processItem(db, comp, p, m, undefined, ai);
           scrapeState.done++;
           if (r.found) scrapeState.found++;
           if (r.error) scrapeState.errors++;

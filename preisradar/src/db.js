@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS competitors (
   price_selector TEXT,
   delay_ms INTEGER NOT NULL DEFAULT 3000,
   enabled INTEGER NOT NULL DEFAULT 1,
+  ai_mode TEXT NOT NULL DEFAULT 'fallback',
   position INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS matches (
@@ -98,6 +99,7 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
   // Migration für bestehende Datenbanken
+  if (!db.prepare('PRAGMA table_info(competitors)').all().some((c) => c.name === 'ai_mode')) db.exec("ALTER TABLE competitors ADD COLUMN ai_mode TEXT NOT NULL DEFAULT 'fallback'");
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_note')) db.exec('ALTER TABLE matches ADD COLUMN ai_note TEXT');
   return db;
 }

@@ -43,3 +43,12 @@ test('findCandidates: filtert Navigation, fremde Hosts und Duplikate', () => {
   <div class="product-box"><a href="https://fremd.de/x">X</a><a href="/p/b?x=1#frag">B</a></div></body>`;
   assert.deepEqual(findCandidates(html, 'https://shop.de/search?q=1'), ['https://shop.de/p/a', 'https://shop.de/p/b?x=1']);
 });
+
+test('priceInText: KI-Preise müssen auf der Seite belegt sein', async () => {
+  const { priceInText } = await import('../src/aiscrape.js');
+  assert.ok(priceInText(1299, 'Preis 1.299,00 € inkl. MwSt.'));
+  assert.ok(priceInText(640, 'nur 640,00 €'));
+  assert.ok(priceInText(19.9, 'statt 29,90 jetzt 19,90 EUR'));
+  assert.ok(!priceInText(215, 'Artikel 12150 kostet 640,00 €'));
+  assert.ok(!priceInText(99.99, 'Preis 640,00 €'));
+});
