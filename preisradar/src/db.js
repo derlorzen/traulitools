@@ -32,7 +32,15 @@ CREATE TABLE IF NOT EXISTS competitors (
   delay_ms INTEGER NOT NULL DEFAULT 3000,
   enabled INTEGER NOT NULL DEFAULT 1,
   ai_mode TEXT NOT NULL DEFAULT 'fallback',
+  sitemap_url TEXT,
+  sitemap_fetched_at TEXT,
   position INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sitemap_urls (
+  competitor_id INTEGER NOT NULL REFERENCES competitors(id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  PRIMARY KEY (competitor_id, url)
 );
 CREATE TABLE IF NOT EXISTS matches (
   id INTEGER PRIMARY KEY,
@@ -100,6 +108,9 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   db.exec(SCHEMA);
   // Migration für bestehende Datenbanken
   if (!db.prepare('PRAGMA table_info(competitors)').all().some((c) => c.name === 'ai_mode')) db.exec("ALTER TABLE competitors ADD COLUMN ai_mode TEXT NOT NULL DEFAULT 'fallback'");
+  const compCols = db.prepare('PRAGMA table_info(competitors)').all().map((c) => c.name);
+  if (!compCols.includes('sitemap_url')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_url TEXT');
+  if (!compCols.includes('sitemap_fetched_at')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_fetched_at TEXT');
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_note')) db.exec('ALTER TABLE matches ADD COLUMN ai_note TEXT');
   return db;
 }

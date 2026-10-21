@@ -2,6 +2,7 @@ import { fetchText, robotsAllows } from './fetcher.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { normId, sleep, tokens, jaccard } from './util.js';
 import { aiConfig } from './ai.js';
+import { sitemapCandidates, hasSitemap, refreshSitemaps, sitemapDue } from './sitemap.js';
 import { pageDigest, linkList, aiPick, aiExtract, aiVerdict, aiNote, aiBudgetLeft, resetAiBudget, CONFIDENT } from './aiscrape.js';
 
 export const scrapeState = {
@@ -94,6 +95,25 @@ export async function processItem(db, comp, product, match, now = new Date().toI
     return { found: false, error: status === 'error' };
   };
 
+  /** Eine geladene Produktseite bewerten: Regeln zuerst, dann KI (fehlender Preis bzw. unsicherer Treffer). */
+  const evalPage = async (cp) => {
+    let ext = extractProduct(cp.r.text, { priceSelector: comp.price_selector });
+    let v = ext.found ? verify(product, ext) : 'no';
+    let note = null;
+    if (ai && (!ext.found || (v === 'maybe' && ai.mode === 'always'))) {
+      const a = await aiRead(cp.r.finalUrl, cp.r.text);
+      if (a?.isProductPage && a.price != null && !ext.found) {
+        ext = { found: true, price: a.price, title: a.title, availability: a.availability };
+        v = aiVerdict(a);
+        note = aiNote(a);
+      } else if (a && ext.found && a.confidence >= CONFIDENT) {
+        v = a.same ? 'match' : 'no';
+        note = aiNote(a);
+      }
+    }
+    return { ext, v, note };
+  };
+
   try {
     // 1) Bekannte Produkt-URL direkt prüfen
     if (match.url) {
@@ -114,13 +134,53 @@ export async function processItem(db, comp, product, match, now = new Date().toI
     }
     if (match.source === 'manual') return fail('nourl', 'Keine URL hinterlegt');
 
-    // 2) Suche beim Mitbewerber
-    if (!comp.search_url) return fail('nourl', 'Keine Such-URL beim Mitbewerber und keine Produkt-URL hinterlegt');
+    // 2a) Sitemap des Mitbewerbers: URLs per Marke/Name vorauswählen
     let pages = 0;
     let bestMaybe = null;
     let sawBlocked = false;
     let aiTried = false;
     const tried = new Set();
+    if (hasSitemap(db, comp.id)) {
+      const cands = sitemapCandidates(db, comp.id, product, { limit: 4 });
+      for (const c of cands) {
+        let cp;
+        try { cp = await loadPage(c.url); } catch { continue; }
+        pages++;
+        tried.add(c.url);
+        await sleep(comp.delay_ms);
+        if (cp.blocked) { sawBlocked = true; continue; }
+        if (cp.gone) continue;
+        tried.add(cp.r.finalUrl);
+        const { ext, v, note } = await evalPage(cp);
+        if (!ext.found) continue;
+        if (v === 'match') return save(ext, cp.r.finalUrl, 'match', note);
+        if (v === 'maybe' && !bestMaybe) bestMaybe = { url: cp.r.finalUrl, ext, note };
+      }
+      // KI wählt aus den ähnlichsten URLs, wenn die Regeln nichts Sicheres fanden
+      if (ai && !bestMaybe && aiBudgetLeft()) {
+        const more = sitemapCandidates(db, comp.id, product, { limit: 25, min: 0.15 }).filter((c) => !tried.has(c.url));
+        if (more.length) {
+          aiTried = true;
+          let pick = null;
+          try { pick = await aiPick(ai.cfg, product, more.map((c) => ({ url: c.url, text: c.slug.replace(/-/g, ' '), context: c.slug }))); } catch (e) { aiErr = e.message; }
+          if (pick && pick.confidence >= 0.5) {
+            const cp = await loadPage(pick.url);
+            pages++;
+            await sleep(comp.delay_ms);
+            if (!cp.blocked && !cp.gone) {
+              const { ext, v, note } = await evalPage(cp);
+              if (ext.found && v === 'match') return save(ext, cp.r.finalUrl, 'match', note);
+              if (ext.found && v === 'maybe') bestMaybe = { url: cp.r.finalUrl, ext, note };
+            }
+          }
+        }
+      }
+      if (bestMaybe) return save(bestMaybe.ext, bestMaybe.url, 'maybe', bestMaybe.note);
+      if (!comp.search_url) return fail(sawBlocked ? 'blocked' : 'not_found', sawBlocked ? 'robots.txt des Mitbewerbers untersagt den Abruf' : 'Kein passendes Produkt in der Sitemap gefunden');
+    }
+
+    // 2) Suche beim Mitbewerber
+    if (!comp.search_url) return fail('nourl', 'Keine Such-URL beim Mitbewerber und keine Produkt-URL hinterlegt');
     for (const q of searchQueries(product)) {
       const su = searchUrl(comp, q);
       const sp = await loadPage(su);
@@ -141,21 +201,7 @@ export async function processItem(db, comp, product, match, now = new Date().toI
         await sleep(comp.delay_ms);
         if (cp.blocked || cp.gone) continue;
         tried.add(url).add(cp.r.finalUrl);
-        let ext = extractProduct(cp.r.text, { priceSelector: comp.price_selector });
-        let v = ext.found ? verify(product, ext) : 'no';
-        let note = null;
-        // KI: Seite ohne erkannten Preis auslesen, unsichere Treffer (Modus "immer") beurteilen
-        if (ai && (!ext.found || (v === 'maybe' && ai.mode === 'always'))) {
-          const a = await aiRead(cp.r.finalUrl, cp.r.text);
-          if (a?.isProductPage && a.price != null && !ext.found) {
-            ext = { found: true, price: a.price, title: a.title, availability: a.availability };
-            v = aiVerdict(a);
-            note = aiNote(a);
-          } else if (a && ext.found && a.confidence >= CONFIDENT) {
-            v = a.same ? 'match' : 'no';
-            note = aiNote(a);
-          }
-        }
+        const { ext, v, note } = await evalPage(cp);
         if (ext.found) cands.push({ url: cp.r.finalUrl, ext });
         if (v === 'match') return save(ext, cp.r.finalUrl, 'match', note);
         if (v === 'maybe' && !bestMaybe) bestMaybe = { url: cp.r.finalUrl, ext, note };
@@ -242,6 +288,11 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
   Object.assign(scrapeState, { running: true, stop: false, runId, trigger, total, done: 0, found: 0, errors: 0, startedAt, current: null });
 
   (async () => {
+    for (const c of comps) {
+      if (!sitemapDue(db, c)) continue;
+      scrapeState.current = `${c.name}: Sitemap einlesen`;
+      try { await refreshSitemaps(db, c); } catch (e) { console.error('Sitemap-Fehler:', e.message); }
+    }
     await Promise.all(
       queues.map(async ({ comp, items }) => {
         for (const { p, m } of items) {

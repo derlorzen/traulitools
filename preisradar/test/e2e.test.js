@@ -23,6 +23,12 @@ function mockShop() {
     if (u.pathname === '/p/wrong') return send(200, page('Anderes Produkt', '19.90', { gtin13: '1111111111116' }));
     if (u.pathname === '/p/kludi') return send(200, page('KLUDI Showersystem Logo', '215.00', { gtin13: '4015241210108' }));
     if (u.pathname === '/p/hsk') return send(200, page('HSK Duschsystem RS 200 AquaSwitch Rund Ablage weiß', '640.00'));
+    if (u.pathname === '/sitemap.xml') {
+      const o = `http://${req.headers.host}`;
+      return send(200, `<?xml version="1.0"?><urlset><url><loc>${o}/bad/duschsysteme/kludi-logo-thermostat-dual-shower-system_192921_179614/</loc></url><url><loc>${o}/bad/armaturen/hansgrohe-metropol-mischer_1_2/</loc></url><url><loc>${o}/bad/xx/kludi-ersatzteil-dichtung_9_9/</loc></url></urlset>`, 'application/xml');
+    }
+    if (u.pathname.startsWith('/bad/duschsysteme/kludi-logo')) return send(200, page('KLUDI LOGO Duschsystem Dual Shower Thermostat', '259.00', { gtin13: '4015241210108' }));
+    if (u.pathname.startsWith('/bad/xx/')) return send(200, page('KLUDI Ersatzteil Dichtung', '4.90', { gtin13: '2222222222222' }));
     if (u.pathname === '/redir') { res.writeHead(302, { location: '/admin/suche' }); return res.end(); }
     // Shop ohne maschinenlesbare Produktdaten: nur die KI kann ihn auslesen
     if (u.pathname === '/ki-search') {
@@ -179,6 +185,20 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.equal(kh.price, 640);
     assert.match(kh.ai_note, /KI \(95 %\)/);
     assert.ok(aiCalls.some((x) => x.auth === 'Bearer sk-test-123' && x.model === 'test-model' && x.json === 'json_object'));
+
+    // Sitemap-Mitbewerber ohne Such-URL: Kandidaten über URL-Bezeichnung, Verifikation über EAN
+    const sc = await call('/api/competitors', { name: 'Sitemap-Shop', base_url: base, sitemap_url: `${base}/sitemap.xml`, delay_ms: 1, ai_mode: 'off' });
+    assert.ok(sc.json.id);
+    assert.equal((await call('/api/competitors', { name: 'X', base_url: base, sitemap_url: 'kein-url' })).status, 400);
+    const rf = (await call(`/api/competitors/${sc.json.id}/sitemap/refresh`, {})).json;
+    assert.equal(rf.count, 3);
+    await runAll();
+    const sm = (await call('/api/overview')).json.products.find((p) => p.number === '10484').matches[sc.json.id];
+    assert.equal(sm.status, 'ok'); // EAN auf der Produktseite stimmt
+    assert.equal(sm.price, 259);
+    assert.match(sm.url, /kludi-logo-thermostat/);
+    const sh = (await call('/api/overview')).json.products.find((p) => p.number === '10276-001').matches[sc.json.id];
+    assert.equal(sh.status, 'not_found');
 
     // Weiterleitung auf eine per robots.txt gesperrte Seite wird nicht abgerufen
     const rd = (await call('/api/competitors/test', { search_url: `${base}/redir?q={q}`, query: 'x' })).json;

@@ -9,6 +9,7 @@ import { fetchText, robotsAllows } from './fetcher.js';
 import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
 import { aiConfig, testAi, DEFAULT_MODEL } from './ai.js';
 import { analyse } from './analysis.js';
+import { refreshSitemaps } from './sitemap.js';
 import { pageDigest, aiExtract } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
@@ -80,7 +81,7 @@ export function createApp(db, { dataDir = null } = {}) {
 
   // --- Übersicht ---
   app.get('/api/overview', wrap((_req, res) => {
-    const competitors = db.prepare('SELECT * FROM competitors ORDER BY position, id').all();
+    const competitors = db.prepare('SELECT c.*, (SELECT COUNT(*) FROM sitemap_urls s WHERE s.competitor_id=c.id) AS sitemap_count FROM competitors c ORDER BY position, id').all();
     const products = db.prepare('SELECT * FROM products WHERE active=1 ORDER BY manufacturer, name').all();
     const matches = db.prepare('SELECT * FROM matches').all();
     const prev = db.prepare(`
@@ -119,6 +120,13 @@ export function createApp(db, { dataDir = null } = {}) {
   }));
 
   // --- Mitbewerber ---
+  const sitemapField = (v) => {
+    const list = String(v ?? '').split(/\s+/).filter(Boolean);
+    for (const u of list) {
+      try { if (!/^https?:$/.test(new URL(u).protocol)) throw 0; } catch { throw bad(`Sitemap-URL ungültig: ${u}`); }
+    }
+    return list.join('\n') || null;
+  };
   const compFields = (b) => {
     if (!b.name?.trim()) throw bad('Name fehlt');
     let base;
@@ -127,16 +135,23 @@ export function createApp(db, { dataDir = null } = {}) {
       b.name.trim(), base, b.search_url?.trim() || null, b.result_selector?.trim() || null, b.price_selector?.trim() || null,
       Math.max(Number(process.env.MIN_DELAY_MS ?? 1000), Number(b.delay_ms) || 3000), b.enabled === false || b.enabled === 0 ? 0 : 1,
       ['off', 'fallback', 'always'].includes(b.ai_mode) ? b.ai_mode : 'fallback',
+      sitemapField(b.sitemap_url),
     ];
   };
   app.post('/api/competitors', wrap((req, res) => {
     const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
-    const r = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, position) VALUES (?,?,?,?,?,?,?,?,?)').run(...compFields(req.body), pos);
+    const r = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(...compFields(req.body), pos);
     res.json({ id: Number(r.lastInsertRowid) });
   }));
   app.put('/api/competitors/:id', wrap((req, res) => {
-    db.prepare('UPDATE competitors SET name=?, base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=? WHERE id=?').run(...compFields(req.body), Number(req.params.id));
+    db.prepare('UPDATE competitors SET name=?, base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=?, sitemap_url=? WHERE id=?').run(...compFields(req.body), Number(req.params.id));
     res.json({ ok: true });
+  }));
+  app.post('/api/competitors/:id/sitemap/refresh', wrap(async (req, res) => {
+    const comp = db.prepare('SELECT * FROM competitors WHERE id=?').get(Number(req.params.id));
+    if (!comp) throw bad('Mitbewerber nicht gefunden', 404);
+    if (!comp.sitemap_url) throw bad('Keine Sitemap-URL hinterlegt');
+    res.json(await refreshSitemaps(db, comp));
   }));
   app.delete('/api/competitors/:id', wrap((req, res) => {
     db.prepare('DELETE FROM competitors WHERE id=?').run(Number(req.params.id));
@@ -380,9 +395,9 @@ export function seedCompetitors(db, file = process.env.COMPETITORS_FILE || './da
     if (!c?.name || !c?.base_url) continue;
     const base = new URL(c.base_url).origin;
     const row = db.prepare('SELECT id FROM competitors WHERE name=?').get(c.name);
-    const vals = [base, c.search_url ?? null, c.result_selector ?? null, c.price_selector ?? null, Number(c.delay_ms) || 3000, c.enabled === false ? 0 : 1, ['off', 'fallback', 'always'].includes(c.ai_mode) ? c.ai_mode : 'fallback'];
-    if (row) db.prepare('UPDATE competitors SET base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=? WHERE id=?').run(...vals, row.id);
-    else db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, position) VALUES (?,?,?,?,?,?,?,?,?)').run(c.name, ...vals, 100 + n);
+    const vals = [base, c.search_url ?? null, c.result_selector ?? null, c.price_selector ?? null, Number(c.delay_ms) || 3000, c.enabled === false ? 0 : 1, ['off', 'fallback', 'always'].includes(c.ai_mode) ? c.ai_mode : 'fallback', c.sitemap_url ? [].concat(c.sitemap_url).join('\n') : null];
+    if (row) db.prepare('UPDATE competitors SET base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=?, sitemap_url=? WHERE id=?').run(...vals, row.id);
+    else db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(c.name, ...vals, 100 + n);
     n++;
   }
   return n;

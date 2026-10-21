@@ -40,6 +40,9 @@ Unter **Einstellungen → KI** trägst du den OpenAI-API-Schlüssel und das Mode
 - Grenze: Die App lädt Seiten ohne Browser. Shops, die Preise erst per JavaScript nachladen, sind für Regeln und KI unsichtbar (Browser-Automatisierung wie browser-use bräuchte Python und Chromium auf dem Server).
 - **Analyse:** feste Regeln (`src/analysis.js`): bis 2 % über dem Günstigsten konkurrenzfähig, ab 5 % darunter Erhöhung möglich, über 40 % Abweichung als mögliche Fehlzuordnung markiert. Keine KI beteiligt.
 
+## Mitbewerber über Sitemap
+Ist die Suche eines Shops gesperrt (robots.txt) oder nur per JavaScript gerendert, trägst du beim Mitbewerber seine Sitemap-URL(s) ein (ohne Such-URL). Die App liest die Produkt-URLs ein (wöchentlich neu), wählt pro Artikel die ähnlichsten per Marke und Name, ruft die Produktseiten ab und bestätigt per EAN/Herstellernummer. Bei Bedarf wählt die KI aus den ähnlichsten URLs. Die robots.txt wird dabei immer beachtet, auch bei Weiterleitungen.
+
 ## Wichtig
 - Anmeldung per Session-Cookie, Passwörter mit scrypt gehasht, Login-Versuche begrenzt. Bei öffentlicher URL `SETUP_TOKEN` setzen und die Einrichtung sofort durchführen.
 - Die **robots.txt** der Mitbewerber wird immer beachtet; gesperrte Seiten erscheinen als „gesperrt". Pausen zwischen Abrufen pro Shop einstellbar (Standard 3 s).

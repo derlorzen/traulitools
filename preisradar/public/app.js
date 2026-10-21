@@ -292,6 +292,7 @@ function competitorPanel(c) {
     const fd = Object.fromEntries(new FormData(form));
     return { ...fd, delay_ms: Number(fd.delay_ms) || 3000, enabled: form.elements.enabled.checked };
   };
+  const sm = h('span', { class: 'hint' }, c?.sitemap_count ? `${c.sitemap_count.toLocaleString('de-DE')} URLs eingelesen` : '');
   const show = (nodes) => { out.hidden = false; out.replaceChildren(...[].concat(nodes)); };
   const test = guard(async (kind) => {
     const v = val();
@@ -313,6 +314,15 @@ function competitorPanel(c) {
       f('Ergebnis-Selektor (optional)', 'result_selector', c?.result_selector, { ph: 'a.product-name', hint: 'CSS-Selektor der Produktlinks auf der Suchseite' }),
       f('Preis-Selektor (optional)', 'price_selector', c?.price_selector, { ph: '.product-detail-price', hint: 'Nur nötig, wenn der Preis nicht automatisch erkannt wird' }),
       f('Pause zwischen Abrufen (ms)', 'delay_ms', c?.delay_ms ?? 3000, { type: 'number' }),
+      h('div', { class: 'field', style: 'grid-column:1/-1' }, h('label', {}, 'Sitemap-URLs (optional, eine pro Zeile)'),
+        h('textarea', { name: 'sitemap_url', rows: 2, placeholder: 'https://www.beispiel-shop.de/sitemap/Sitemap_item.xml' }, c?.sitemap_url ?? ''),
+        h('span', { class: 'hint' }, 'Für Shops, deren Suche gesperrt oder nicht auslesbar ist: Produkte werden über die URLs der Sitemap (Marke und Name) gefunden. Die Sitemap wird wöchentlich neu eingelesen.'),
+        c ? h('div', { class: 'row' }, h('button', { class: 'btn small', type: 'button', onclick: guard(async () => {
+          const r = await api(`/api/competitors/${c.id}/sitemap/refresh`, { method: 'POST', body: {} });
+          const bad = r.report.filter((x) => x.error);
+          sm.textContent = `${r.count.toLocaleString('de-DE')} URLs eingelesen${bad.length ? ` · Fehler: ${bad.map((x) => `${x.url.split('/').pop()} (${x.error})`).join(', ')}` : ''}`;
+          toast(r.count ? 'Sitemap eingelesen' : 'Keine URLs gefunden', !r.count);
+        }) }, 'Sitemap jetzt einlesen'), sm) : null),
       h('div', { class: 'field' }, h('label', {}, 'KI beim Auslesen'),
         h('select', { name: 'ai_mode' },
           [['fallback', 'Bei Bedarf (Regeln zuerst, KI wenn nichts gefunden wird)'], ['always', 'Immer prüfen (KI beurteilt auch unsichere Treffer)'], ['off', 'Aus']].map(([v, t]) => h('option', { value: v, selected: (c?.ai_mode ?? 'fallback') === v }, t))),
