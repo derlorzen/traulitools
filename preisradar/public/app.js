@@ -325,8 +325,8 @@ function competitorPanel(c) {
         }) }, 'Sitemap jetzt einlesen'), sm) : null),
       h('div', { class: 'field' }, h('label', {}, 'KI beim Auslesen'),
         h('select', { name: 'ai_mode' },
-          [['fallback', 'Bei Bedarf (Regeln zuerst, KI wenn nichts gefunden wird)'], ['always', 'Immer prüfen (KI beurteilt auch unsichere Treffer)'], ['off', 'Aus']].map(([v, t]) => h('option', { value: v, selected: (c?.ai_mode ?? 'fallback') === v }, t))),
-        h('div', { class: 'hint' }, 'Benötigt den OpenAI-Zugang unter Einstellungen. Die KI findet Produkte und liest Preise ohne CSS-Selektoren aus.'))),
+          [['fallback', 'Bei Bedarf'], ['always', 'Immer prüfen'], ['off', 'Aus']].map(([v, t]) => h('option', { value: v, selected: (c?.ai_mode ?? 'fallback') === v }, t))),
+        h('div', { class: 'hint' }, 'Bei Bedarf: Regeln zuerst, KI nur wenn nichts gefunden wird. Immer prüfen: KI beurteilt auch unsichere Treffer. Benötigt den OpenAI-Zugang unter Einstellungen. Die KI findet Produkte und liest Preise ohne CSS-Selektoren aus.'))),
     h('div', { class: 'row', style: 'margin-top:12px' },
       h('label', { class: 'row' }, h('input', { type: 'checkbox', name: 'enabled', checked: c ? Boolean(c.enabled) : true }), 'Aktiv'),
       h('span', { class: 'spacer' }),
@@ -342,8 +342,8 @@ function competitorPanel(c) {
 
 function renderCompetitors(root) {
   root.append(h('h2', {}, 'Mitbewerber'),
-    h('p', { class: 'sub' }, 'Jeder Mitbewerber braucht eine Such-URL, über die Produkte per EAN oder Herstellernummer gefunden werden. Alternativ trägst du Produkt-URLs direkt im Import oder in der Detailansicht ein. Die robots.txt der Shops wird immer beachtet.'),
-    state.data.competitors.map((c) => competitorPanel(c)),
+    h('p', { class: 'sub' }, 'Jeder Mitbewerber braucht eine Such-URL (Suche per EAN oder Herstellernummer) und/oder Sitemap-URLs (Zuordnung über Marke und Name). Alternativ trägst du Produkt-URLs direkt im Import oder in der Detailansicht ein. Die robots.txt der Shops wird immer beachtet.'),
+    ...state.data.competitors.map((c) => competitorPanel(c)),
     h('h3', {}, 'Neuen Mitbewerber hinzufügen'), competitorPanel(null));
 }
 
