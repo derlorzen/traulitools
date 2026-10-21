@@ -1,0 +1,11 @@
+[
+  {
+    "name": "Beispiel-Shop",
+    "base_url": "https://www.beispiel-shop.de",
+    "search_url": "https://www.beispiel-shop.de/search?search={q}",
+    "result_selector": "",
+    "price_selector": "",
+    "delay_ms": 3000,
+    "enabled": true
+  }
+]
