@@ -139,7 +139,7 @@ export function analyse(db, rules = RULES) {
     const before = [...pts].reverse().find((x) => x.at < since) ?? pts[0];
     if (before === last || before.price === last.price) continue;
     const p = ownById.get(m.product_id);
-    moves.push({ id: m.product_id, number: p?.number, name: p?.name, competitor: m.competitor, from: before.price, to: last.price, pct: r1(((last.price - before.price) / before.price) * 100), at: last.at, own_price: p?.price ?? null });
+    moves.push({ id: m.product_id, number: p?.number, name: p?.name, competitor: compName.get(m.competitor_id), from: before.price, to: last.price, pct: r1(((last.price - before.price) / before.price) * 100), at: last.at, own_price: p?.price ?? null });
   }
   moves.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
 

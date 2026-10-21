@@ -8,22 +8,25 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230E4A5A'/%3E%3Cpath d='M6 21h20' stroke='%23fff' stroke-width='2' stroke-linecap='round'/%3E%3Ccircle cx='12' cy='21' r='3' fill='none' stroke='%23fff' stroke-width='2'/%3E%3Ccircle cx='21' cy='21' r='3.5' fill='%23fff'/%3E%3C/svg%3E">
 </head>
 <body>
-  <header class="top">
+  <div class="shell">
+  <aside class="side">
     <div class="brand">
-      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M6 21h20" stroke="#fff" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="21" r="3" fill="none" stroke="#fff" stroke-width="2"/><circle cx="21" cy="21" r="3.5" fill="#fff"/></svg>
+      <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M6 21h20" stroke="#fff" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="21" r="3" fill="none" stroke="#fff" stroke-width="2"/><circle cx="21" cy="21" r="3.5" fill="#fff"/></svg>
       <span>Preisradar</span>
     </div>
     <nav id="tabs" aria-label="Bereiche">
-      <button data-tab="preise" class="on">Preise</button>
+      <button data-tab="start" class="on">Lagebild</button>
+      <button data-tab="preise">Preise</button>
       <button data-tab="analyse">Analyse</button>
       <button data-tab="mitbewerber">Mitbewerber</button>
       <button data-tab="import">Import &amp; Läufe</button>
       <button data-tab="einstellungen">Einstellungen</button>
     </nav>
     <div id="runbar" class="runbar" aria-live="polite"></div>
-    <button id="logout" class="btn small" hidden>Abmelden</button>
-  </header>
+    <button id="logout" class="linkbtn" hidden>Abmelden</button>
+  </aside>
   <main id="main"></main>
+</div>
   <aside id="drawer" class="drawer" hidden aria-label="Produktdetails"></aside>
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="app.js" type="module"></script>
