@@ -88,3 +88,19 @@ test('Sitemap-Kategorien begrenzen die Suche; eigene Artikel werden offline mark
     srv.closeAllConnections(); srv.close();
   }
 });
+
+test('KI-Tagesgrenze: Zähler übersteht Neustart, Grenze einstellbar', async () => {
+  const { initAiBudget, aiBudgetLeft, aiUsage } = await import('../src/aiscrape.js');
+  const db = openDb(':memory:');
+  const day = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Berlin' });
+  db.prepare("INSERT INTO settings(key, value) VALUES ('ai_calls_day', ?), ('ai_calls_count', '7'), ('ai_daily_limit', '8')").run(day);
+  initAiBudget(db);
+  assert.deepEqual(aiUsage(), { day, today: 7, limit: 8 });
+  assert.equal(aiBudgetLeft(), true);
+  db.prepare("UPDATE settings SET value='7' WHERE key='ai_daily_limit'").run();
+  assert.equal(aiBudgetLeft(), false);
+  db.prepare("UPDATE settings SET value='2026-01-01' WHERE key='ai_calls_day'").run();
+  initAiBudget(db); // anderer Tag gespeichert: Zähler beginnt bei 0
+  assert.equal(aiUsage().today, 0);
+  initAiBudget(null);
+});

@@ -8,10 +8,36 @@ import { chatJson } from './ai.js';
  */
 
 export const CONFIDENT = 0.85;
-const MAX_CALLS = () => Number(process.env.AI_MAX_CALLS_PER_RUN || 400);
-const budget = { calls: 0 };
-export const resetAiBudget = () => { budget.calls = 0; };
-export const aiBudgetLeft = () => budget.calls < MAX_CALLS();
+/*
+ * Tagesgrenze für KI-Anfragen (Kostenschutz). Zähler je Kalendertag (Europe/Berlin), in den Einstellungen gespeichert,
+ * damit er einen Neustart übersteht. Grenze: Einstellung ai_daily_limit, sonst AI_DAILY_LIMIT, sonst 500.
+ */
+export const DEFAULT_AI_DAILY_LIMIT = 500;
+const budget = { day: null, calls: 0, db: null };
+const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Berlin' });
+const readSetting = (key) => { try { return budget.db?.prepare('SELECT value FROM settings WHERE key=?').get(key)?.value ?? null; } catch { return null; } };
+const writeSetting = (key, value) => { try { budget.db?.prepare('INSERT INTO settings(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(value)); } catch { /* ohne Datenbank */ } };
+function sync() {
+  const d = today();
+  if (budget.day === d) return;
+  budget.day = d;
+  budget.calls = readSetting('ai_calls_day') === d ? Number(readSetting('ai_calls_count')) || 0 : 0;
+}
+export function initAiBudget(db) { budget.db = db; budget.day = null; sync(); }
+export function aiDailyLimit() {
+  const v = Number(readSetting('ai_daily_limit') ?? process.env.AI_DAILY_LIMIT ?? DEFAULT_AI_DAILY_LIMIT);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : DEFAULT_AI_DAILY_LIMIT;
+}
+export const aiBudgetLeft = () => { sync(); return budget.calls < aiDailyLimit(); };
+export const aiCallCount = () => { sync(); return budget.calls; };
+export const aiUsage = () => { sync(); return { day: budget.day, today: budget.calls, limit: aiDailyLimit() }; };
+function spend() {
+  sync();
+  budget.calls++;
+  writeSetting('ai_calls_day', budget.day);
+  writeSetting('ai_calls_count', budget.calls);
+}
+export const resetAiBudget = () => {}; // früher je Lauf, jetzt Tagesgrenze
 
 const SKIP_PATH = /(login|anmeld|konto|account|warenkorb|cart|checkout|merkzettel|wishlist|impressum|agb|datenschutz|kontakt|versand|widerruf|newsletter|blog|ratgeber)/i;
 
@@ -71,7 +97,7 @@ Passt keiner sicher, gib index null zurück. Antworte mit {"index": Zahl oder nu
 
 export async function aiPick(cfg, product, links) {
   if (!links.length || !aiBudgetLeft()) return null;
-  budget.calls++;
+  spend();
   const { data } = await chatJson(cfg, PICK_SYSTEM, { product: productInfo(product), links: links.map((l, i) => ({ index: i, text: l.text, context: l.context })) });
   const i = Number.isInteger(data.index) ? data.index : null;
   if (i == null || i < 0 || i >= links.length) return null;
@@ -99,7 +125,7 @@ export function priceInText(price, ...texts) {
 
 export async function aiExtract(cfg, product, digest, url) {
   if (!aiBudgetLeft()) return null;
-  budget.calls++;
+  spend();
   const { data } = await chatJson(cfg, EXTRACT_SYSTEM, { our_product: productInfo(product), page: { url, ...digest } });
   const price = typeof data.price === 'number' && Number.isFinite(data.price) && data.price > 0 ? Math.round(data.price * 100) / 100 : null;
   const grounded = price != null && priceInText(price, digest.text, digest.ld, digest.meta);

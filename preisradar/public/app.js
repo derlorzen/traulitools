@@ -780,11 +780,107 @@ async function renderStart(root) {
       h('dt', {}, 'Aktualität'), h('dd', {}, `jeder Artikel höchstens alle ${sch.refresh} Stunden`),
       h('dt', {}, 'Artikel'), h('dd', {}, `${d.counts.all} gesamt, ${d.counts.tracked} beobachtet`),
       imp?.running ? [h('dt', {}, 'Import'), h('dd', {}, `läuft: ${imp.done} von ${imp.total}`)] : imp?.finishedAt ? [h('dt', {}, 'Letzter Import'), h('dd', {}, `${dt.format(new Date(imp.finishedAt))}, ${imp.created} neu, ${imp.updated} aktualisiert${imp.errors ? `, ${imp.errors} Fehler` : ''}`)] : null,
-      h('dt', {}, 'KI'), h('dd', {}, d.config.ai ? 'eingerichtet' : 'nicht eingerichtet (Regeln und Sitemaps arbeiten trotzdem)')));
+      h('dt', {}, 'KI'), h('dd', {}, d.config.ai
+        ? [h('div', { class: 'aimeter', title: `${d.config.aiUsage.today} von ${d.config.aiUsage.limit} KI-Anfragen heute` }, h('div', { style: `width:${Math.min(100, (d.config.aiUsage.today / Math.max(1, d.config.aiUsage.limit)) * 100)}%` })),
+          `${d.config.aiUsage.today.toLocaleString('de-DE')} von ${d.config.aiUsage.limit.toLocaleString('de-DE')} Anfragen heute${d.config.aiUsage.today >= d.config.aiUsage.limit ? ' (Grenze erreicht, weiter ohne KI)' : ''}`]
+        : 'nicht eingerichtet (Regeln und Sitemaps arbeiten trotzdem)')));
 
   root.append(hero, gauge,
     a.hints.length ? h('ul', { class: 'hints' }, a.hints.slice(0, 4).map((x) => h('li', { class: x.level }, x.text))) : null,
     lists, h('div', { class: 'cols two' }, comps, ops));
+}
+
+// ---------- So funktioniert's ----------
+function renderHelp(root) {
+  const d = state.data;
+  const r = d.config.rules;
+  const sch = d.schedule;
+  const ai = d.config.aiUsage;
+  const go = (tab, text) => h('button', { class: 'linkbtn', onclick: () => setTab(tab) }, text);
+  const sec = (id, title, ...body) => h('section', { class: 'help-sec', id }, h('h2', {}, title), ...body);
+  const p = (...k) => h('p', {}, ...k);
+  const toc = [
+    ['h-ablauf', 'Der Ablauf in vier Schritten'],
+    ['h-finden', 'Wie Preisradar deinen Artikel beim Mitbewerber findet'],
+    ['h-status', 'Was die Angaben in der Preisliste bedeuten'],
+    ['h-abruf', 'Wann und wie oft abgefragt wird'],
+    ['h-ki', 'Was die KI macht und was sie kostet'],
+    ['h-analyse', 'Wie die Empfehlungen entstehen'],
+    ['h-selbst', 'Was du selbst tun kannst'],
+    ['h-daten', 'Deine Daten und faires Verhalten'],
+  ];
+  root.append(h('article', { class: 'help' },
+    h('header', { class: 'help-head' },
+      h('h1', {}, 'So funktioniert Preisradar'),
+      h('p', { class: 'hero-sub' }, 'Preisradar vergleicht regelmäßig die Preise deiner Artikel mit denen deiner Mitbewerber und zeigt dir, wo du teurer oder günstiger bist. Es liest nur öffentliche Shopseiten und ändert nie etwas in deinem Shop. Über deine Preise entscheidest immer du.')),
+    h('nav', { class: 'help-toc', 'aria-label': 'Inhalt' }, h('ol', {}, toc.map(([id, t]) => h('li', {}, h('a', { href: `#${id}`, onclick: (e) => { e.preventDefault(); document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' }); } }, t))))),
+
+    sec('h-ablauf', 'Der Ablauf in vier Schritten',
+      h('ol', { class: 'steps' },
+        h('li', {}, h('h3', {}, 'Deine Artikel kommen rein'), p('Am einfachsten über die Sitemap deines Shops (', go('einstellungen', 'Einstellungen'), '), alternativ über Shopware oder eine CSV-Datei. Preisradar merkt sich Name, Hersteller, Artikelnummer, Herstellernummer, EAN und deinen Preis.')),
+        h('li', {}, h('h3', {}, 'Du wählst aus, was beobachtet wird'), p('Nur beobachtete Artikel werden bei Mitbewerbern gesucht. So entscheidest du, wie viel abgefragt wird. Auswahl in der ', go('preise', 'Preisliste'), ' über das Häkchen oder „Weitere Filter“.')),
+        h('li', {}, h('h3', {}, 'Du legst deine Mitbewerber an'), p('Unter ', go('mitbewerber', 'Mitbewerber'), ' reicht der Link zu irgendeinem Produkt des Shops. Preisradar erkennt, wie der Shop aufgebaut ist und wo sein Produktverzeichnis (die Sitemap) liegt.')),
+        h('li', {}, h('h3', {}, 'Preisradar fragt über den Tag verteilt ab'), p('In kleinen Paketen mit Pausen. Die Ergebnisse siehst du im ', go('start', 'Lagebild'), ', in der Preisliste und in der ', go('analyse', 'Analyse'), '.')))),
+
+    sec('h-finden', 'Wie Preisradar deinen Artikel beim Mitbewerber findet',
+      p('Das Schwierigste ist nicht der Preis, sondern das richtige Produkt. Preisradar geht dabei von sicher nach unsicher vor und hört auf, sobald es einen sicheren Treffer hat:'),
+      h('ol', { class: 'plainlist' },
+        h('li', {}, h('b', {}, 'Von dir hinterlegter Link. '), 'Hast du die Produktseite selbst eingetragen, wird nur diese abgefragt.'),
+        h('li', {}, h('b', {}, 'Kennnummern in den Adressen. '), 'Viele Shops schreiben die Herstellernummer oder EAN in die Produktadresse. Passt sie genau zu deinem Artikel, ist das fast immer der richtige.'),
+        h('li', {}, h('b', {}, 'Ähnlicher Name. '), 'Sonst vergleicht Preisradar Marke und Name mit den Adressen im Produktverzeichnis des Mitbewerbers, auf Wunsch nur in ausgewählten Kategorien.'),
+        h('li', {}, h('b', {}, 'Shopsuche. '), 'Wenn der Mitbewerber es erlaubt, wird zusätzlich seine Suche nach EAN oder Herstellernummer befragt.'),
+        h('li', {}, h('b', {}, 'KI als Helfer. '), 'Kommen die Regeln nicht weiter, kann die KI unter den ähnlichsten Seiten die passende auswählen (siehe unten).')),
+      p('Auf der gefundenen Seite wird nachgeprüft: Steht dort deine EAN oder Herstellernummer, gilt der Treffer als ', h('b', {}, 'bestätigt'), '. Passt nur der Name, landet er bei ', h('b', {}, '„zu prüfen“'), ' und zählt erst, wenn du ihn bestätigst. In Preise, Lagebild und Analyse fließen nur bestätigte Preise ein.')),
+
+    sec('h-status', 'Was die Angaben in der Preisliste bedeuten',
+      h('table', { class: 'plain legend-table' }, h('tbody', {},
+        [
+          ['Preis mit Prozentwert', 'Bestätigter Preis beim Mitbewerber und der Abstand zu deinem Preis. Rot: der Mitbewerber ist günstiger. Unterstrichen: der günstigste.'],
+          ['zu prüfen', 'Wahrscheinlich das richtige Produkt, aber nicht sicher. In der Detailansicht mit „Passt“ oder „Passt nicht“ entscheiden.'],
+          ['nicht gefunden', 'Kein passendes Produkt gefunden. Mit „suchen“ öffnest du die Shopsuche des Mitbewerbers und kannst den Link selbst eintragen.'],
+          ['ausstehend', 'Noch nicht abgefragt, kommt mit einem der nächsten Pakete.'],
+          ['Fehler / gesperrt', 'Die Seite war nicht erreichbar, oder der Mitbewerber erlaubt den Abruf dieser Seite nicht (robots.txt).'],
+          ['bei dir offline', 'Der Artikel steht nicht mehr in deiner eigenen Sitemap. Er bleibt mit allen Daten erhalten, wird aber nicht mehr abgefragt und zählt nicht in der Analyse.'],
+          ['Position', 'Die Linie zeigt alle Preise nebeneinander: dein Preis als gefüllter Punkt, Mitbewerber als Kreise.'],
+        ].map(([a, b]) => h('tr', {}, h('th', {}, a), h('td', {}, b)))))),
+
+    sec('h-abruf', 'Wann und wie oft abgefragt wird',
+      sch.mode === 'rolling'
+        ? p(`Preisradar arbeitet in Paketen: Pro Mitbewerber werden bis zu ${sch.batch} Artikel abgefragt, danach folgt eine Pause von ${sch.interval} bis ${sch.interval + sch.jitter} Sekunden, erst dann beginnt das nächste Paket. Zwischen zwei Seitenaufrufen beim selben Shop liegen einige Sekunden. Zuerst kommen Artikel, die fällig sind (spätestens alle ${sch.refresh} Stunden), danach die am längsten nicht geprüften.`)
+        : p(`Preisradar fragt zu festen Zeiten ab (${sch.hours.map((x) => String(x).padStart(2, '0') + ':00').join(', ')} Uhr), jeder Artikel höchstens alle ${sch.refresh} Stunden.`),
+      p('Artikel, die bei einem Mitbewerber nicht gefunden wurden, werden dort nur einmal pro Woche erneut gesucht. Mit „Prüfen“ in der Preisliste fragst du einen Artikel jederzeit sofort bei allen Mitbewerbern ab. Einstellbar unter ', go('einstellungen', 'Einstellungen → Abrufplan'), '.'),
+      p('Preisradar gibt sich offen als „PreisradarBot“ zu erkennen und hält sich an die Regeln, die jeder Shop in seiner robots.txt festlegt. Seiten, die ein Shop für Programme sperrt, werden nicht abgerufen.')),
+
+    sec('h-ki', 'Was die KI macht und was sie kostet',
+      p('Die KI ist ein Sprachmodell von OpenAI (derzeit ', h('b', {}, d.config.aiModel ?? 'gpt-4.1-mini'), '). Sie kann eine Shopseite ähnlich lesen wie ein Mensch und ist dort hilfreich, wo starre Regeln scheitern, etwa bei ungewöhnlich aufgebauten Shops. Sie wird nur eingesetzt, wenn die Regeln nicht weiterkommen:'),
+      h('ul', { class: 'plainlist' },
+        h('li', {}, h('b', {}, 'Preis lesen: '), 'Findet Preisradar auf einer Produktseite keinen Preis, liest die KI Preis, Lieferbarkeit und ob es dasselbe Produkt ist.'),
+        h('li', {}, h('b', {}, 'Treffer auswählen: '), 'Aus den ähnlichsten Seiten eines Mitbewerbers wählt sie die passende aus oder sagt „keine passt“.')),
+      p(h('b', {}, 'Schutz vor Fehlern: '), 'Einen Preis, der nicht wörtlich auf der Seite steht, verwirft Preisradar. Ist sich die KI nicht sicher, landet der Treffer bei „zu prüfen“. Die KI entscheidet nichts über deine Preise, rechnet nicht die Analyse und hat keinen Zugriff auf deinen Shop.'),
+      p(h('b', {}, 'Kosten: '), 'OpenAI rechnet nach Verbrauch ab, nicht über ein Abo. Eine Anfrage kostet je nach Modell und Seitengröße typischerweise deutlich unter einem Cent. Damit die Kosten nicht davonlaufen, gibt es eine Tagesgrenze: ',
+        ai ? h('b', {}, `heute ${ai.today.toLocaleString('de-DE')} von ${ai.limit.toLocaleString('de-DE')} Anfragen`) : 'siehe Einstellungen',
+        '. Ist sie erreicht, arbeitet Preisradar bis Mitternacht ohne KI weiter. Bei nicht gefundenen Artikeln fragt Preisradar die KI höchstens einmal pro Woche erneut.'),
+      p(d.config.ai ? 'Die KI ist eingerichtet. ' : h('b', {}, 'Die KI ist derzeit nicht eingerichtet. '), 'Ohne KI funktioniert Preisradar trotzdem, nur bei schwierigen Shops werden weniger Artikel gefunden. Schlüssel, Modell und Tagesgrenze unter ', go('einstellungen', 'Einstellungen → KI'), '. Pro Mitbewerber lässt sich die KI auch ganz abschalten.')),
+
+    sec('h-analyse', 'Wie die Empfehlungen entstehen',
+      p('Die Empfehlungen folgen festen, nachvollziehbaren Regeln, nicht der KI. Verglichen wird dein Preis mit dem günstigsten bestätigten Angebot eines Mitbewerbers, der den Artikel liefern kann:'),
+      h('ul', { class: 'plainlist' },
+        h('li', {}, h('b', {}, 'Preis halten: '), `bis ${r.tolerance} % über dem günstigsten Angebot oder günstiger.`),
+        h('li', {}, h('b', {}, 'Preis senken: '), `mehr als ${r.tolerance} % teurer. Vorgeschlagen wird der Preis des günstigsten Angebots.`),
+        h('li', {}, h('b', {}, 'Preis erhöhen: '), `mehr als ${r.raiseAbove} % günstiger als alle anderen. Vorgeschlagen wird knapp unter dem günstigsten Angebot.`),
+        h('li', {}, h('b', {}, 'Prüfen: '), `Abweichungen über ${r.outlier} % sind meist eine falsche Zuordnung (andere Größe, anderes Set) und werden nicht als Marktpreis gewertet.`)),
+      p('Preisradar kennt deine Einkaufspreise und Margen nicht. Prüfe eine Senkung deshalb immer gegen deine Marge.')),
+
+    sec('h-selbst', 'Was du selbst tun kannst',
+      h('ul', { class: 'plainlist' },
+        h('li', {}, 'Treffer mit „zu prüfen“ bestätigen oder verwerfen. Das macht die Auswertung schnell genauer.'),
+        h('li', {}, 'Bei „nicht gefunden“ über „suchen“ selbst nachsehen und den Link zur Produktseite eintragen. Er wird sofort abgefragt und ab dann immer verwendet.'),
+        h('li', {}, 'Bei großen Mitbewerbern unter Mitbewerber → „Kategorien eingrenzen“ nur die passenden Bereiche wählen. Das spart Zeit und vermeidet falsche Treffer.'),
+        h('li', {}, 'Nur die Artikel beobachten, deren Preise dich wirklich interessieren.'))),
+
+    sec('h-daten', 'Deine Daten und faires Verhalten',
+      p('Alle Daten liegen auf deinem eigenen Server. Die Oberfläche lädt nichts von fremden Servern (keine Schriften, kein Tracking). An OpenAI gehen nur der Inhalt öffentlicher Mitbewerberseiten und die Produktangaben deines Artikels (Name, Marke, Nummern), keine Kunden- oder Bestelldaten. Zugangsdaten werden verschlüsselt gespeichert.'),
+      p('Über den Claude-Zugang (', go('einstellungen', 'Einstellungen'), ') kannst du Preisradar auch im Gespräch mit Claude abfragen und bedienen. Preise in deinem Shop werden auch dort nie geändert.'))));
 }
 
 // ---------- Analyse (Regelwerk) ----------
@@ -1022,7 +1118,8 @@ async function renderSettings(root) {
     cur.openai_from_env ? h('p', { class: 'pmeta' }, 'Aktuell wird der Schlüssel aus der Server-Umgebung verwendet.') : null,
     h('div', { class: 'grid' },
       f('API-Schlüssel', 'openai_api_key', '', { type: 'password', ph: cur.openai_key_set ? '•••••••• (gespeichert)' : 'sk-…', hint: cur.openai_key_set ? 'Leer lassen, um den gespeicherten Schlüssel zu behalten' : '' }),
-      f('Modell', 'openai_model', cur.openai_model, { hint: `Name wie in der OpenAI-Modellliste, Standard: ${cur.openai_default_model}` })),
+      f('Modell', 'openai_model', cur.openai_model, { hint: `Name wie in der OpenAI-Modellliste, Standard: ${cur.openai_default_model}` }),
+      f('KI-Anfragen pro Tag (Grenze)', 'ai_daily_limit', cur.ai_usage.limit, { type: 'number', hint: `Heute ${cur.ai_usage.today} von ${cur.ai_usage.limit} verbraucht. Ist die Grenze erreicht, arbeitet der Abruf bis Mitternacht ohne KI weiter. 0 = KI aus. Standard: ${cur.ai_daily_default}` })),
     h('div', { class: 'row', style: 'margin-top:14px' },
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
         kout.hidden = false; kout.textContent = 'Verbindung wird geprüft …';
@@ -1108,6 +1205,7 @@ function render() {
   main.replaceChildren();
   if (state.tab === 'start') renderStart(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
   else if (state.tab === 'preise') renderPrices(main);
+  else if (state.tab === 'hilfe') renderHelp(main);
   else if (state.tab === 'analyse') renderAnalysis(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
   else if (state.tab === 'mitbewerber') renderCompetitors(main);
   else if (state.tab === 'einstellungen') renderSettings(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });

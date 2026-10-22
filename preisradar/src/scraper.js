@@ -3,7 +3,7 @@ import { extractProduct, findCandidates } from './extract.js';
 import { normId, sleep, tokens, jaccard } from './util.js';
 import { aiConfig } from './ai.js';
 import { sitemapCandidates, hasSitemap, refreshSitemaps, sitemapDue } from './sitemap.js';
-import { pageDigest, linkList, aiPick, aiExtract, aiVerdict, aiNote, aiBudgetLeft, resetAiBudget, CONFIDENT } from './aiscrape.js';
+import { pageDigest, linkList, aiPick, aiExtract, aiVerdict, aiNote, aiBudgetLeft, resetAiBudget, aiCallCount, CONFIDENT } from './aiscrape.js';
 
 export const scrapeState = {
   running: false,
@@ -69,7 +69,22 @@ function searchQueries(product) {
 }
 
 /** Einen Treffer (Produkt x Mitbewerber) prüfen: erst bekannte URL, sonst Suche. */
+const WEEK_MS = 7 * 24 * HOUR;
+/**
+ * Ein Artikel bei einem Mitbewerber. Die KI wird bei nicht gefundenen Artikeln höchstens einmal pro Woche erneut gefragt;
+ * jeder Einsatz der KI wird am Treffer vermerkt.
+ */
 export async function processItem(db, comp, product, match, now = new Date().toISOString(), ai = null) {
+  if (ai && match.status === 'not_found' && match.ai_tried_at && Date.now() - Date.parse(match.ai_tried_at) < WEEK_MS) ai = null;
+  const before = aiCallCount();
+  try {
+    return await processItemInner(db, comp, product, match, now, ai);
+  } finally {
+    if (aiCallCount() > before) db.prepare('UPDATE matches SET ai_tried_at=? WHERE id=?').run(new Date().toISOString(), match.id);
+  }
+}
+
+async function processItemInner(db, comp, product, match, now, ai) {
   let aiErr = null;
   /** Seite von der KI auslesen lassen; Fehler der KI brechen den Abruf nicht ab. */
   const aiRead = async (url, html) => {
@@ -303,6 +318,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
       for (const it of items) {
         if (due.length >= limitPerCompetitor) break;
         if (taken.has(it.p.id) || (it.m.last_checked && now - Date.parse(it.m.last_checked) < HOUR)) continue;
+        if (['not_found', 'nourl', 'blocked'].includes(it.m.status)) continue; // nicht gefunden: nur wöchentlich (über isDue)
         due.push(it);
       }
     }

@@ -8,11 +8,11 @@ import { extractProduct, findCandidates } from './extract.js';
 import { fetchText, robotsAllows } from './fetcher.js';
 import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
 import { aiConfig, testAi, DEFAULT_MODEL } from './ai.js';
-import { analyse } from './analysis.js';
+import { analyse, RULES } from './analysis.js';
 import { autoSetup, detectSearchLink } from './autosetup.js';
 import { startOwnImport, ownImportState } from './ownimport.js';
 import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList, sitemapCategories, clearSitemapCache } from './sitemap.js';
-import { pageDigest, aiExtract } from './aiscrape.js';
+import { pageDigest, aiExtract, initAiBudget, aiUsage, DEFAULT_AI_DAILY_LIMIT } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import crypto from 'node:crypto';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
@@ -25,6 +25,7 @@ const SCRAPE_HOURS = String(process.env.SCRAPE_HOURS ?? '6,18').split(',').map((
 
 export function createApp(db, { dataDir = null } = {}) {
   initSecrets(dataDir);
+  initAiBudget(db);
   const ownName = () => getSetting(db, 'own_name') || process.env.OWN_SHOP_NAME || 'BelKai';
   const app = express();
   app.disable('x-powered-by');
@@ -102,7 +103,7 @@ export function createApp(db, { dataDir = null } = {}) {
       offline: db.prepare('SELECT COUNT(*) AS n FROM products WHERE active=1 AND offline_since IS NOT NULL').get().n,
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key) },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -367,6 +368,8 @@ export function createApp(db, { dataDir = null } = {}) {
       openai_from_env: !hasSetting(db, 'openai_api_key') && Boolean(process.env.OPENAI_API_KEY),
       openai_model: aiConfig(db).model,
       openai_default_model: DEFAULT_MODEL,
+      ai_usage: aiUsage(),
+      ai_daily_default: DEFAULT_AI_DAILY_LIMIT,
     });
   }));
   const cleanUrl = (u) => {
@@ -391,6 +394,11 @@ export function createApp(db, { dataDir = null } = {}) {
     if (b.openai_api_key) setSetting(db, 'openai_api_key', String(b.openai_api_key).trim(), { secret: true });
     if (typeof b.openai_model === 'string') setSetting(db, 'openai_model', b.openai_model.trim());
     if (b.openai_remove_key) setSetting(db, 'openai_api_key', '');
+    if (b.ai_daily_limit !== undefined && b.ai_daily_limit !== '') {
+      const n = Number(b.ai_daily_limit);
+      if (!Number.isInteger(n) || n < 0 || n > 100000) throw bad('KI-Tagesgrenze: ganze Zahl zwischen 0 und 100000');
+      setSetting(db, 'ai_daily_limit', String(n));
+    }
     res.json({ ok: true });
   }));
   app.post('/api/settings/mcp-token', wrap((_req, res) => res.json({ token: createMcpToken(db) })));

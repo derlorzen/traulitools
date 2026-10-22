@@ -117,6 +117,7 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   const compCols = db.prepare('PRAGMA table_info(competitors)').all().map((c) => c.name);
   if (!compCols.includes('sitemap_url')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_url TEXT');
   if (!compCols.includes('sitemap_fetched_at')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_fetched_at TEXT');
+  if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_tried_at')) db.exec('ALTER TABLE matches ADD COLUMN ai_tried_at TEXT');
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_note')) db.exec('ALTER TABLE matches ADD COLUMN ai_note TEXT');
   const prodCols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
   if (!prodCols.includes('offline_since')) db.exec('ALTER TABLE products ADD COLUMN offline_since TEXT');

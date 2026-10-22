@@ -69,7 +69,7 @@ const TOOLS = [
     name: 'update_settings',
     description: 'Einstellungen ändern: Shop-Name, Shop-URL, eigene Sitemap-URL(s) (mehrere durch Leerzeichen/Zeilenumbruch) und Abrufplan. Zugangsdaten (API-Keys, Passwörter) lassen sich hier bewusst nicht setzen.',
     inputSchema: obj({
-      own_name: { type: 'string' }, own_url: { type: 'string' }, own_sitemap_url: { type: 'string' },
+      own_name: { type: 'string' }, own_url: { type: 'string' }, own_sitemap_url: { type: 'string' }, ai_daily_limit: { type: 'integer', minimum: 0, description: 'Höchstzahl KI-Anfragen pro Tag (0 = KI aus)' },
       schedule: { type: 'object', properties: { mode: { type: 'string', enum: ['rolling', 'slots'] }, batch: { type: 'integer' }, interval: { type: 'integer', description: 'Sekunden zwischen Paketen' }, jitter: { type: 'integer', description: 'zufälliger Aufschlag in Sekunden' }, refresh: { type: 'integer', description: 'Mindestabstand je Artikel in Stunden' } }, additionalProperties: false },
     }),
   },
@@ -129,7 +129,7 @@ function handlers(db, ownName, schedule, call) {
     get_settings: () => call('GET', '/api/settings'),
     update_settings: (a = {}) => {
       const body = {};
-      for (const k of ['own_name', 'own_url', 'own_sitemap_url', 'schedule']) if (a[k] !== undefined) body[k] = a[k];
+      for (const k of ['own_name', 'own_url', 'own_sitemap_url', 'schedule', 'ai_daily_limit']) if (a[k] !== undefined) body[k] = a[k];
       if (!Object.keys(body).length) throw new Error('Nichts zu ändern');
       return call('PUT', '/api/settings', body).then(() => call('GET', '/api/settings'));
     },
