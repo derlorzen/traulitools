@@ -98,7 +98,7 @@ function ladder(p, a) {
 
 // ---------- Preise ----------
 function matchCell(p, a, { c, m }) {
-  if (!m) return h('td', {}, h('span', { class: 'tag mute' }, '–'));
+  if (!m) return h('td', { 'data-label': c.name, class: 'mcell' }, h('span', { class: 'tag mute' }, '–'));
   const tip = m.checked ? `Geprüft: ${dt.format(new Date(m.checked))}` : '';
   if (m.status === 'ok' || (m.status === 'review' && m.price != null)) {
     const best = m.status === 'ok' && a.min != null && m.price === a.min;
@@ -109,7 +109,7 @@ function matchCell(p, a, { c, m }) {
       delta = h('span', { class: `delta ${cls}` }, Math.abs(d) < 0.05 ? 'gleich' : `${pct.format(d)} %`);
     }
     const prev = m.previous != null && m.previous !== m.price ? ` · vorher ${eur.format(m.previous)}` : '';
-    return h('td', { class: `cell ${m.status}${best ? ' best' : ''}`, title: `${m.title ?? ''}\n${tip}${prev}`.trim() },
+    return h('td', { 'data-label': c.name, class: `mcell cell ${m.status}${best ? ' best' : ''}`, title: `${m.title ?? ''}\n${tip}${prev}`.trim() },
       h('span', { class: 'price' }, eur.format(m.price)), delta, m.status === 'review' ? h('span', { class: 'tag' }, 'prüfen') : null);
   }
   const map = {
@@ -118,7 +118,7 @@ function matchCell(p, a, { c, m }) {
   };
   const [label, cls] = map[m.status] ?? [m.status, 'mute'];
   const term = searchTerms(p)[0];
-  return h('td', { title: [m.error, tip].filter(Boolean).join('\n') }, h('span', { class: `tag ${cls}` }, label),
+  return h('td', { 'data-label': c.name, class: 'mcell', title: [m.error, tip].filter(Boolean).join('\n') }, h('span', { class: `tag ${cls}` }, label),
     ['not_found', 'nourl', 'error'].includes(m.status) ? h('a', { class: 'searchlink', href: shopSearchUrl(c, term[1]), target: '_blank', rel: 'noopener noreferrer', title: `Im Shop von ${c.name} nach ${term[0]} „${term[1]}“ suchen`, onclick: (e) => e.stopPropagation() }, 'suchen') : null);
 }
 
@@ -252,7 +252,8 @@ function buildTable() {
   const status = h('div', { id: 'liststatus', class: 'liststatus' }, 'Wird geladen …');
   wrap.replaceChildren(table, status);
   list.observer?.disconnect();
-  list.observer = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) loadRows(false); }, { root: wrap, rootMargin: '400px' });
+  const narrow = window.matchMedia('(max-width: 700px)').matches; // mobil scrollt die Seite, nicht die Tabelle
+  list.observer = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) loadRows(false); }, { root: narrow ? null : wrap, rootMargin: '600px' });
   list.observer.observe(status);
 }
 
@@ -284,25 +285,25 @@ async function loadRows(reset, { keep = false } = {}) {
   // Passt die erste Seite ganz auf den Bildschirm, gleich weiterladen
   const st = document.getElementById('liststatus');
   const wrap = document.getElementById('tablewrap');
-  if (st && wrap && list.rows.length < list.total && st.offsetTop < wrap.scrollTop + wrap.clientHeight + 400) loadRows(false);
+  if (st && wrap && list.rows.length < list.total && st.getBoundingClientRect().top < Math.min(window.innerHeight, wrap.getBoundingClientRect().bottom) + 400) loadRows(false);
 }
 
 function rowEl(p) {
   const d = state.data;
   const a = analyse(p, d.competitors);
   const tr = h('tr', { tabindex: 0, 'data-id': p.id, class: p.offline_since ? 'offline' : null, onclick: () => openDrawer(p.id), onkeydown: (e) => e.key === 'Enter' && e.target === tr && openDrawer(p.id) },
-    h('td', { onclick: (e) => e.stopPropagation() }, h('input', { type: 'checkbox', checked: Boolean(p.tracked), 'aria-label': `${p.name} beobachten`, onchange: guard((e) => track([p.id], e.target.checked)) })),
+    h('td', { class: 'trackcell', onclick: (e) => e.stopPropagation() }, h('input', { type: 'checkbox', checked: Boolean(p.tracked), 'aria-label': `${p.name} beobachten`, onchange: guard((e) => track([p.id], e.target.checked)) })),
     h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name),
       h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.mpn && p.mpn !== p.number ? `HAN ${p.mpn}` : null].filter(Boolean).join(' · ')),
       p.offline_since ? h('span', { class: 'tag warn', title: `Seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar` }, 'bei dir offline') : null),
-    h('td', { class: 'own' }, p.price != null ? eur.format(p.price) : '–'),
+    h('td', { class: 'own', 'data-label': d.own.name }, p.price != null ? eur.format(p.price) : '–'),
     a.cells.map((cell) => matchCell(p, a, cell)),
-    d.competitors.length ? h('td', {}, ladder(p, a)) : null,
-    d.competitors.length ? h('td', { class: a.kind === 'undercut' ? 'gap bad' : a.kind === 'cheapest' ? 'gap good' : 'gap' },
+    d.competitors.length ? h('td', { class: 'ladcell' }, ladder(p, a)) : null,
+    d.competitors.length ? h('td', { 'data-label': 'Abstand zum günstigsten', class: a.kind === 'undercut' ? 'gapcell gap bad' : a.kind === 'cheapest' ? 'gapcell gap good' : 'gapcell gap' },
       a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `${pct.format(a.gapPct)} % über dem günstigsten`)]
         : a.kind === 'cheapest' ? ['günstigster', h('small', {}, a.min - p.price > 0.004 ? `${eur.format(a.min - p.price)} Vorsprung` : 'gleichauf')]
           : h('span', { class: 'tag mute' }, '–')) : null,
-    d.competitors.length ? h('td', { onclick: (e) => e.stopPropagation() }, checkButton(p.id)) : null);
+    d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, checkButton(p.id)) : null);
   return tr;
 }
 
@@ -373,7 +374,8 @@ async function openDrawer(id, given = null) {
   const d = state.data;
   const el = document.getElementById('drawer');
   el.hidden = false;
-  if (!given) el.replaceChildren(h('p', { class: 'pmeta' }, 'Wird geladen …'));
+  if (!given) el.replaceChildren(h('div', { class: 'drawer-top' }, h('button', { class: 'btn small close', onclick: closeDrawer, 'aria-label': 'Detailansicht schließen' }, 'Schließen')), h('p', { class: 'pmeta' }, 'Wird geladen …'));
+  document.body.classList.add('drawer-open');
   const p = given ?? await api(`/api/products/${id}`).catch((e) => { toast(e.message, true); return null; });
   if (!p || state.selected !== id) return;
   const a = analyse(p, d.competitors);
@@ -382,7 +384,7 @@ async function openDrawer(id, given = null) {
   const reloadDrawer = async () => { const np = await api(`/api/products/${id}`); replaceRow(np); openDrawer(id, np); };
 
   el.replaceChildren(
-    h('button', { class: 'btn small close', onclick: closeDrawer, 'aria-label': 'Schließen' }, 'Schließen'),
+    h('div', { class: 'drawer-top' }, h('button', { class: 'btn small close', onclick: closeDrawer, 'aria-label': 'Detailansicht schließen' }, 'Schließen')),
     h('h2', {}, p.name),
     h('p', { class: 'pmeta' }, [p.manufacturer, `Art.-Nr. ${p.number}`, p.mpn && `HAN ${p.mpn}`, p.ean && `EAN ${p.ean}`].filter(Boolean).join(' · ')),
     p.offline_since ? h('p', { class: 'note warn' }, `Bei dir offline: seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar. Der Artikel bleibt mit seinen Daten erhalten und wird bei Mitbewerbern nicht mehr automatisch abgefragt.`) : null,
@@ -429,7 +431,7 @@ async function openDrawer(id, given = null) {
     histBox.replaceChildren(h('p', { class: 'pmeta' }, e.message));
   }
 }
-function closeDrawer() { state.selected = null; document.getElementById('drawer').hidden = true; }
+function closeDrawer() { state.selected = null; document.getElementById('drawer').hidden = true; document.body.classList.remove('drawer-open'); }
 document.addEventListener('keydown', (e) => e.key === 'Escape' && closeDrawer());
 
 // ---------- Mitbewerber ----------
@@ -1188,7 +1190,7 @@ function renderRunbar() {
     const lr = state.data.lastRun;
     bar.replaceChildren(h('div', { class: 'rb-l' }, 'Letzter Abruf'),
       h('div', { class: 'rb-t' }, lr?.finished_at ? dt.format(new Date(lr.finished_at)) : 'noch keiner'),
-      h('button', { class: 'btn primary small', onclick: guard(async () => { const r = await api('/api/scrape', { body: {} }); toast(r.total ? `Abruf gestartet (${r.total} Prüfungen)` : 'Alles aktuell, nichts zu prüfen'); await refresh(); }) }, 'Preise jetzt abrufen'));
+      h('button', { class: 'btn primary small', 'aria-label': 'Preise jetzt abrufen', onclick: guard(async () => { const r = await api('/api/scrape', { body: {} }); toast(r.total ? `Abruf gestartet (${r.total} Prüfungen)` : 'Alles aktuell, nichts zu prüfen'); await refresh(); }) }, h('span', { class: 'long' }, 'Preise jetzt abrufen'), h('span', { class: 'short' }, 'Abrufen')));
   }
 }
 
