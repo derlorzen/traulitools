@@ -1198,21 +1198,44 @@ function renderRunbar() {
 function setTab(t) { state.tab = t; closeDrawer(); render(); }
 document.getElementById('tabs').addEventListener('click', (e) => { const t = e.target.closest('button')?.dataset.tab; if (t) setTab(t); });
 
+let renderSeq = 0;
+let renderedTab = null;
+/**
+ * Bereich neu zeichnen ohne Aufblitzen: Bereiche, die erst Daten laden (Lagebild, Analyse, Import, Einstellungen),
+ * werden abseits der Seite aufgebaut und erst ausgetauscht, wenn sie fertig sind. Bis dahin bleibt der alte Inhalt stehen.
+ */
 function render() {
   if (!state.data) return;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === state.tab));
   renderRunbar();
   const main = document.getElementById('main');
-  const keep = main.scrollTop;
-  main.replaceChildren();
-  if (state.tab === 'start') renderStart(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
-  else if (state.tab === 'preise') renderPrices(main);
-  else if (state.tab === 'hilfe') renderHelp(main);
-  else if (state.tab === 'analyse') renderAnalysis(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
-  else if (state.tab === 'mitbewerber') renderCompetitors(main);
-  else if (state.tab === 'einstellungen') renderSettings(main).catch((e) => { if (!(e instanceof AuthError)) toast(e.message, true); });
-  else renderImport(main);
-  main.scrollTop = keep;
+  const sameTab = renderedTab === state.tab;
+  const keepMain = main.scrollTop;
+  const keepWin = window.scrollY;
+  const seq = ++renderSeq;
+  const done = () => {
+    renderedTab = state.tab;
+    if (sameTab) { main.scrollTop = keepMain; window.scrollTo(0, keepWin); } else { main.scrollTop = 0; window.scrollTo(0, 0); }
+  };
+  const fail = (e) => { if (!(e instanceof AuthError)) toast(e.message, true); };
+  const asyncTabs = { start: renderStart, analyse: renderAnalysis, einstellungen: renderSettings, import: renderImport };
+  const fn = asyncTabs[state.tab] ?? (state.tab === 'mitbewerber' ? null : asyncTabs.import);
+  if (state.tab === 'preise' || state.tab === 'hilfe' || state.tab === 'mitbewerber') {
+    main.replaceChildren();
+    if (state.tab === 'preise') renderPrices(main);
+    else if (state.tab === 'hilfe') renderHelp(main);
+    else renderCompetitors(main);
+    done();
+    return;
+  }
+  if (!sameTab) main.setAttribute('aria-busy', 'true');
+  const box = document.createElement('div');
+  Promise.resolve(fn(box)).then(() => {
+    if (seq !== renderSeq) return; // inzwischen anderer Bereich gewählt
+    main.replaceChildren(...box.childNodes);
+    main.removeAttribute('aria-busy');
+    done();
+  }).catch((e) => { main.removeAttribute('aria-busy'); fail(e); });
 }
 
 let pollTimer;

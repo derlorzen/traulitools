@@ -406,3 +406,5 @@ select { background-color: var(--surface); color: var(--ink); }
 }
 body.drawer-open { overflow: hidden; }
 @media (min-width: 701px) { body.drawer-open { overflow: auto; } }
+main[aria-busy="true"] { opacity: .55; }
+@media (prefers-reduced-motion: no-preference) { main { transition: opacity .12s ease; } }
