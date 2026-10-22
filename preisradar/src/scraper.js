@@ -3,6 +3,7 @@ import { extractProduct, findCandidates } from './extract.js';
 import { normId, sleep, tokens, jaccard } from './util.js';
 import { aiConfig } from './ai.js';
 import { sitemapCandidates, hasSitemap, refreshSitemaps, sitemapDue } from './sitemap.js';
+import { deriveTemplates, applyTemplates, loadTemplates, learnTemplates, scoreTemplates } from './templates.js';
 import { pageDigest, linkList, aiPick, aiExtract, aiVerdict, aiNote, aiBudgetLeft, resetAiBudget, aiCallCount, CONFIDENT } from './aiscrape.js';
 
 export const scrapeState = {
@@ -70,6 +71,15 @@ function searchQueries(product) {
 
 /** Einen Treffer (Produkt x Mitbewerber) prüfen: erst bekannte URL, sonst Suche. */
 const WEEK_MS = 7 * 24 * HOUR;
+export const MAX_CHECKS_PER_DAY = 2;
+export const MIN_GAP_H = 8;
+export const berlinDay = (t = Date.now()) => new Date(t).toLocaleDateString('sv-SE', { timeZone: 'Europe/Berlin' });
+/** Automatischer Abruf erlaubt? Höchstens zweimal am Tag und mindestens acht Stunden nach der letzten Prüfung. */
+export function withinDailyLimits(m, now = Date.now()) {
+  if (m.last_checked && now - Date.parse(m.last_checked) < MIN_GAP_H * HOUR) return false;
+  if (m.check_day === berlinDay(now) && (m.check_count ?? 0) >= MAX_CHECKS_PER_DAY) return false;
+  return true;
+}
 /**
  * Ein Artikel bei einem Mitbewerber. Die KI wird bei nicht gefundenen Artikeln höchstens einmal pro Woche erneut gefragt;
  * jeder Einsatz der KI wird am Treffer vermerkt.
@@ -81,6 +91,9 @@ export async function processItem(db, comp, product, match, now = new Date().toI
     return await processItemInner(db, comp, product, match, now, ai);
   } finally {
     if (aiCallCount() > before) db.prepare('UPDATE matches SET ai_tried_at=? WHERE id=?').run(new Date().toISOString(), match.id);
+    // Abrufe je Tag zählen (Grenze: höchstens zwei automatische Prüfungen am Tag)
+    const day = berlinDay();
+    db.prepare('UPDATE matches SET check_count=CASE WHEN check_day=? THEN check_count+1 ELSE 1 END, check_day=? WHERE id=?').run(day, day, match.id);
   }
 }
 
@@ -110,14 +123,32 @@ async function processItemInner(db, comp, product, match, now, ai) {
     return { found: false, error: status === 'error' };
   };
 
-  /** Eine geladene Produktseite bewerten: Regeln zuerst, dann KI (fehlender Preis bzw. unsicherer Treffer). */
+  /** Regeln reichen nicht: gelernte Abruf-Vorlagen des Mitbewerbers probieren (ohne KI). */
+  const withTemplates = (html, ext) => {
+    if (ext.found) return ext;
+    const tpls = loadTemplates(db, comp.id);
+    if (!tpls.length) return ext;
+    const t = applyTemplates(html, tpls);
+    scoreTemplates(db, comp.id, t?.selector ?? null);
+    return t ? { ...ext, found: true, price: t.price, source: 'template' } : ext;
+  };
+  /** Die KI hat einen (auf der Seite belegten) Preis gefunden: daraus eine Vorlage für alle weiteren Seiten lernen. */
+  const learn = (url, html, price) => {
+    try {
+      const sels = deriveTemplates(html, price);
+      if (sels.length) learnTemplates(db, comp.id, sels, { url });
+    } catch { /* Lernen ist optional */ }
+  };
+
+  /** Eine geladene Produktseite bewerten: Regeln, dann Vorlagen, erst im Notfall KI (fehlender Preis bzw. unsicherer Treffer). */
   const evalPage = async (cp) => {
-    let ext = extractProduct(cp.r.text, { priceSelector: comp.price_selector });
+    let ext = withTemplates(cp.r.text, extractProduct(cp.r.text, { priceSelector: comp.price_selector }));
     let v = ext.found ? verify(product, ext) : 'no';
     let note = null;
     if (ai && (!ext.found || (v === 'maybe' && ai.mode === 'always'))) {
       const a = await aiRead(cp.r.finalUrl, cp.r.text);
       if (a?.isProductPage && a.price != null && !ext.found) {
+        learn(cp.r.finalUrl, cp.r.text, a.price);
         ext = { found: true, price: a.price, title: a.title, availability: a.availability };
         v = aiVerdict(a);
         note = aiNote(a);
@@ -135,10 +166,11 @@ async function processItemInner(db, comp, product, match, now, ai) {
       const p = await loadPage(match.url);
       if (p.blocked) return fail('blocked', 'robots.txt des Mitbewerbers untersagt den Abruf dieser Seite');
       if (!p.gone) {
-        const ext = extractProduct(p.r.text, { priceSelector: comp.price_selector });
+        const ext = withTemplates(p.r.text, extractProduct(p.r.text, { priceSelector: comp.price_selector }));
         const verdict = match.status === 'review' ? 'maybe' : 'match';
         if (!ext.found) {
           const a = await aiRead(p.r.finalUrl, p.r.text);
+          if (a?.price != null) learn(p.r.finalUrl, p.r.text, a.price);
           if (a?.price != null) return save({ price: a.price, title: a.title, availability: a.availability }, p.r.finalUrl, verdict, aiNote(a));
           return fail('error', 'Kein Preis auf der Seite gefunden (ggf. Preis-Selektor setzen oder KI aktivieren)');
         }
@@ -238,12 +270,15 @@ async function processItemInner(db, comp, product, match, now, ai) {
             pages++;
             await sleep(comp.delay_ms);
             if (!cp.blocked && !cp.gone) {
-              const ext = extractProduct(cp.r.text, { priceSelector: comp.price_selector });
-              const a = await aiRead(cp.r.finalUrl, cp.r.text);
+              const ext = withTemplates(cp.r.text, extractProduct(cp.r.text, { priceSelector: comp.price_selector }));
+              // Zweite KI-Anfrage nur, wenn Regeln und Vorlagen keinen Preis finden; sonst reicht das Urteil der Auswahl
+              const a = ext.found ? null : await aiRead(cp.r.finalUrl, cp.r.text);
+              if (a?.price != null) learn(cp.r.finalUrl, cp.r.text, a.price);
               const price = ext.found ? ext.price : a?.price;
               let v = ext.found ? verify(product, ext) : 'no';
-              let note = null;
+              let note = `KI-Auswahl (${Math.round(pick.confidence * 100)} %): ${pick.reason}`.slice(0, 220);
               if (a && v !== 'match') { v = aiVerdict(a); note = aiNote(a); }
+              else if (!a && v === 'no' && pick.confidence >= 0.5) v = 'maybe'; // Treffer der KI-Auswahl: zur Prüfung vorlegen
               if (price != null && v !== 'no') {
                 const e = ext.found ? ext : { price, title: a.title, availability: a.availability };
                 if (v === 'match') return save(e, cp.r.finalUrl, 'match', note);
@@ -310,12 +345,14 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
       .map((p) => ({ p, m: byProduct.get(p.id) }))
       .filter(({ m }) => m)
       .sort((a, b) => (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''));
-    const due = items.filter(({ m }) => isDue(m, force || Boolean(productId), now, minIntervalH));
+    // Gesamtabrufe (ohne einzelnen Artikel) halten die Tagesgrenzen ein; „Prüfen“ für einen Artikel ist davon ausgenommen
+    const limited = productId || force ? items : items.filter(({ m }) => withinDailyLimits(m, now));
+    const due = limited.filter(({ m }) => isDue(m, force || Boolean(productId), now, Math.max(minIntervalH, productId ? 0 : MIN_GAP_H)));
     // Volle Pakete: sind weniger Artikel fällig als die Paketgröße, wird mit den am längsten nicht geprüften aufgefüllt
     // (frühestens eine Stunde nach der letzten Prüfung).
     if (fill && limitPerCompetitor && due.length < limitPerCompetitor) {
       const taken = new Set(due.map(({ p }) => p.id));
-      for (const it of items) {
+      for (const it of limited) {
         if (due.length >= limitPerCompetitor) break;
         if (taken.has(it.p.id) || (it.m.last_checked && now - Date.parse(it.m.last_checked) < HOUR)) continue;
         if (['not_found', 'nourl', 'blocked'].includes(it.m.status)) continue; // nicht gefunden: nur wöchentlich (über isDue)

@@ -408,3 +408,6 @@ body.drawer-open { overflow: hidden; }
 @media (min-width: 701px) { body.drawer-open { overflow: auto; } }
 main[aria-busy="true"] { opacity: .55; }
 @media (prefers-reduced-motion: no-preference) { main { transition: opacity .12s ease; } }
+.tpls { list-style: none; padding: 0; margin: 4px 0 0; display: grid; gap: 6px; }
+.tpls li { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.tpls code { background: var(--sunk); padding: 2px 6px; border-radius: 4px; font-size: 12px; overflow-wrap: anywhere; }

@@ -531,6 +531,7 @@ function competitorPanel(c) {
         }) }, 'Sitemap jetzt einlesen'), sm) : null,
         h('div', { class: 'row' }, discoverBtn(() => form.elements.base_url.value, form.elements.sitemap_url ? () => form.elements.sitemap_url : () => null)),
         c?.sitemap_count ? categoryPicker(c) : null),
+      c ? templateList(c) : null,
       h('div', { class: 'field' }, h('label', {}, 'KI beim Auslesen'),
         h('select', { name: 'ai_mode' },
           [['fallback', 'Bei Bedarf'], ['always', 'Immer prüfen'], ['off', 'Aus']].map(([v, t]) => h('option', { value: v, selected: (c?.ai_mode ?? 'fallback') === v }, t))),
@@ -546,6 +547,22 @@ function competitorPanel(c) {
         h('div', { class: 'field' }, h('label', {}, 'Suche testen'), h('input', { name: 't_q', placeholder: 'EAN oder Herstellernummer' }), h('button', { class: 'btn small', type: 'button', onclick: () => test('search') }, 'Suche ausführen'))),
       out));
   return form;
+}
+
+/** Von der KI gelernte Abruf-Vorlagen (Preis-Selektoren) eines Mitbewerbers. */
+function templateList(c) {
+  let list = [];
+  try { list = JSON.parse(c.templates || '[]'); } catch { /* leer */ }
+  const box = h('div', { class: 'field', style: 'grid-column:1/-1' }, h('label', {}, 'Abruf-Vorlagen'));
+  const draw = () => box.replaceChildren(h('label', {}, 'Abruf-Vorlagen'),
+    list.length
+      ? h('ul', { class: 'tpls' }, list.map((t) => h('li', {},
+        h('code', { translate: 'no' }, t.selector),
+        h('span', { class: 'pmeta' }, `${t.hits} Treffer${t.fails ? `, ${t.fails} ohne Preis` : ''}${t.source === 'ki' ? ', von der KI gelernt' : ''}`),
+        h('button', { class: 'linkbtn', type: 'button', onclick: guard(async () => { const r = await api(`/api/competitors/${c.id}/templates`, { method: 'DELETE', body: { selector: t.selector } }); list = r.templates; draw(); toast('Vorlage entfernt'); }) }, 'entfernen'))))
+      : h('span', { class: 'hint' }, 'Noch keine. Findet die KI auf einer Seite den Preis, merkt sich Preisradar, wo er steht, und liest alle weiteren Seiten dieses Shops ohne KI.'));
+  draw();
+  return box;
 }
 
 /** Kategorien der Sitemap als Mehrfachauswahl: gesucht wird nur in den gewählten Kategorien. */
@@ -848,7 +865,7 @@ function renderHelp(root) {
 
     sec('h-abruf', 'Wann und wie oft abgefragt wird',
       sch.mode === 'rolling'
-        ? p(`Preisradar arbeitet in Paketen: Pro Mitbewerber werden bis zu ${sch.batch} Artikel abgefragt, danach folgt eine Pause von ${sch.interval} bis ${sch.interval + sch.jitter} Sekunden, erst dann beginnt das nächste Paket. Zwischen zwei Seitenaufrufen beim selben Shop liegen einige Sekunden. Zuerst kommen Artikel, die fällig sind (spätestens alle ${sch.refresh} Stunden), danach die am längsten nicht geprüften.`)
+        ? p(`Preisradar arbeitet in Paketen: Pro Mitbewerber werden bis zu ${sch.batch} Artikel abgefragt, danach folgt eine Pause von ${sch.interval} bis ${sch.interval + sch.jitter} Sekunden, erst dann beginnt das nächste Paket. Zwischen zwei Seitenaufrufen beim selben Shop liegen einige Sekunden. Jeder Artikel wird höchstens zweimal am Tag automatisch abgefragt, mit mindestens ${sch.refresh} Stunden Abstand. So verteilt sich die Last über den Tag, ohne dass ein Shop ständig dieselben Seiten sieht.`)
         : p(`Preisradar fragt zu festen Zeiten ab (${sch.hours.map((x) => String(x).padStart(2, '0') + ':00').join(', ')} Uhr), jeder Artikel höchstens alle ${sch.refresh} Stunden.`),
       p('Artikel, die bei einem Mitbewerber nicht gefunden wurden, werden dort nur einmal pro Woche erneut gesucht. Mit „Prüfen“ in der Preisliste fragst du einen Artikel jederzeit sofort bei allen Mitbewerbern ab. Einstellbar unter ', go('einstellungen', 'Einstellungen → Abrufplan'), '.'),
       p('Preisradar gibt sich offen als „PreisradarBot“ zu erkennen und hält sich an die Regeln, die jeder Shop in seiner robots.txt festlegt. Seiten, die ein Shop für Programme sperrt, werden nicht abgerufen.')),
@@ -856,8 +873,9 @@ function renderHelp(root) {
     sec('h-ki', 'Was die KI macht und was sie kostet',
       p('Die KI ist ein Sprachmodell von OpenAI (derzeit ', h('b', {}, d.config.aiModel ?? 'gpt-4.1-mini'), '). Sie kann eine Shopseite ähnlich lesen wie ein Mensch und ist dort hilfreich, wo starre Regeln scheitern, etwa bei ungewöhnlich aufgebauten Shops. Sie wird nur eingesetzt, wenn die Regeln nicht weiterkommen:'),
       h('ul', { class: 'plainlist' },
-        h('li', {}, h('b', {}, 'Preis lesen: '), 'Findet Preisradar auf einer Produktseite keinen Preis, liest die KI Preis, Lieferbarkeit und ob es dasselbe Produkt ist.'),
+        h('li', {}, h('b', {}, 'Preis lesen: '), 'Findet Preisradar auf einer Produktseite weder über die üblichen Produktdaten noch über eine gelernte Vorlage einen Preis, liest die KI Preis, Lieferbarkeit und ob es dasselbe Produkt ist.'),
         h('li', {}, h('b', {}, 'Treffer auswählen: '), 'Aus den ähnlichsten Seiten eines Mitbewerbers wählt sie die passende aus oder sagt „keine passt“.')),
+      p(h('b', {}, 'Die KI lernt mit: '), 'Hat die KI auf einer Seite den Preis gefunden, merkt sich Preisradar, an welcher Stelle der Seite er steht (eine „Abruf-Vorlage“). Alle weiteren Seiten dieses Shops werden dann ohne KI ausgelesen. Ein Shop kann mehrere Vorlagen haben, etwa für Aktions- und Normalpreise. Vorlagen, die nicht mehr funktionieren, verschwinden von selbst; du siehst sie unter Mitbewerber. Die KI ist damit nur noch der Notfall für Seiten, die weder Regeln noch Vorlagen lesen können.'),
       p(h('b', {}, 'Schutz vor Fehlern: '), 'Einen Preis, der nicht wörtlich auf der Seite steht, verwirft Preisradar. Ist sich die KI nicht sicher, landet der Treffer bei „zu prüfen“. Die KI entscheidet nichts über deine Preise, rechnet nicht die Analyse und hat keinen Zugriff auf deinen Shop.'),
       p(h('b', {}, 'Kosten: '), 'OpenAI rechnet nach Verbrauch ab, nicht über ein Abo. Eine Anfrage kostet je nach Modell und Seitengröße typischerweise deutlich unter einem Cent. Damit die Kosten nicht davonlaufen, gibt es eine Tagesgrenze: ',
         ai ? h('b', {}, `heute ${ai.today.toLocaleString('de-DE')} von ${ai.limit.toLocaleString('de-DE')} Anfragen`) : 'siehe Einstellungen',
@@ -1142,7 +1160,7 @@ async function renderSettings(root) {
       f('Artikel je Mitbewerber und Paket', 'batch', sch.batch, { type: 'number' }),
       f('Abstand zwischen Paketen (Sekunden)', 'interval', sch.interval, { type: 'number' }),
       f('Zufälliger Aufschlag bis (Sekunden)', 'jitter', sch.jitter, { type: 'number' }),
-      f('Mindestabstand je Artikel (Stunden)', 'refresh', sch.refresh, { type: 'number', hint: '12 = etwa zweimal täglich' })),
+      f('Mindestabstand je Artikel (Stunden)', 'refresh', sch.refresh, { type: 'number', hint: 'Mindestens 8. Jeder Artikel wird höchstens zweimal am Tag automatisch abgefragt.' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: { schedule: Object.fromEntries(new FormData(plan)) } }); toast('Abrufplan gespeichert'); await refresh(); }) }, 'Speichern')));
 

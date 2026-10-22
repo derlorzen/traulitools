@@ -66,7 +66,8 @@ Claude Code: `claude mcp add --transport http preisradar https://<host>/mcp --he
 
 - Die Preisliste lädt seitenweise vom Server (100 Zeilen, weitere beim Scrollen); Filter und Sortierung (Spaltenköpfe) laufen serverseitig (`GET /api/products`).
 - „Prüfen" je Artikel fragt sofort alle Mitbewerber ab, unabhängig vom laufenden Abruf (`POST /api/products/:id/check`).
-- Verteilter Abruf: jedes Paket wird auf die eingestellte Größe je Mitbewerber aufgefüllt (fällige zuerst, dann die am längsten nicht geprüften, frühestens nach einer Stunde).
+- Verteilter Abruf: jedes Paket wird auf die eingestellte Größe je Mitbewerber aufgefüllt (fällige zuerst, dann die am längsten nicht geprüften). Jeder Artikel wird automatisch höchstens zweimal täglich (Europe/Berlin) und mit mindestens 8 Stunden Abstand abgefragt; „Prüfen“ für einen einzelnen Artikel ist ausgenommen.
+- Abruf-Vorlagen: findet die KI einen Preis, leitet Preisradar daraus CSS-Selektoren ab (bis zu fünf je Mitbewerber) und liest weitere Seiten ohne KI. Vorlagen mit vielen Fehlschlägen fallen weg.
 - Nicht gefundene Artikel: Link „suchen" in die Shopsuche des Mitbewerbers (Feld „Suchlink für dich", automatisch aus der Startseite erkennbar). Gefundene Produktseite in der Detailansicht einfügen, sie wird sofort abgerufen.
 - Sitemap-Kategorien je Mitbewerber auswählbar; gesucht wird dann nur in diesen URLs.
 - Eigene Artikel, die nicht mehr in der eigenen Sitemap stehen (täglicher Abgleich) oder 404 liefern, bleiben erhalten und werden als „bei dir offline" markiert; sie zählen nicht in der Analyse und werden nicht mehr abgefragt.

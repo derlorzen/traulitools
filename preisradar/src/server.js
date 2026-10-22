@@ -18,6 +18,7 @@ import crypto from 'node:crypto';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState, closeStaleRuns, checkProductNow } from './scraper.js';
 import { listProducts, getProduct, invalidatePriceList } from './pricelist.js';
+import { loadTemplates, removeTemplate } from './templates.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -167,6 +168,11 @@ export function createApp(db, { dataDir = null } = {}) {
     const link = await detectSearchLink(comp.base_url);
     if (link) db.prepare('UPDATE competitors SET manual_search_url=? WHERE id=?').run(link, comp.id);
     res.json({ link });
+  }));
+  // Gelernte Abruf-Vorlagen eines Mitbewerbers entfernen
+  app.delete('/api/competitors/:id/templates', wrap((req, res) => {
+    removeTemplate(db, Number(req.params.id), String(req.body?.selector ?? ''));
+    res.json({ ok: true, templates: loadTemplates(db, Number(req.params.id)) });
   }));
   // Kategorien aus der Sitemap: nur in den gewählten wird nach Treffern gesucht
   app.get('/api/competitors/:id/categories', wrap((req, res) => res.json(sitemapCategories(db, Number(req.params.id)))));
@@ -495,7 +501,7 @@ export function scheduleConfig(db) {
     batch: clamp(getSetting(db, 'scrape_batch'), 1, 1000, 100), // Artikel je Mitbewerber und Paket
     interval: clamp(getSetting(db, 'scrape_interval'), 10, 86400, 200), // Sekunden zwischen den Paketen
     jitter: clamp(getSetting(db, 'scrape_jitter'), 0, 3600, 100), // zufälliger Aufschlag in Sekunden
-    refresh: clamp(getSetting(db, 'scrape_refresh_hours'), 1, 168, 12), // Mindestabstand je Artikel in Stunden
+    refresh: clamp(getSetting(db, 'scrape_refresh_hours'), 8, 168, 12), // Mindestabstand je Artikel in Stunden (mind. 8, höchstens zweimal täglich)
     hours: SCRAPE_HOURS,
   };
 }

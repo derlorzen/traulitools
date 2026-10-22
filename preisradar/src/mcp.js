@@ -188,7 +188,7 @@ function handlers(db, ownName, schedule, call) {
         eigener_preisverlauf: db.prepare('SELECT price, at FROM product_price_history WHERE product_id=? ORDER BY at DESC LIMIT 30').all(p.id).reverse().map((h) => ({ price: h.price, at: h.at })),
       };
     },
-    list_competitors: () => db.prepare(`SELECT c.id, c.name, c.base_url, c.enabled, c.ai_mode, c.delay_ms, c.sitemap_url, c.sitemap_fetched_at,
+    list_competitors: () => db.prepare(`SELECT c.id, c.name, c.base_url, c.enabled, c.ai_mode, c.delay_ms, c.sitemap_url, c.sitemap_fetched_at, c.templates AS abruf_vorlagen,
       (SELECT COUNT(*) FROM sitemap_urls s WHERE s.competitor_id=c.id) AS sitemap_urls,
       (SELECT COUNT(*) FROM matches m WHERE m.competitor_id=c.id AND m.status='ok') AS bestaetigte_preise FROM competitors c ORDER BY position, id`).all().map((r) => ({ ...r, enabled: Boolean(r.enabled) })),
     list_runs: ({ limit = 10 } = {}) => db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT ?').all(Math.min(30, Number(limit) || 10)),
