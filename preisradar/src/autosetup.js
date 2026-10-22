@@ -94,3 +94,38 @@ export async function autoSetup(productUrl, { ai = null, delayMs = Math.max(Numb
   else if (!out.search_url) out.notes.push('Zuordnung läuft über die Sitemap.');
   return out;
 }
+
+/**
+ * Suchlink für die manuelle Suche im Browser ermitteln (kein automatischer Abruf der Suchseite):
+ * schema.org-SearchAction der Startseite, sonst das Suchformular. Ergebnis mit {q} als Platzhalter oder null.
+ */
+export function searchLinkFromHtml(html, baseUrl) {
+  for (const m of html.matchAll(/"(?:target|urlTemplate)"\s*:\s*"([^"]*\{search_term_string\}[^"]*)"/g)) {
+    try {
+      const t = m[1].replace(/\\\//g, '/');
+      const abs = new URL(t.replaceAll('{search_term_string}', 'QQQ'), baseUrl).toString().replaceAll('QQQ', '{q}');
+      if (/^https?:/.test(abs)) return abs;
+    } catch { /* weiter */ }
+  }
+  const form = /<form[^>]*action="([^"]*)"[^>]*>([\s\S]{0,4000}?)<\/form>/gi;
+  for (const m of html.matchAll(form)) {
+    const input = /<input[^>]*name="(search|q|query|sSearch|s|keyword|keywords|searchTerm|suchbegriff)"/i.exec(m[2]);
+    if (!input || !/(such|search)/i.test(m[1] + m[2])) continue;
+    try {
+      const u = new URL(m[1].replace(/&amp;/g, '&') || '/', baseUrl);
+      return `${u.origin}${u.pathname}?${input[1]}={q}`;
+    } catch { /* weiter */ }
+  }
+  return null;
+}
+
+export async function detectSearchLink(baseUrl) {
+  const origin = new URL(baseUrl).origin + '/';
+  if (!(await robotsAllows(origin))) return null;
+  try {
+    const r = await fetchText(origin, { timeout: 15000 });
+    return r.status < 400 ? searchLinkFromHtml(r.text, r.finalUrl || origin) : null;
+  } catch {
+    return null;
+  }
+}

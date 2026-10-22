@@ -105,6 +105,11 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     const raw = await res.text(); let json; try { json = JSON.parse(raw); } catch { json = { raw: raw.slice(0, 120), path, status: res.status }; }
     return { status: res.status, json };
   };
+  const ovp = async (scope) => {
+    const o = (await call('/api/overview' + (scope ? `?scope=${scope}` : ''))).json;
+    o.products = (await call('/api/products?limit=500' + (scope ? `&scope=${scope}` : ''))).json.rows;
+    return o;
+  };
 
   try {
     // Ohne Anmeldung kein Zugriff, Einrichtung nur einmal
@@ -158,7 +163,7 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     for (let i = 0; i < 300 && scrapeState.running; i++) await new Promise((r) => setTimeout(r, 100));
     assert.equal(scrapeState.running, false);
 
-    const ov = (await call('/api/overview')).json;
+    const ov = await ovp();
     const kludi = ov.products.find((p) => p.number === '10484');
     const hsk = ov.products.find((p) => p.number === '10276-001');
     const mk = kludi.matches[c.json.id];
@@ -196,11 +201,11 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
       for (let i = 0; i < 300 && scrapeState.running; i++) await new Promise((r) => setTimeout(r, 100));
     };
     await runAll();
-    let kh = (await call('/api/overview')).json.products.find((p) => p.number === '10276-001').matches[kc.json.id];
+    let kh = (await ovp()).products.find((p) => p.number === '10276-001').matches[kc.json.id];
     assert.equal(kh.status, 'not_found'); // KI aus: nichts gefunden
     await call(`/api/competitors/${kc.json.id}`, { name: 'KI-Shop', base_url: base, search_url: `${base}/ki-search?q={q}`, delay_ms: 1, ai_mode: 'fallback' }, 'PUT');
     await runAll();
-    kh = (await call('/api/overview')).json.products.find((p) => p.number === '10276-001').matches[kc.json.id];
+    kh = (await ovp()).products.find((p) => p.number === '10276-001').matches[kc.json.id];
     assert.equal(kh.status, 'ok');
     assert.equal(kh.price, 640);
     assert.match(kh.ai_note, /KI \(95 %\)/);
@@ -227,11 +232,11 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     const rf = (await call(`/api/competitors/${sc.json.id}/sitemap/refresh`, {})).json;
     assert.equal(rf.count, 3);
     await runAll();
-    const sm = (await call('/api/overview')).json.products.find((p) => p.number === '10484').matches[sc.json.id];
+    const sm = (await ovp()).products.find((p) => p.number === '10484').matches[sc.json.id];
     assert.equal(sm.status, 'ok'); // EAN auf der Produktseite stimmt
     assert.equal(sm.price, 259);
     assert.match(sm.url, /kludi-logo-thermostat/);
-    const sh = (await call('/api/overview')).json.products.find((p) => p.number === '10276-001').matches[sc.json.id];
+    const sh = (await ovp()).products.find((p) => p.number === '10276-001').matches[sc.json.id];
     assert.equal(sh.status, 'not_found');
 
     // Sitemaps automatisch finden (robots.txt), Index + .gz lesen, nur Artikel-Teil-Sitemaps
@@ -246,7 +251,7 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     assert.equal((await call('/api/settings')).json.own_sitemap_url, `${base}/own-sitemap.xml`);
     const own = (await call('/api/settings/own-sitemap/refresh', {})).json;
     assert.deepEqual([own.count, own.assigned], [3, 1]);
-    assert.match((await call('/api/overview')).json.products.find((p) => p.number === '10484').url, /\/10484\/$/);
+    assert.match((await ovp()).products.find((p) => p.number === '10484').url, /\/10484\/$/);
 
     // Artikelbasis aus der eigenen Sitemap importieren (nur Produktseiten, Hintergrundjob)
     assert.equal((await call('/api/import/sitemap', { limit: 0 })).status, 200);
@@ -254,18 +259,18 @@ test('Kompletter Ablauf: Import, Mitbewerber, Abruf, Übersicht', async () => {
     const ist = (await call('/api/import/sitemap/status')).json;
     assert.deepEqual([ist.running, ist.total, ist.created, ist.updated, ist.errors], [false, 2, 1, 1, 0]);
     assert.equal((await call('/api/overview')).json.scope, 'tracked');
-    assert.ok(!(await call('/api/overview')).json.products.some((p) => p.number === '20001')); // Sitemap-Import: zunächst nicht beobachtet
-    const allv = (await call('/api/overview?scope=all')).json;
+    assert.ok(!(await ovp()).products.some((p) => p.number === '20001')); // Sitemap-Import: zunächst nicht beobachtet
+    const allv = await ovp('all');
     assert.equal(allv.counts.all, allv.counts.tracked + 1);
     const np = allv.products.find((p) => p.number === '20001');
     assert.equal(np.tracked, 0);
     assert.deepEqual([np.name, np.manufacturer, np.ean, np.mpn, np.price], ['Neues Produkt', 'Testmarke', '4000000000017', 'MPN-20001', 99.9]);
     // Nicht beobachtete Artikel werden beim Abruf übersprungen, beobachtete aufgenommen
     await runAll();
-    assert.deepEqual((await call('/api/overview?scope=all')).json.products.find((p) => p.number === '20001').matches, {});
+    assert.deepEqual((await ovp('all')).products.find((p) => p.number === '20001').matches, {});
     assert.equal((await call('/api/products/track', { ids: [np.id], tracked: true })).json.counts.tracked, allv.counts.tracked + 1);
     await runAll();
-    assert.ok(Object.keys((await call('/api/overview')).json.products.find((p) => p.number === '20001').matches).length > 0);
+    assert.ok(Object.keys((await ovp()).products.find((p) => p.number === '20001').matches).length > 0);
     assert.equal((await call('/api/products/track', { ids: [] })).status, 400);
     // Abrufplan: verteilt über den Tag, Werte werden begrenzt gespeichert
     assert.equal((await call('/api/settings')).json.schedule.mode, 'rolling');

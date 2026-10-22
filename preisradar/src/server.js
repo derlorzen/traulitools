@@ -9,14 +9,15 @@ import { fetchText, robotsAllows } from './fetcher.js';
 import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
 import { aiConfig, testAi, DEFAULT_MODEL } from './ai.js';
 import { analyse } from './analysis.js';
-import { autoSetup } from './autosetup.js';
+import { autoSetup, detectSearchLink } from './autosetup.js';
 import { startOwnImport, ownImportState } from './ownimport.js';
-import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList } from './sitemap.js';
+import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList, sitemapCategories, clearSitemapCache } from './sitemap.js';
 import { pageDigest, aiExtract } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import crypto from 'node:crypto';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
-import { startScrape, scrapeState, closeStaleRuns } from './scraper.js';
+import { startScrape, scrapeState, closeStaleRuns, checkProductNow } from './scraper.js';
+import { listProducts, getProduct, invalidatePriceList } from './pricelist.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -80,6 +81,7 @@ export function createApp(db, { dataDir = null } = {}) {
   app.use(express.static(path.join(here, '..', 'public')));
 
   // Ab hier nur mit Anmeldung
+  app.use('/api', (req, _res, next) => { if (req.method !== 'GET') invalidatePriceList(); next(); });
   app.use('/api', (req, res, next) => (req.headers['x-internal-mcp'] === internalKey || currentUser(db, req) ? next() : res.status(401).json({ error: 'Nicht angemeldet' })));
 
   const wrap = (fn) => (req, res) => (async () => fn(req, res))().catch((e) => res.status(e.status || 500).json({ error: e.message })); // auch synchrone Fehler als JSON
@@ -91,32 +93,33 @@ export function createApp(db, { dataDir = null } = {}) {
     const counts = db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get();
     // scope: tracked = beobachtete Artikel, all = komplette Artikelbasis; ohne Angabe beobachtete, sofern vorhanden
     const scope = req.query.scope === 'all' || (req.query.scope !== 'tracked' && !counts.tracked) ? 'all' : 'tracked';
-    const products = db.prepare(`SELECT * FROM products WHERE active=1 ${scope === 'tracked' ? 'AND tracked=1' : ''} ORDER BY manufacturer, name`).all();
-    const matches = db.prepare('SELECT * FROM matches').all();
-    const prev = db.prepare(`
-      SELECT h.match_id, h.price FROM price_history h
-      JOIN (SELECT match_id, MAX(at) AS at FROM price_history WHERE at < (SELECT MAX(at) FROM price_history h2 WHERE h2.match_id = price_history.match_id) GROUP BY match_id) l
-      ON l.match_id = h.match_id AND l.at = h.at`).all();
-    const prevBy = new Map(prev.map((r) => [r.match_id, r.price]));
-    const byProduct = new Map();
-    for (const m of matches) {
-      if (!byProduct.has(m.product_id)) byProduct.set(m.product_id, {});
-      byProduct.get(m.product_id)[m.competitor_id] = {
-        id: m.id, status: m.status, price: m.price, url: m.url, title: m.title, availability: m.availability,
-        checked: m.last_checked, error: m.last_error, source: m.source, previous: prevBy.get(m.id) ?? null, ai_note: m.ai_note,
-      };
-    }
     res.json({
       own: { name: ownName() },
       competitors,
       scope,
       counts,
       schedule: scheduleConfig(db),
-      products: products.map((p) => ({ ...p, matches: byProduct.get(p.id) ?? {} })),
+      offline: db.prepare('SELECT COUNT(*) AS n FROM products WHERE active=1 AND offline_since IS NOT NULL').get().n,
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
       config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key) },
     });
+  }));
+
+  // --- Preisliste: seitenweise, gefiltert und sortiert ---
+  app.get('/api/products', wrap((req, res) => res.json(listProducts(db, req.query))));
+  app.get('/api/products/:id', wrap((req, res) => {
+    const p = getProduct(db, Number(req.params.id));
+    if (!p) throw bad('Artikel nicht gefunden', 404);
+    res.json(p);
+  }));
+
+  // Sofortprüfung eines Artikels bei allen Mitbewerbern (wartet auf das Ergebnis)
+  app.post('/api/products/:id/check', wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    const results = await checkProductNow(db, id);
+    invalidatePriceList();
+    res.json({ results, product: getProduct(db, id) });
   }));
 
   app.get('/api/products/:id/history', wrap((req, res) => {
@@ -150,13 +153,38 @@ export function createApp(db, { dataDir = null } = {}) {
       sitemapField(b.sitemap_url),
     ];
   };
+  // Suchlink für die manuelle Suche im Browser des Nutzers ({q} = Suchbegriff)
+  const setManualSearch = (id, v) => {
+    if (v === undefined) return;
+    const t = String(v ?? '').trim();
+    if (t && (!/^https?:\/\//.test(t) || !t.includes('{q}'))) throw bad('Suchlink: vollständige URL mit {q} als Platzhalter angeben');
+    db.prepare('UPDATE competitors SET manual_search_url=? WHERE id=?').run(t || null, id);
+  };
+  app.post('/api/competitors/:id/search-link/detect', wrap(async (req, res) => {
+    const comp = db.prepare('SELECT * FROM competitors WHERE id=?').get(Number(req.params.id));
+    if (!comp) throw bad('Mitbewerber nicht gefunden', 404);
+    const link = await detectSearchLink(comp.base_url);
+    if (link) db.prepare('UPDATE competitors SET manual_search_url=? WHERE id=?').run(link, comp.id);
+    res.json({ link });
+  }));
+  // Kategorien aus der Sitemap: nur in den gewählten wird nach Treffern gesucht
+  app.get('/api/competitors/:id/categories', wrap((req, res) => res.json(sitemapCategories(db, Number(req.params.id)))));
+  app.put('/api/competitors/:id/categories', wrap((req, res) => {
+    const list = Array.isArray(req.body?.categories) ? [...new Set(req.body.categories.map((x) => String(x).toLowerCase().replace(/^\/+|\/+$/g, '')))].slice(0, 500) : [];
+    db.prepare('UPDATE competitors SET sitemap_categories=? WHERE id=?').run(list.length ? JSON.stringify(list) : null, Number(req.params.id));
+    clearSitemapCache(Number(req.params.id));
+    res.json({ ok: true, selected: list });
+  }));
   app.post('/api/competitors', wrap((req, res) => {
     const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
     const r = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(...compFields(req.body), pos);
+    setManualSearch(Number(r.lastInsertRowid), req.body?.manual_search_url);
     res.json({ id: Number(r.lastInsertRowid) });
   }));
   app.put('/api/competitors/:id', wrap((req, res) => {
     db.prepare('UPDATE competitors SET name=?, base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=?, sitemap_url=? WHERE id=?').run(...compFields(req.body), Number(req.params.id));
+    setManualSearch(Number(req.params.id), req.body?.manual_search_url);
+    clearSitemapCache(Number(req.params.id));
     res.json({ ok: true });
   }));
   // Mitbewerber per Produktlink einrichten: analysieren (create=false) oder direkt anlegen (create=true)
@@ -246,7 +274,8 @@ export function createApp(db, { dataDir = null } = {}) {
     db.prepare("INSERT OR IGNORE INTO matches(product_id, competitor_id, status) VALUES (?,?,'pending')").run(product_id, competitor_id);
     if (u) db.prepare("UPDATE matches SET url=?, source='manual', status='pending', last_checked=NULL, last_error=NULL WHERE product_id=? AND competitor_id=?").run(u, product_id, competitor_id);
     else db.prepare("UPDATE matches SET url=NULL, source='auto', status='pending', price=NULL, last_checked=NULL, last_error=NULL WHERE product_id=? AND competitor_id=?").run(product_id, competitor_id);
-    startScrape(db, { trigger: 'manual', productId: product_id, competitorId: competitor_id, force: true });
+    // gleich abrufen, unabhängig vom laufenden Abruf (bei gesetzter URL)
+    if (u) await checkProductNow(db, Number(product_id), { competitorId: Number(competitor_id) }).catch(() => null);
     res.json({ ok: true });
   }));
   app.post('/api/matches/:id/confirm', wrap((req, res) => {
@@ -300,7 +329,8 @@ export function createApp(db, { dataDir = null } = {}) {
 
   // --- Beobachtete Artikel (nur diese werden bei Mitbewerbern abgeglichen) ---
   app.post('/api/products/track', wrap((req, res) => {
-    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    let ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length && req.body?.query && typeof req.body.query === 'object') ids = listProducts(db, { ...req.body.query, ids: true, limit: 1 }).ids;
     if (!ids.length) throw bad('Keine Artikel ausgewählt');
     if (ids.length > 100000) throw bad('Zu viele Artikel auf einmal');
     const v = req.body?.tracked === false ? 0 : 1;
@@ -434,9 +464,9 @@ export function createApp(db, { dataDir = null } = {}) {
     const ms = db.prepare('SELECT * FROM matches').all();
     const key = new Map(ms.map((m) => [`${m.product_id}:${m.competitor_id}`, m]));
     const fmt = (n) => (n == null ? '' : Number(n).toFixed(2).replace('.', ','));
-    const lines = [['Artikelnummer', 'EAN', 'Hersteller', 'Name', `${ownName()} Preis`, ...comps.flatMap((c) => [`${c.name} Preis`, `${c.name} URL`])].map(csvEscape).join(';')];
+    const lines = [['Artikelnummer', 'EAN', 'Hersteller', 'Name', 'Offline seit', `${ownName()} Preis`, ...comps.flatMap((c) => [`${c.name} Preis`, `${c.name} URL`])].map(csvEscape).join(';')];
     for (const p of products) {
-      lines.push([p.number, p.ean, p.manufacturer, p.name, fmt(p.price), ...comps.flatMap((c) => {
+      lines.push([p.number, p.ean, p.manufacturer, p.name, p.offline_since ? p.offline_since.slice(0, 10) : '', fmt(p.price), ...comps.flatMap((c) => {
         const m = key.get(`${p.id}:${c.id}`);
         return [m && (m.status === 'ok' || m.status === 'review') ? fmt(m.price) : '', m?.url ?? ''];
       })].map(csvEscape).join(';'));
@@ -464,18 +494,26 @@ export function scheduleConfig(db) {
 
 export function startScheduler(db) {
   const done = new Set(); // "YYYY-MM-DD-HH" – pro Zeitfenster nur ein Lauf (Modus slots)
+  let ownRefreshing = false;
   let pause = null; // Pause nach dem Ende des letzten Laufs (Sekunden), je Lücke neu ausgewürfelt
   const tick = () => {
     let next = 30;
     try {
       const cfg = scheduleConfig(db);
+      // Eigene Sitemap täglich neu einlesen (erkennt offline gegangene Artikel)
+      const ownUrls = sitemapList({ sitemap_url: getSetting(db, 'own_sitemap_url') });
+      const lastOwn = Date.parse(getSetting(db, 'own_sitemap_fetched_at') || 0) || 0;
+      if (ownUrls.length && !ownRefreshing && !ownImportState.running && Date.now() - lastOwn > 24 * 3600 * 1000) {
+        ownRefreshing = true;
+        refreshOwnSitemap(db, ownUrls).then((r) => r.offline && console.log(`Eigene Sitemap: ${r.offline} Artikel offline`)).catch((e) => console.error('Eigene Sitemap:', e.message)).finally(() => { ownRefreshing = false; });
+      }
       if (cfg.mode === 'rolling') {
         // Neuer Lauf erst, wenn der vorige beendet ist (auch der eigene Artikel-Import) und danach die Pause verstrichen ist
         if (!scrapeState.running && !ownImportState.running) {
           pause ??= cfg.interval + Math.random() * cfg.jitter;
           const since = scrapeState.finishedAt ? (Date.now() - scrapeState.finishedAt) / 1000 : Infinity;
           if (since >= pause) {
-            startScrape(db, { trigger: 'rolling', limitPerCompetitor: cfg.batch, minIntervalH: cfg.refresh });
+            startScrape(db, { trigger: 'rolling', limitPerCompetitor: cfg.batch, minIntervalH: cfg.refresh, fill: true });
             pause = null;
             if (!scrapeState.running) scrapeState.finishedAt = Date.now(); // nichts fällig: eine Pause abwarten
           } else next = Math.max(5, pause - since);
@@ -519,15 +557,31 @@ export function seedCompetitors(db, file = process.env.COMPETITORS_FILE || './da
  * Mitbewerber anlegen (nur wenn es sie noch nicht gibt). Wird pro "id" nur einmal vollständig ausgeführt;
  * wird der Server mitten im Import neu gestartet, läuft er beim nächsten Start weiter (importierte Seiten werden übersprungen).
  */
+/** Für Mitbewerber ohne Suchlink einmalig versuchen, ihn von der Startseite zu ermitteln. */
+export async function backfillSearchLinks(db) {
+  for (const c of db.prepare('SELECT id, name, base_url FROM competitors WHERE manual_search_url IS NULL').all()) {
+    if (getSetting(db, `search_link_tried_${c.id}`)) continue;
+    setSetting(db, `search_link_tried_${c.id}`, '1');
+    const link = await detectSearchLink(c.base_url).catch(() => null);
+    if (link) { db.prepare('UPDATE competitors SET manual_search_url=? WHERE id=?').run(link, c.id); console.log(`Suchlink für ${c.name}: ${link}`); }
+  }
+}
+
 export async function applyBootstrap(db, file = process.env.BOOTSTRAP_FILE || './data/bootstrap.json') {
   if (!fs.existsSync(file)) return null;
   const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (!cfg.id || getSetting(db, 'bootstrap_done') === cfg.id) return null;
   for (const c of cfg.competitors ?? []) {
-    if (!c?.name || !c?.base_url || db.prepare('SELECT 1 FROM competitors WHERE name=?').get(c.name)) continue;
+    if (!c?.name || !c?.base_url) continue;
+    const have = db.prepare('SELECT id, manual_search_url FROM competitors WHERE name=?').get(c.name);
+    if (have) {
+      if (c.manual_search_url && !have.manual_search_url) db.prepare('UPDATE competitors SET manual_search_url=? WHERE id=?').run(c.manual_search_url, have.id);
+      continue;
+    }
     const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
     db.prepare('INSERT INTO competitors(name, base_url, search_url, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,1,?,?,?)')
       .run(c.name, new URL(c.base_url).origin, c.search_url ?? null, Number(c.delay_ms) || 3000, ['off', 'fallback', 'always'].includes(c.ai_mode) ? c.ai_mode : 'fallback', c.sitemap_url ? [].concat(c.sitemap_url).join('\n') : null, pos);
+    if (c.manual_search_url) db.prepare('UPDATE competitors SET manual_search_url=? WHERE name=?').run(c.manual_search_url, c.name);
     console.log(`Bootstrap: Mitbewerber ${c.name} angelegt`);
   }
   const own = [].concat(cfg.own_sitemap_url ?? []).filter(Boolean);
@@ -547,6 +601,7 @@ export async function applyBootstrap(db, file = process.env.BOOTSTRAP_FILE || '.
     }
   }
   setSetting(db, 'bootstrap_done', cfg.id);
+  await backfillSearchLinks(db);
   console.log('Bootstrap abgeschlossen');
   return cfg.id;
 }

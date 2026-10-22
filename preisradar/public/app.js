@@ -5,6 +5,14 @@ const pct = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1, signDispl
 const dt = new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short' });
 const dShort = new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit' });
 
+// append/replaceChildren ohne null/false (bedingte Elemente), Arrays werden aufgelöst
+for (const proto of [Element.prototype, DocumentFragment.prototype]) {
+  for (const name of ['append', 'replaceChildren']) {
+    const orig = proto[name];
+    proto[name] = function (...kids) { return orig.apply(this, kids.flat(Infinity).filter((k) => k != null && k !== false)); };
+  }
+}
+
 function h(tag, props = {}, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props ?? {})) {
@@ -50,7 +58,7 @@ function toast(msg, err = false) {
 }
 const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof AuthError)) toast(e.message, true); } };
 
-const state = { data: null, scope: null, tab: 'start', q: '', brand: '', filter: 'all', sort: 'name', comp: '', status: '', minP: '', maxP: '', gapMin: '', selected: null, runs: [], more: false };
+const state = { data: null, scope: null, tab: 'start', q: '', brand: '', filter: 'all', sort: 'name', dir: 'asc', comp: '', status: '', minP: '', maxP: '', gapMin: '', selected: null, runs: [], more: false };
 
 // ---------- Auswertung pro Produkt ----------
 function analyse(p, comps) {
@@ -109,138 +117,214 @@ function matchCell(p, a, { c, m }) {
     blocked: ['gesperrt', 'err'], review: ['zu prüfen', ''], error: ['Fehler', 'err'],
   };
   const [label, cls] = map[m.status] ?? [m.status, 'mute'];
-  return h('td', { title: [m.error, tip].filter(Boolean).join('\n') }, h('span', { class: `tag ${cls}` }, label));
+  const term = searchTerms(p)[0];
+  return h('td', { title: [m.error, tip].filter(Boolean).join('\n') }, h('span', { class: `tag ${cls}` }, label),
+    ['not_found', 'nourl', 'error'].includes(m.status) ? h('a', { class: 'searchlink', href: shopSearchUrl(c, term[1]), target: '_blank', rel: 'noopener noreferrer', title: `Im Shop von ${c.name} nach ${term[0]} „${term[1]}“ suchen`, onclick: (e) => e.stopPropagation() }, 'suchen') : null);
 }
+
+// Preisliste: wird seitenweise vom Server geladen (Filter und Sortierung dort), weitere Seiten beim Scrollen
+const PAGE = 100;
+const list = { rows: [], total: 0, inScope: 0, chips: {}, brands: [], loading: false, seq: 0, observer: null };
+const FILTER_KEYS = ['q', 'brand', 'filter', 'comp', 'status', 'minP', 'maxP', 'gapMin', 'sort', 'dir'];
+function listQuery() {
+  const q = { scope: state.scope ?? '' };
+  for (const k of FILTER_KEYS) if (state[k] !== '' && state[k] != null) q[k] = state[k];
+  return q;
+}
+const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
+
+/** Suchlink in den Shop des Mitbewerbers (öffnet der Nutzer selbst im Browser). */
+function shopSearchUrl(c, term) {
+  let host = '';
+  try { host = new URL(c.base_url).hostname; } catch { /* leer */ }
+  const tpl = c.manual_search_url || c.search_url || `https://www.google.com/search?q=site:${host}+{q}`;
+  return tpl.replaceAll('{q}', encodeURIComponent(term));
+}
+const searchTerms = (p) => [
+  p.mpn ? ['Herstellernr.', p.mpn] : null,
+  p.ean ? ['EAN', p.ean] : null,
+  ['Name', `${p.name}`.replace(/\s+-\s+.*$/, '').slice(0, 80)],
+].filter(Boolean);
 
 function renderPrices(root) {
   const d = state.data;
-  if (!d.products.length) {
+  if (!d.counts.all) {
     root.append(h('div', { class: 'panel empty' },
       h('h3', {}, 'Noch keine Produkte'),
-      h('p', {}, 'Hol die Produkte aus Shopware oder lade eine CSV-Datei hoch.'),
+      h('p', {}, 'Hol die Produkte aus deiner Sitemap, aus Shopware oder per CSV.'),
       h('button', { class: 'btn primary', onclick: () => setTab('import') }, 'Zum Import')));
     return;
   }
   const noComps = !d.competitors.length;
   if (noComps) {
     root.append(h('div', { class: 'panel head' },
-      h('div', {}, h('strong', {}, `${d.products.length} Produkte in deiner Artikelbasis. `), 'Für den Preisvergleich fehlen noch Mitbewerber.'),
+      h('div', {}, h('strong', {}, `${d.counts.all} Produkte in deiner Artikelbasis. `), 'Für den Preisvergleich fehlen noch Mitbewerber.'),
       h('span', { class: 'spacer' }),
       h('button', { class: 'btn primary', onclick: () => setTab('mitbewerber') }, 'Mitbewerber anlegen')));
   }
-  const rows = d.products.map((p) => ({ p, a: analyse(p, d.competitors) }));
-  const count = (f) => rows.filter(f).length;
-  const brands = [...new Set(d.products.map((p) => p.manufacturer).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'de'));
-
-  const chip = (key, label, n, cls = '') => h('button', { class: `chip ${cls}${state.filter === key ? ' on' : ''}`, 'aria-pressed': state.filter === key ? 'true' : 'false', onclick: () => { state.filter = key; render(); } }, h('b', {}, String(n)), label);
-  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal'].includes(state.filter) ? 1 : 0);
+  const reload = () => loadRows(true);
+  let typingTimer;
+  const typed = (key) => (e) => { state[key] = e.target.value; clearTimeout(typingTimer); typingTimer = setTimeout(reload, 250); };
+  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline'].includes(state.filter) ? 1 : 0);
   const reset = () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '' }); render(); };
+
   root.append(
     h('div', { class: 'pagehead' }, h('h2', {}, 'Preise'),
       h('div', { class: 'seg', role: 'group', 'aria-label': 'Artikelauswahl' },
-        h('button', { class: `chip${state.scope === 'tracked' ? ' on' : ''}`, onclick: () => { state.scope = 'tracked'; refresh(); } }, h('b', {}, String(d.counts.tracked)), 'beobachtet'),
-        h('button', { class: `chip${state.scope === 'all' ? ' on' : ''}`, onclick: () => { state.scope = 'all'; refresh(); } }, h('b', {}, String(d.counts.all)), 'alle Artikel')),
+        h('button', { class: `chip${state.scope === 'tracked' ? ' on' : ''}`, onclick: () => { state.scope = 'tracked'; render(); } }, h('b', {}, String(d.counts.tracked)), 'beobachtet'),
+        h('button', { class: `chip${state.scope === 'all' ? ' on' : ''}`, onclick: () => { state.scope = 'all'; render(); } }, h('b', {}, String(d.counts.all)), 'alle Artikel')),
       h('span', { class: 'spacer' }),
       h('a', { class: 'btn', href: '/api/export.csv' }, 'CSV-Export')),
     h('div', { class: 'toolbar' },
-      h('input', { type: 'search', placeholder: 'Name, Artikelnummer oder EAN', value: state.q, 'aria-label': 'Suche',
-        oninput: (e) => { state.q = e.target.value; renderTable(); } }),
-      h('select', { 'aria-label': 'Hersteller', onchange: (e) => { state.brand = e.target.value; renderTable(); } },
-        h('option', { value: '' }, 'Alle Hersteller'), brands.map((b) => h('option', { value: b, selected: b === state.brand }, b))),
-      h('select', { 'aria-label': 'Sortierung', onchange: (e) => { state.sort = e.target.value; renderTable(); } },
-        [['name', 'Nach Name'], ['gap', 'Größter Rückstand in €'], ['gappct', 'Größter Rückstand in %'], ['lead', 'Größter Vorsprung'], ['price', 'Preis absteigend'], ['priceAsc', 'Preis aufsteigend']]
-          .filter(([v]) => !noComps || v === 'name' || v === 'price' || v === 'priceAsc').map(([v, l]) => h('option', { value: v, selected: v === state.sort }, l))),
+      h('input', { type: 'search', placeholder: 'Name, Artikelnummer oder EAN', value: state.q, 'aria-label': 'Suche', oninput: typed('q') }),
+      h('select', { id: 'brandsel', 'aria-label': 'Hersteller', onchange: (e) => { state.brand = e.target.value; reload(); } },
+        h('option', { value: '' }, 'Alle Hersteller'), list.brands.map((b) => h('option', { value: b, selected: b === state.brand }, b))),
+      h('select', { 'aria-label': 'Sortierung', onchange: (e) => { const [s, dir] = e.target.value.split(':'); state.sort = s; state.dir = dir; render(); } },
+        [['name:asc', 'Name A–Z'], ['name:desc', 'Name Z–A'], ['number:asc', 'Artikelnummer'], ['gap:desc', 'Größter Rückstand in €'], ['gappct:desc', 'Größter Rückstand in %'], ['gap:asc', 'Größter Vorsprung'], ['price:desc', 'Preis absteigend'], ['price:asc', 'Preis aufsteigend'], ['cheapest:asc', 'Günstigster Mitbewerberpreis'], ['updated:desc', 'Zuletzt aktualisiert']]
+          .map(([v, l]) => h('option', { value: v, selected: v === `${state.sort}:${state.dir}` }, l))),
       noComps ? null : h('button', { class: `btn${state.more ? ' on' : ''}`, 'aria-expanded': state.more ? 'true' : 'false', onclick: () => { state.more = !state.more; render(); } }, extra ? `Weitere Filter (${extra})` : 'Weitere Filter'),
       state.q || state.brand || state.filter !== 'all' || extra ? h('button', { class: 'linkbtn', onclick: reset }, 'Zurücksetzen') : null),
-    noComps ? null : h('div', { class: 'toolbar' }, h('div', { class: 'seg' },
-      chip('all', 'alle', rows.length),
-      chip('undercut', 'teurer als ein Mitbewerber', count((r) => r.a.kind === 'undercut'), 'bad'),
-      chip('cheapest', 'günstigster', count((r) => r.a.kind === 'cheapest'), 'good'),
-      chip('review', 'zu prüfen', count((r) => r.a.review), 'warn'),
-      chip('none', 'ohne Vergleichspreis', count((r) => r.a.kind === 'none')))),
+    noComps ? null : h('div', { class: 'toolbar' }, h('div', { class: 'seg', id: 'chips-main' })),
     noComps || !state.more ? null : h('div', { class: 'morebox' },
-      h('div', { class: 'seg' },
-        chip('equal', 'gleichauf', count((r) => r.a.kind === 'cheapest' && r.a.gap != null && Math.abs(r.p.price - r.a.min) < 0.005)),
-        chip('moved', 'Preis geändert', count((r) => r.a.moved)),
-        chip('problem', 'Fehler oder gesperrt', count((r) => r.a.problem), 'bad'),
-        chip('notFound', 'nicht gefunden', count((r) => r.a.notFound)),
-        chip('oos', 'Mitbewerber ausverkauft', count((r) => r.a.oos))),
+      h('div', { class: 'seg', id: 'chips-more' }),
       h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
-        h('select', { 'aria-label': 'Günstiger bei', onchange: (e) => { state.comp = e.target.value; renderTable(); } },
+        h('select', { 'aria-label': 'Günstiger bei', onchange: (e) => { state.comp = e.target.value; reload(); } },
           h('option', { value: '' }, 'Günstiger bei: jeder'), d.competitors.map((c) => h('option', { value: c.id, selected: String(c.id) === String(state.comp) }, `Günstiger bei ${c.name}`))),
-        h('select', { 'aria-label': 'Status', onchange: (e) => { state.status = e.target.value; renderTable(); } },
+        h('select', { 'aria-label': 'Status', onchange: (e) => { state.status = e.target.value; reload(); } },
           [['', 'Jeder Status'], ['ok', 'mit Preis'], ['review', 'zu prüfen'], ['not_found', 'nicht gefunden'], ['nourl', 'URL fehlt'], ['pending', 'ausstehend'], ['error', 'Fehler'], ['blocked', 'gesperrt']]
             .map(([v, l]) => h('option', { value: v, selected: v === state.status }, l))),
-        h('input', { type: 'number', min: 0, step: 'any', placeholder: 'Preis ab €', value: state.minP, 'aria-label': 'Preis ab', class: 'num', oninput: (e) => { state.minP = e.target.value; renderTable(); } }),
-        h('input', { type: 'number', min: 0, step: 'any', placeholder: 'Preis bis €', value: state.maxP, 'aria-label': 'Preis bis', class: 'num', oninput: (e) => { state.maxP = e.target.value; renderTable(); } }),
-        h('input', { type: 'number', step: 'any', placeholder: 'Abstand ab %', value: state.gapMin, 'aria-label': 'Mindestabstand in Prozent', class: 'num', title: 'Nur Artikel, bei denen du mindestens so viel Prozent teurer bist', oninput: (e) => { state.gapMin = e.target.value; renderTable(); } })),
+        h('input', { type: 'number', min: 0, step: 'any', placeholder: 'Preis ab €', value: state.minP, 'aria-label': 'Preis ab', class: 'numin', oninput: typed('minP') }),
+        h('input', { type: 'number', min: 0, step: 'any', placeholder: 'Preis bis €', value: state.maxP, 'aria-label': 'Preis bis', class: 'numin', oninput: typed('maxP') }),
+        h('input', { type: 'number', step: 'any', placeholder: 'Abstand ab %', value: state.gapMin, 'aria-label': 'Mindestabstand in Prozent', class: 'numin', title: 'Nur Artikel, bei denen du mindestens so viel Prozent teurer bist', oninput: typed('gapMin') })),
       h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
         h('span', { class: 'pmeta' }, 'Nur beobachtete Artikel werden bei Mitbewerbern abgeglichen.'),
-        h('button', { class: 'btn small', onclick: guard(() => track(state.visibleIds, true)) }, 'Gefilterte beobachten'),
-        h('button', { class: 'btn small', onclick: guard(() => track(state.visibleIds, false)) }, 'Gefilterte nicht beobachten'))),
+        h('button', { class: 'btn small', onclick: guard(() => track(null, true)) }, 'Gefilterte beobachten'),
+        h('button', { class: 'btn small', onclick: guard(() => track(null, false)) }, 'Gefilterte nicht beobachten'))),
     h('div', { class: 'tablewrap', id: 'tablewrap' }));
-  renderTable();
+  buildTable();
+  loadRows(true);
 }
 
-/** Beobachtung (Abgleich bei Mitbewerbern) für Artikel setzen. */
+function renderChips() {
+  const c = list.chips;
+  const chip = (key, label, cls = '') => h('button', { class: `chip ${cls}${state.filter === key ? ' on' : ''}`, 'aria-pressed': state.filter === key ? 'true' : 'false', onclick: () => { state.filter = key; render(); } }, h('b', {}, String(c[key] ?? 0)), label);
+  document.getElementById('chips-main')?.replaceChildren(
+    chip('all', 'alle'), chip('undercut', 'teurer als ein Mitbewerber', 'bad'), chip('cheapest', 'günstigster', 'good'),
+    chip('review', 'zu prüfen', 'warn'), chip('none', 'ohne Vergleichspreis'));
+  document.getElementById('chips-more')?.replaceChildren(
+    chip('equal', 'gleichauf'), chip('moved', 'Preis geändert'), chip('problem', 'Fehler oder gesperrt', 'bad'),
+    chip('notFound', 'nicht gefunden'), chip('oos', 'Mitbewerber ausverkauft'), chip('offline', 'bei mir offline', 'warn'));
+  const sel = document.getElementById('brandsel');
+  if (sel && sel.options.length <= 1 && list.brands.length) sel.append(...list.brands.map((b) => h('option', { value: b, selected: b === state.brand }, b)));
+}
+
+/** Gefilterte Artikel (Serverabfrage) beobachten bzw. nicht mehr beobachten. */
 async function track(ids, tracked) {
-  if (!ids?.length) return toast('Keine Artikel im Filter', true);
-  if (ids.length > 500 && !confirm(`${ids.length} Artikel ${tracked ? 'beobachten' : 'nicht mehr beobachten'}?`)) return;
-  const r = await api('/api/products/track', { body: { ids, tracked } });
+  const body = ids ? { ids, tracked } : { query: listQuery(), tracked };
+  const n = ids ? ids.length : list.total;
+  if (!n) return toast('Keine Artikel im Filter', true);
+  if (n > 500 && !confirm(`${n} Artikel ${tracked ? 'beobachten' : 'nicht mehr beobachten'}?`)) return;
+  const r = await api('/api/products/track', { body });
   toast(`${r.changed} Artikel ${tracked ? 'werden beobachtet' : 'werden nicht mehr beobachtet'}`);
   await refresh();
 }
 
-function renderTable() {
+function sortHead(label, key, cls = '', firstDir = 'asc') {
+  const on = state.sort === key;
+  const arrow = on ? (state.dir === 'desc' ? ' ▼' : ' ▲') : '';
+  return h('th', { class: `${cls} sortable${on ? ' sorted' : ''}`, 'aria-sort': on ? (state.dir === 'desc' ? 'descending' : 'ascending') : 'none' },
+    h('button', { class: 'thbtn', onclick: () => { state.dir = on ? (state.dir === 'asc' ? 'desc' : 'asc') : firstDir; state.sort = key; render(); } }, label, arrow));
+}
+
+function buildTable() {
   const d = state.data;
   const wrap = document.getElementById('tablewrap');
   if (!wrap) return;
-  const q = state.q.trim().toLowerCase();
-  let rows = d.products.map((p) => ({ p, a: analyse(p, d.competitors) }));
-  rows = rows.filter(({ p, a }) => {
-    if (state.brand && p.manufacturer !== state.brand) return false;
-    const F = { all: () => true, review: () => a.review, equal: () => a.kind === 'cheapest' && Math.abs(p.price - a.min) < 0.005, moved: () => a.moved, problem: () => a.problem, notFound: () => a.notFound, oos: () => a.oos };
-    if (!(F[state.filter] ?? (() => a.kind === state.filter))()) return false;
-    if (state.comp && !(a.cells.find(({ c }) => String(c.id) === String(state.comp))?.m?.price < p.price && a.cells.find(({ c }) => String(c.id) === String(state.comp))?.m?.status === 'ok')) return false;
-    if (state.status && !a.cells.some(({ m }) => m && m.status === state.status)) return false;
-    if (state.minP !== '' && !(p.price >= Number(state.minP))) return false;
-    if (state.maxP !== '' && !(p.price <= Number(state.maxP))) return false;
-    if (state.gapMin !== '' && !(a.gapPct != null && a.gapPct >= Number(state.gapMin))) return false;
-    if (q && ![p.name, p.number, p.ean, p.mpn, p.manufacturer].some((v) => String(v ?? '').toLowerCase().includes(q))) return false;
-    return true;
-  });
-  const sorters = {
-    name: (x, y) => (x.p.manufacturer ?? '').localeCompare(y.p.manufacturer ?? '', 'de') || x.p.name.localeCompare(y.p.name, 'de'),
-    gap: (x, y) => (y.a.gap ?? -Infinity) - (x.a.gap ?? -Infinity),
-    lead: (x, y) => (x.a.gap ?? Infinity) - (y.a.gap ?? Infinity),
-    gappct: (x, y) => (y.a.gapPct ?? -Infinity) - (x.a.gapPct ?? -Infinity),
-    price: (x, y) => (y.p.price ?? 0) - (x.p.price ?? 0),
-    priceAsc: (x, y) => (x.p.price ?? Infinity) - (y.p.price ?? Infinity),
-  };
-  rows.sort(sorters[state.sort]);
-  state.visibleIds = rows.map(({ p }) => p.id);
-
-  const shown = rows.slice(0, 400);
+  const has = d.competitors.length > 0;
   const table = h('table', { class: 'prices' },
     h('thead', {}, h('tr', {},
       h('th', { title: 'Beobachten: wird bei Mitbewerbern abgeglichen' }, '👁'),
-      h('th', { class: 'prod' }, `Produkt (${rows.length}${rows.length !== d.products.length ? ' von ' + d.products.length : ''})`),
-      h('th', { class: 'own' }, d.own.name),
-      d.competitors.map((c) => h('th', { title: c.base_url }, c.name, c.enabled ? '' : ' (aus)')),
-      d.competitors.length ? [h('th', {}, 'Position'), h('th', {}, 'Abstand zum günstigsten')] : null)),
-    h('tbody', {}, shown.map(({ p, a }) => h('tr', { tabindex: 0, onclick: () => openDrawer(p.id), onkeydown: (e) => e.key === 'Enter' && openDrawer(p.id) },
-      h('td', { onclick: (e) => e.stopPropagation() }, h('input', { type: 'checkbox', checked: Boolean(p.tracked), 'aria-label': `${p.name} beobachten`, onchange: guard((e) => track([p.id], e.target.checked)) })),
-      h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name), h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.ean].filter(Boolean).join(' · '))),
-      h('td', { class: 'own' }, p.price != null ? eur.format(p.price) : '–'),
-      a.cells.map((cell) => matchCell(p, a, cell)),
-      d.competitors.length ? h('td', {}, ladder(p, a)) : null,
-      d.competitors.length ? h('td', { class: a.kind === 'undercut' ? 'gap bad' : a.kind === 'cheapest' ? 'gap good' : 'gap' },
-        a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `${pct.format(a.gapPct)} % über dem günstigsten`)]
-          : a.kind === 'cheapest' ? ['günstigster', h('small', {}, a.min - p.price > 0.004 ? `${eur.format(a.min - p.price)} Vorsprung` : 'gleichauf')]
-            : h('span', { class: 'tag mute' }, '–')) : null))));
-  wrap.replaceChildren(table);
-  if (rows.length > shown.length) wrap.append(h('p', { class: 'pmeta', style: 'padding:10px 14px' }, `Es werden die ersten ${shown.length} von ${rows.length} Produkten gezeigt – Suche oder Filter verwenden.`));
-  if (!rows.length) wrap.replaceChildren(h('div', { class: 'empty' }, 'Keine Produkte für diesen Filter.'));
+      sortHead(h('span', { id: 'prodcount' }, 'Produkt'), 'name', 'prod'),
+      sortHead(d.own.name, 'price', 'own', 'desc'),
+      d.competitors.map((c) => sortHead(`${c.name}${c.enabled ? '' : ' (aus)'}`, `comp:${c.id}`)),
+      has ? [h('th', {}, 'Position'), sortHead('Abstand zum günstigsten', 'gap', '', 'desc'), h('th', {}, '')] : null)),
+    h('tbody', { id: 'rows' }));
+  const status = h('div', { id: 'liststatus', class: 'liststatus' }, 'Wird geladen …');
+  wrap.replaceChildren(table, status);
+  list.observer?.disconnect();
+  list.observer = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) loadRows(false); }, { root: wrap, rootMargin: '400px' });
+  list.observer.observe(status);
+}
+
+async function loadRows(reset, { keep = false } = {}) {
+  if (!document.getElementById('rows')) return;
+  if (!reset && (list.loading || list.rows.length >= list.total)) return;
+  const seq = ++list.seq;
+  list.loading = true;
+  const offset = reset ? 0 : list.rows.length;
+  const limit = keep ? Math.min(500, Math.max(PAGE, list.rows.length)) : PAGE;
+  try {
+    const r = await api(`/api/products?${qs({ ...listQuery(), offset, limit })}`);
+    if (seq !== list.seq) return; // inzwischen neue Abfrage
+    Object.assign(list, { total: r.total, inScope: r.inScope, chips: r.chips, brands: r.brands });
+    if (r.scope !== state.scope) state.scope = r.scope;
+    const tbody = document.getElementById('rows');
+    if (!tbody) return;
+    const els = r.rows.map(rowEl);
+    if (reset) { list.rows = r.rows; tbody.replaceChildren(...els); if (!keep) document.getElementById('tablewrap').scrollTop = 0; }
+    else { list.rows.push(...r.rows); tbody.append(...els); }
+    renderChips();
+    const pc = document.getElementById('prodcount');
+    if (pc) pc.textContent = `Produkt (${list.total.toLocaleString('de-DE')}${list.total !== list.inScope ? ' von ' + list.inScope.toLocaleString('de-DE') : ''})`;
+    const st = document.getElementById('liststatus');
+    if (st) st.textContent = !list.total ? 'Keine Produkte für diesen Filter.' : list.rows.length < list.total ? `${list.rows.length.toLocaleString('de-DE')} von ${list.total.toLocaleString('de-DE')} geladen, weitere beim Scrollen …` : `Alle ${list.total.toLocaleString('de-DE')} geladen.`;
+  } finally {
+    if (seq === list.seq) list.loading = false;
+  }
+  // Passt die erste Seite ganz auf den Bildschirm, gleich weiterladen
+  const st = document.getElementById('liststatus');
+  const wrap = document.getElementById('tablewrap');
+  if (st && wrap && list.rows.length < list.total && st.offsetTop < wrap.scrollTop + wrap.clientHeight + 400) loadRows(false);
+}
+
+function rowEl(p) {
+  const d = state.data;
+  const a = analyse(p, d.competitors);
+  const tr = h('tr', { tabindex: 0, 'data-id': p.id, class: p.offline_since ? 'offline' : null, onclick: () => openDrawer(p.id), onkeydown: (e) => e.key === 'Enter' && e.target === tr && openDrawer(p.id) },
+    h('td', { onclick: (e) => e.stopPropagation() }, h('input', { type: 'checkbox', checked: Boolean(p.tracked), 'aria-label': `${p.name} beobachten`, onchange: guard((e) => track([p.id], e.target.checked)) })),
+    h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name),
+      h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.mpn && p.mpn !== p.number ? `HAN ${p.mpn}` : null].filter(Boolean).join(' · ')),
+      p.offline_since ? h('span', { class: 'tag warn', title: `Seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar` }, 'bei dir offline') : null),
+    h('td', { class: 'own' }, p.price != null ? eur.format(p.price) : '–'),
+    a.cells.map((cell) => matchCell(p, a, cell)),
+    d.competitors.length ? h('td', {}, ladder(p, a)) : null,
+    d.competitors.length ? h('td', { class: a.kind === 'undercut' ? 'gap bad' : a.kind === 'cheapest' ? 'gap good' : 'gap' },
+      a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `${pct.format(a.gapPct)} % über dem günstigsten`)]
+        : a.kind === 'cheapest' ? ['günstigster', h('small', {}, a.min - p.price > 0.004 ? `${eur.format(a.min - p.price)} Vorsprung` : 'gleichauf')]
+          : h('span', { class: 'tag mute' }, '–')) : null,
+    d.competitors.length ? h('td', { onclick: (e) => e.stopPropagation() }, checkButton(p.id)) : null);
+  return tr;
+}
+
+/** Sofortprüfung eines Artikels bei allen Mitbewerbern; ersetzt danach Zeile und Detailansicht. */
+function checkButton(id, label = 'Prüfen') {
+  const b = h('button', { class: 'btn small', title: 'Jetzt bei allen Mitbewerbern prüfen', onclick: guard(async () => {
+    b.disabled = true;
+    b.textContent = 'prüft …';
+    try {
+      const r = await api(`/api/products/${id}/check`, { method: 'POST', body: {} });
+      const found = r.results.filter((x) => x.found).length;
+      toast(`${found} von ${r.results.length} Mitbewerbern mit Preis`);
+      replaceRow(r.product);
+      if (state.selected === id) openDrawer(id, r.product);
+    } finally { b.disabled = false; b.textContent = label; }
+  }) }, label);
+  return b;
+}
+function replaceRow(p) {
+  const i = list.rows.findIndex((x) => x.id === p.id);
+  if (i >= 0) list.rows[i] = p;
+  document.querySelector(`#rows tr[data-id="${p.id}"]`)?.replaceWith(rowEl(p));
 }
 
 // ---------- Detailansicht ----------
@@ -252,7 +336,8 @@ function chart(hist) {
   const all = [own, ...others].filter((x) => x.pts.length);
   const pts = all.flatMap((x) => x.pts.map((p) => ({ t: Date.parse(p.at), v: p.price })));
   if (!pts.length) return h('p', { class: 'pmeta' }, 'Noch kein Preisverlauf vorhanden.');
-  const W = 516, H = 190, L = 52, R = 10, T = 10, B = 24;
+  const maxLabel = Math.max(...pts.map((p) => eur.format(p.v).length));
+  const W = 516, H = 190, L = Math.max(52, maxLabel * 6.6 + 8), R = 10, T = 10, B = 24;
   let t0 = Math.min(...pts.map((p) => p.t)), t1 = Math.max(...pts.map((p) => p.t), Date.now());
   if (t1 - t0 < 86400000) t0 = t1 - 86400000 * 3;
   let v0 = Math.min(...pts.map((p) => p.v)), v1 = Math.max(...pts.map((p) => p.v));
@@ -283,48 +368,60 @@ function chart(hist) {
   return h('div', {}, svg, legend);
 }
 
-async function openDrawer(id) {
+async function openDrawer(id, given = null) {
   state.selected = id;
   const d = state.data;
-  const p = d.products.find((x) => x.id === id);
-  if (!p) return;
   const el = document.getElementById('drawer');
   el.hidden = false;
+  if (!given) el.replaceChildren(h('p', { class: 'pmeta' }, 'Wird geladen …'));
+  const p = given ?? await api(`/api/products/${id}`).catch((e) => { toast(e.message, true); return null; });
+  if (!p || state.selected !== id) return;
   const a = analyse(p, d.competitors);
   const statusText = { ok: 'bestätigt', review: 'bitte prüfen', not_found: 'nicht gefunden', nourl: 'URL fehlt', pending: 'ausstehend', blocked: 'durch robots.txt gesperrt', error: 'Fehler' };
   const histBox = h('div', {}, h('p', { class: 'pmeta' }, 'Verlauf wird geladen …'));
+  const reloadDrawer = async () => { const np = await api(`/api/products/${id}`); replaceRow(np); openDrawer(id, np); };
 
   el.replaceChildren(
     h('button', { class: 'btn small close', onclick: closeDrawer, 'aria-label': 'Schließen' }, 'Schließen'),
     h('h2', {}, p.name),
-    h('p', { class: 'pmeta' }, [p.manufacturer, `Art.-Nr. ${p.number}`, p.ean && `EAN ${p.ean}`].filter(Boolean).join(' · ')),
+    h('p', { class: 'pmeta' }, [p.manufacturer, `Art.-Nr. ${p.number}`, p.mpn && `HAN ${p.mpn}`, p.ean && `EAN ${p.ean}`].filter(Boolean).join(' · ')),
+    p.offline_since ? h('p', { class: 'note warn' }, `Bei dir offline: seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar. Der Artikel bleibt mit seinen Daten erhalten und wird bei Mitbewerbern nicht mehr automatisch abgefragt.`) : null,
     h('div', { class: 'row', style: 'margin:10px 0 4px' },
       h('strong', {}, `${d.own.name}: ${p.price != null ? eur.format(p.price) : '–'}`),
       p.url ? h('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, 'im Shop öffnen') : null,
       h('span', { class: 'spacer' }),
-      h('button', { class: 'btn small', onclick: guard(async () => { await api('/api/scrape', { body: { product_id: p.id } }); toast('Abruf gestartet'); await refresh(); }) }, 'Jetzt prüfen')),
+      checkButton(p.id, 'Jetzt alle Mitbewerber prüfen')),
     h('h3', { style: 'margin-top:18px' }, 'Preisverlauf'), histBox,
     h('h3', { style: 'margin-top:22px' }, 'Mitbewerber'),
     ...a.cells.map(({ c, m }) => {
-      const input = h('input', { type: 'url', placeholder: 'Produkt-URL beim Mitbewerber (optional, überschreibt die Suche)', value: m?.url ?? '', 'aria-label': `URL bei ${c.name}` });
-      return h('div', { class: 'mrow' },
+      const input = h('input', { type: 'url', placeholder: 'https://… (Produktseite beim Mitbewerber)', value: m?.url ?? '', 'aria-label': `Produkt-URL bei ${c.name}` });
+      const missing = !m || !['ok', 'review'].includes(m.status);
+      return h('div', { class: `mrow${missing ? ' missing' : ''}` },
         h('div', { class: 'line' }, h('strong', {}, c.name),
           h('span', { class: `tag ${m?.status === 'ok' ? 'mute' : m?.status === 'error' || m?.status === 'blocked' ? 'err' : m?.status === 'review' ? '' : 'mute'}` }, statusText[m?.status] ?? 'ausstehend'),
-          m?.source === 'manual' ? h('span', { class: 'tag mute' }, 'manuell') : null,
+          m?.source === 'manual' ? h('span', { class: 'tag mute' }, 'manuell hinterlegt') : null,
           h('span', { class: 'p' }, m?.price != null && (m.status === 'ok' || m.status === 'review') ? eur.format(m.price) : '')),
         m?.title ? h('div', { class: 'pmeta' }, m.title) : null,
         m?.error ? h('div', { class: 'pmeta' }, m.error) : null,
         m?.ai_note ? h('div', { class: 'pmeta' }, m.ai_note) : null,
         m?.checked ? h('div', { class: 'pmeta' }, `Geprüft ${dt.format(new Date(m.checked))}`) : null,
+        h('div', { class: 'searchrow' }, h('span', { class: 'pmeta' }, 'Im Shop suchen:'),
+          searchTerms(p).map(([label, term]) => h('a', { class: 'btn small', href: shopSearchUrl(c, term), target: '_blank', rel: 'noopener noreferrer', title: term }, label))),
+        h('label', { class: 'pmeta', style: 'display:block;margin-top:8px' }, missing ? 'Gefunden? Link zur Produktseite hier einfügen:' : 'Produktseite (bei Bedarf korrigieren):'),
         input,
         h('div', { class: 'row', style: 'margin-top:8px' },
           m?.url ? h('a', { href: m.url, target: '_blank', rel: 'noopener noreferrer' }, 'Seite öffnen') : null,
           h('span', { class: 'spacer' }),
           m?.status === 'review' ? [
-            h('button', { class: 'btn small', onclick: guard(async () => { await api(`/api/matches/${m.id}/confirm`, { method: 'POST', body: {} }); await refresh(); }) }, 'Passt'),
-            h('button', { class: 'btn small danger', onclick: guard(async () => { await api(`/api/matches/${m.id}/reject`, { method: 'POST', body: {} }); await refresh(); }) }, 'Passt nicht'),
+            h('button', { class: 'btn small', onclick: guard(async () => { await api(`/api/matches/${m.id}/confirm`, { method: 'POST', body: {} }); await reloadDrawer(); }) }, 'Passt'),
+            h('button', { class: 'btn small danger', onclick: guard(async () => { await api(`/api/matches/${m.id}/reject`, { method: 'POST', body: {} }); await reloadDrawer(); }) }, 'Passt nicht'),
           ] : null,
-          h('button', { class: 'btn small', onclick: guard(async () => { await api('/api/matches', { method: 'PUT', body: { product_id: p.id, competitor_id: c.id, url: input.value } }); toast(input.value ? 'URL gespeichert, Preis wird abgerufen' : 'Zuordnung zurückgesetzt'); setTimeout(refresh, 2500); await refresh(); }) }, 'URL speichern')));
+          h('button', { class: 'btn small primary', onclick: guard(async () => {
+            await api('/api/matches', { method: 'PUT', body: { product_id: p.id, competitor_id: c.id, url: input.value } });
+            toast(input.value ? 'Link gespeichert, Preis wird abgerufen' : 'Zuordnung zurückgesetzt');
+            setTimeout(guard(reloadDrawer), 4000);
+            await reloadDrawer();
+          }) }, input.value ? 'Link speichern' : 'Link speichern')));
     }));
   try {
     histBox.replaceChildren(chart(await api(`/api/products/${id}/history`)));
@@ -411,6 +508,13 @@ function competitorPanel(c) {
       f('Name', 'name', c?.name, { ph: 'z. B. Bad-Direkt' }),
       f('Shop-URL', 'base_url', c?.base_url, { type: 'url', ph: 'https://www.beispiel-shop.de' }),
       f('Such-URL', 'search_url', c?.search_url, { ph: 'https://…/search?search={q}', hint: '{q} wird durch EAN bzw. Herstellernummer ersetzt. Shopware-Shops: …/search?search={q}' }),
+      h('div', { class: 'field' }, h('label', {}, 'Suchlink für dich'),
+        h('input', { name: 'manual_search_url', value: c?.manual_search_url ?? '', placeholder: 'https://…/search?search={q}' }),
+        h('span', { class: 'hint' }, 'Öffnest du selbst im Browser („suchen“ bei nicht gefundenen Artikeln). {q} = Suchbegriff. Leer: Such-URL oder Google-Suche auf dieser Seite.'),
+        c ? h('div', { class: 'row' }, h('button', { class: 'btn small', type: 'button', onclick: guard(async () => {
+          const r = await api(`/api/competitors/${c.id}/search-link/detect`, { method: 'POST', body: {} });
+          if (r.link) { form.elements.manual_search_url.value = r.link; toast('Suchlink erkannt und gespeichert'); } else toast('Kein Suchlink auf der Startseite gefunden', true);
+        }) }, 'Suchlink erkennen')) : null),
       f('Ergebnis-Selektor (optional)', 'result_selector', c?.result_selector, { ph: 'a.product-name', hint: 'CSS-Selektor der Produktlinks auf der Suchseite' }),
       f('Preis-Selektor (optional)', 'price_selector', c?.price_selector, { ph: '.product-detail-price', hint: 'Nur nötig, wenn der Preis nicht automatisch erkannt wird' }),
       f('Pause zwischen Abrufen (ms)', 'delay_ms', c?.delay_ms ?? 3000, { type: 'number' }),
@@ -423,7 +527,8 @@ function competitorPanel(c) {
           sm.textContent = `${r.count.toLocaleString('de-DE')} URLs eingelesen${bad.length ? ` · Fehler: ${bad.map((x) => `${x.url.split('/').pop()} (${x.error})`).join(', ')}` : ''}`;
           toast(r.count ? 'Sitemap eingelesen' : 'Keine URLs gefunden', !r.count);
         }) }, 'Sitemap jetzt einlesen'), sm) : null,
-        h('div', { class: 'row' }, discoverBtn(() => form.elements.base_url.value, form.elements.sitemap_url ? () => form.elements.sitemap_url : () => null))),
+        h('div', { class: 'row' }, discoverBtn(() => form.elements.base_url.value, form.elements.sitemap_url ? () => form.elements.sitemap_url : () => null)),
+        c?.sitemap_count ? categoryPicker(c) : null),
       h('div', { class: 'field' }, h('label', {}, 'KI beim Auslesen'),
         h('select', { name: 'ai_mode' },
           [['fallback', 'Bei Bedarf'], ['always', 'Immer prüfen'], ['off', 'Aus']].map(([v, t]) => h('option', { value: v, selected: (c?.ai_mode ?? 'fallback') === v }, t))),
@@ -439,6 +544,48 @@ function competitorPanel(c) {
         h('div', { class: 'field' }, h('label', {}, 'Suche testen'), h('input', { name: 't_q', placeholder: 'EAN oder Herstellernummer' }), h('button', { class: 'btn small', type: 'button', onclick: () => test('search') }, 'Suche ausführen'))),
       out));
   return form;
+}
+
+/** Kategorien der Sitemap als Mehrfachauswahl: gesucht wird nur in den gewählten Kategorien. */
+function categoryPicker(c) {
+  const sel0 = (() => { try { return JSON.parse(c.sitemap_categories || '[]'); } catch { return []; } })();
+  const box = h('div', { class: 'catbox' });
+  const det = h('details', { class: 'cats' }, h('summary', {}, sel0.length ? `Kategorien: ${sel0.length} ausgewählt` : 'Kategorien eingrenzen (derzeit alle)'), box);
+  let loaded = false;
+  det.addEventListener('toggle', guard(async () => {
+    if (!det.open || loaded) return;
+    loaded = true;
+    box.replaceChildren(h('p', { class: 'pmeta' }, 'Kategorien werden ermittelt …'));
+    const r = await api(`/api/competitors/${c.id}/categories`);
+    const chosen = new Set(r.selected);
+    if (!r.categories.length) { box.replaceChildren(h('p', { class: 'pmeta' }, 'In den URLs dieser Sitemap stehen keine Kategorien.')); return; }
+    const info = h('p', { class: 'pmeta' });
+    const count = () => {
+      const inSel = (path) => [...chosen].some((x) => (x === '' ? path === '' : path === x || path.startsWith(x + '/')));
+      const n = r.categories.filter((k) => k.level === 1 && inSel(k.path)).reduce((s, k) => s + k.count, 0) + (chosen.has('') ? r.root : 0);
+      const sub = r.categories.filter((k) => k.level === 2 && chosen.has(k.path) && !chosen.has(k.path.split('/')[0])).reduce((s, k) => s + k.count, 0);
+      info.textContent = chosen.size ? `${chosen.size} ausgewählt, rund ${(n + sub).toLocaleString('de-DE')} von ${r.total.toLocaleString('de-DE')} URLs werden durchsucht.` : `Nichts ausgewählt: alle ${r.total.toLocaleString('de-DE')} URLs werden durchsucht.`;
+    };
+    const q = h('input', { type: 'search', placeholder: 'Kategorie suchen', 'aria-label': 'Kategorie suchen' });
+    const items = [...r.categories, ...(r.root ? [{ path: '', count: r.root, level: 1 }] : [])].map((k) => {
+      const cb = h('input', { type: 'checkbox', checked: chosen.has(k.path), onchange: (e) => { if (e.target.checked) chosen.add(k.path); else chosen.delete(k.path); count(); } });
+      const label = k.path === '' ? 'ohne Kategorie (direkt unter der Domain)' : k.path.split('/').pop().replace(/-/g, ' ');
+      return { k, el: h('label', { class: `catitem l${k.level}`, title: '/' + k.path }, cb, h('span', {}, label), h('small', {}, k.count.toLocaleString('de-DE'))) };
+    });
+    const listEl = h('div', { class: 'catlist' }, items.map((x) => x.el));
+    q.addEventListener('input', () => { const t = q.value.toLowerCase(); for (const x of items) x.el.hidden = Boolean(t) && !x.k.path.includes(t); });
+    count();
+    box.replaceChildren(
+      r.flat ? h('p', { class: 'note warn' }, 'Bei diesem Shop liegen die meisten Produkt-URLs ohne Kategorie direkt unter der Domain. Eine Auswahl bringt hier wenig, gefiltert wird ohnehin über die Marke deiner Artikel.') : null,
+      h('div', { class: 'row' }, q, h('button', { class: 'linkbtn', type: 'button', onclick: () => { chosen.clear(); for (const x of items) x.el.querySelector('input').checked = false; count(); } }, 'Auswahl leeren')),
+      listEl, info,
+      h('div', { class: 'row' }, h('span', { class: 'spacer' }), h('button', { class: 'btn small primary', type: 'button', onclick: guard(async () => {
+        const res = await api(`/api/competitors/${c.id}/categories`, { method: 'PUT', body: { categories: [...chosen] } });
+        det.querySelector('summary').textContent = res.selected.length ? `Kategorien: ${res.selected.length} ausgewählt` : 'Kategorien eingrenzen (derzeit alle)';
+        toast('Kategorien gespeichert');
+      }) }, 'Kategorien speichern')));
+  }));
+  return det;
 }
 
 /** Mitbewerber per Produktlink einrichten: App analysiert den Shop und legt ihn an. */
@@ -969,13 +1116,13 @@ function render() {
 }
 
 let pollTimer;
-async function refresh() {
+async function refresh({ poll = false } = {}) {
   const scrollY = window.scrollY;
   state.data = await api(`/api/overview${state.scope ? `?scope=${state.scope}` : ''}`);
   state.scope = state.data.scope;
   const typing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) && document.getElementById('main').contains(document.activeElement);
-  if (typing && state.tab === 'preise') { renderRunbar(); renderTable(); } // Eingabefeld nicht neu aufbauen
-  else if (typing) renderRunbar();
+  if (state.tab === 'preise' && document.getElementById('rows')) { renderRunbar(); loadRows(true, { keep: true }); } // geladene Zeilen und Scrollposition behalten
+  else if (typing || (poll && state.tab !== 'start')) renderRunbar(); // Formulare nicht beim Abruf-Fortschritt neu aufbauen
   else render();
   window.scrollTo(0, scrollY);
   clearInterval(pollTimer);
@@ -986,7 +1133,7 @@ async function refresh() {
       state.data.scrape = st;
       renderRunbar();
       // Tabelle nur gelegentlich oder am Ende neu laden
-      if (!st.running || ++ticks % 7 === 0) { clearInterval(pollTimer); await refresh(); }
+      if (!st.running || ++ticks % 7 === 0) { clearInterval(pollTimer); await refresh({ poll: true }); }
     }), 3000);
   }
 }

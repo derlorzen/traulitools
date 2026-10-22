@@ -87,12 +87,12 @@ const TOOLS = [
   {
     name: 'create_competitor',
     description: 'Mitbewerber anlegen. Entweder search_url (mit {q}) und/oder sitemap_url(s). ai_mode: off | fallback | always.',
-    inputSchema: obj({ name: { type: 'string' }, base_url: { type: 'string' }, search_url: { type: 'string' }, sitemap_url: { type: 'string' }, result_selector: { type: 'string' }, price_selector: { type: 'string' }, delay_ms: { type: 'integer' }, ai_mode: { type: 'string', enum: ['off', 'fallback', 'always'] } }, ['name', 'base_url']),
+    inputSchema: obj({ name: { type: 'string' }, base_url: { type: 'string' }, search_url: { type: 'string' }, sitemap_url: { type: 'string' }, manual_search_url: { type: 'string', description: 'Suchlink für die manuelle Suche, {q} = Suchbegriff' }, result_selector: { type: 'string' }, price_selector: { type: 'string' }, delay_ms: { type: 'integer' }, ai_mode: { type: 'string', enum: ['off', 'fallback', 'always'] } }, ['name', 'base_url']),
   },
   {
     name: 'update_competitor',
     description: 'Mitbewerber ändern (nur angegebene Felder).',
-    inputSchema: obj({ id: { type: 'integer' }, name: { type: 'string' }, base_url: { type: 'string' }, search_url: { type: 'string' }, sitemap_url: { type: 'string' }, result_selector: { type: 'string' }, price_selector: { type: 'string' }, delay_ms: { type: 'integer' }, enabled: { type: 'boolean' }, ai_mode: { type: 'string', enum: ['off', 'fallback', 'always'] } }, ['id']),
+    inputSchema: obj({ id: { type: 'integer' }, name: { type: 'string' }, base_url: { type: 'string' }, search_url: { type: 'string' }, sitemap_url: { type: 'string' }, manual_search_url: { type: 'string', description: 'Suchlink für die manuelle Suche, {q} = Suchbegriff' }, result_selector: { type: 'string' }, price_selector: { type: 'string' }, delay_ms: { type: 'integer' }, enabled: { type: 'boolean' }, ai_mode: { type: 'string', enum: ['off', 'fallback', 'always'] } }, ['id']),
   },
   { name: 'delete_competitor', description: 'Mitbewerber samt Treffern und Preisverlauf löschen (nicht umkehrbar). Nur mit confirm=true.', inputSchema: obj({ id: { type: 'integer' }, confirm: { type: 'boolean' } }, ['id', 'confirm']) },
   { name: 'autosetup_competitor', description: 'Mitbewerber aus einem Produktlink seines Shops einrichten. create=false analysiert nur, create=true legt ihn an.', inputSchema: obj({ product_url: { type: 'string' }, create: { type: 'boolean' }, name: { type: 'string' } }, ['product_url']) },
@@ -101,8 +101,11 @@ const TOOLS = [
   { name: 'confirm_match', description: 'Einen unbestätigten Treffer („zu prüfen“) bestätigen; er fließt dann in die Analyse ein.', inputSchema: obj({ match_id: { type: 'integer' } }, ['match_id']) },
   { name: 'reject_match', description: 'Einen Treffer verwerfen (falsches Produkt).', inputSchema: obj({ match_id: { type: 'integer' } }, ['match_id']) },
   { name: 'set_match_url', description: 'Produktlink eines Mitbewerbers für einen Artikel setzen (leer = Zuordnung zurücksetzen) und direkt abrufen.', inputSchema: obj({ product_id: { type: 'integer' }, competitor_id: { type: 'integer' }, url: { type: 'string' } }, ['product_id', 'competitor_id']) },
+  { name: 'check_product_now', description: 'Einen Artikel sofort bei allen Mitbewerbern prüfen (aktuellster Preis), unabhängig vom laufenden Abruf.', inputSchema: obj({ id: { type: 'integer' }, number: { type: 'string' } }) },
+  { name: 'competitor_categories', description: 'Kategorien aus der Sitemap eines Mitbewerbers mit Anzahl URLs und aktueller Auswahl.', inputSchema: obj({ id: { type: 'integer' } }, ['id']) },
+  { name: 'set_competitor_categories', description: 'Kategorien eines Mitbewerbers festlegen, in denen nach Treffern gesucht wird (leere Liste = alle). Pfade wie aus competitor_categories, "" = ohne Kategorie.', inputSchema: obj({ id: { type: 'integer' }, categories: { type: 'array', items: { type: 'string' } } }, ['id', 'categories']) },
 ];
-const WRITE = new Set(['start_scrape', 'stop_scrape', 'track_products', 'update_settings', 'refresh_own_sitemap', 'import_from_sitemap', 'stop_import', 'import_shopware', 'import_csv', 'import_competitor_urls', 'create_competitor', 'update_competitor', 'delete_competitor', 'autosetup_competitor', 'refresh_competitor_sitemap', 'confirm_match', 'reject_match', 'set_match_url']);
+const WRITE = new Set(['check_product_now', 'set_competitor_categories', 'start_scrape', 'stop_scrape', 'track_products', 'update_settings', 'refresh_own_sitemap', 'import_from_sitemap', 'stop_import', 'import_shopware', 'import_csv', 'import_competitor_urls', 'create_competitor', 'update_competitor', 'delete_competitor', 'autosetup_competitor', 'refresh_competitor_sitemap', 'confirm_match', 'reject_match', 'set_match_url']);
 
 function handlers(db, ownName, schedule, call) {
   const counts = () => db.prepare('SELECT COUNT(*) AS gesamt, COALESCE(SUM(tracked),0) AS beobachtet FROM products WHERE active=1').get();
@@ -113,8 +116,16 @@ function handlers(db, ownName, schedule, call) {
     for (const r of rows) { if (!by.has(r.product_id)) by.set(r.product_id, []); by.get(r.product_id).push({ ...r, product_id: undefined }); }
     return by;
   };
-  const slim = (p, by) => ({ id: p.id, number: p.number, name: p.name, brand: p.manufacturer, ean: p.ean, price: p.price, tracked: Boolean(p.tracked), competitors: by.get(p.id) ?? [] });
+  const slim = (p, by) => ({ id: p.id, number: p.number, name: p.name, brand: p.manufacturer, ean: p.ean, price: p.price, tracked: Boolean(p.tracked), offline_seit: p.offline_since ?? null, competitors: by.get(p.id) ?? [] });
   return {
+    check_product_now: async ({ id, number } = {}) => {
+      const pid = id ?? db.prepare('SELECT id FROM products WHERE number=?').get(String(number ?? ''))?.id;
+      if (!pid) throw new Error('Artikel nicht gefunden');
+      const r = await call('POST', `/api/products/${pid}/check`, {});
+      return { ergebnisse: r.results, artikel: { id: r.product.id, number: r.product.number, name: r.product.name, price: r.product.price }, mitbewerber: Object.values(r.product.matches).map((m) => ({ status: m.status, price: m.price, url: m.url, checked: m.checked })) };
+    },
+    competitor_categories: ({ id } = {}) => call('GET', `/api/competitors/${id}/categories`),
+    set_competitor_categories: ({ id, categories = [] } = {}) => call('PUT', `/api/competitors/${id}/categories`, { categories }),
     get_settings: () => call('GET', '/api/settings'),
     update_settings: (a = {}) => {
       const body = {};

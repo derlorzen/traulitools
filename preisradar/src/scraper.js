@@ -274,13 +274,13 @@ export function closeStaleRuns(db, now = Date.now()) {
   return db.prepare('SELECT id FROM runs WHERE finished_at IS NULL').get() ?? null;
 }
 
-export function startScrape(db, { trigger = 'manual', competitorId = null, productId = null, force = false, limitPerCompetitor = null, minIntervalH = MIN_INTERVAL_H } = {}) {
+export function startScrape(db, { trigger = 'manual', competitorId = null, productId = null, force = false, limitPerCompetitor = null, minIntervalH = MIN_INTERVAL_H, fill = false } = {}) {
   if (scrapeState.running) return false;
   const now = Date.now();
   if (closeStaleRuns(db, now)) return false; // ein anderer Lauf ist noch aktiv: erst nach dessen Ende starten
 
   const comps = db.prepare(`SELECT * FROM competitors WHERE enabled=1 ${competitorId ? 'AND id=?' : ''} ORDER BY position, id`).all(...(competitorId ? [competitorId] : []));
-  const prods = db.prepare(`SELECT * FROM products WHERE active=1 ${productId ? 'AND id=?' : 'AND tracked=1'}`).all(...(productId ? [productId] : []));
+  const prods = db.prepare(`SELECT * FROM products WHERE active=1 ${productId ? 'AND id=?' : 'AND tracked=1 AND offline_since IS NULL'}`).all(...(productId ? [productId] : []));
   const ensure = db.prepare("INSERT OR IGNORE INTO matches(product_id, competitor_id, status) VALUES (?,?,'pending')");
   db.exec('BEGIN');
   for (const c of comps) for (const p of prods) ensure.run(p.id, c.id);
@@ -293,10 +293,20 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
     const byProduct = new Map(rows.map((r) => [r.product_id, r]));
     const items = prods
       .map((p) => ({ p, m: byProduct.get(p.id) }))
-      .filter(({ m }) => m && isDue(m, force || Boolean(productId), now, minIntervalH))
-      .sort((a, b) => (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''))
-      .slice(0, limitPerCompetitor ?? undefined);
-    return { comp: c, items };
+      .filter(({ m }) => m)
+      .sort((a, b) => (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''));
+    const due = items.filter(({ m }) => isDue(m, force || Boolean(productId), now, minIntervalH));
+    // Volle Pakete: sind weniger Artikel fällig als die Paketgröße, wird mit den am längsten nicht geprüften aufgefüllt
+    // (frühestens eine Stunde nach der letzten Prüfung).
+    if (fill && limitPerCompetitor && due.length < limitPerCompetitor) {
+      const taken = new Set(due.map(({ p }) => p.id));
+      for (const it of items) {
+        if (due.length >= limitPerCompetitor) break;
+        if (taken.has(it.p.id) || (it.m.last_checked && now - Date.parse(it.m.last_checked) < HOUR)) continue;
+        due.push(it);
+      }
+    }
+    return { comp: c, items: due.slice(0, limitPerCompetitor ?? undefined) };
   });
 
   const total = queues.reduce((s, q) => s + q.items.length, 0);
@@ -344,4 +354,36 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
       scrapeState.finishedAt = Date.now();
     });
   return true;
+}
+
+/**
+ * Einen Artikel sofort bei allen aktiven Mitbewerbern prüfen, unabhängig vom laufenden Abruf
+ * (je Mitbewerber eine Anfrage, parallel). Höchstens drei solcher Prüfungen gleichzeitig.
+ */
+const checking = new Set();
+export async function checkProductNow(db, productId, { competitorId = null } = {}) {
+  if (checking.has(productId)) throw Object.assign(new Error('Dieser Artikel wird gerade geprüft'), { status: 409 });
+  if (checking.size >= 3) throw Object.assign(new Error('Es laufen schon mehrere Sofortprüfungen, bitte kurz warten'), { status: 429 });
+  const p = db.prepare('SELECT * FROM products WHERE id=?').get(productId);
+  if (!p) throw Object.assign(new Error('Artikel nicht gefunden'), { status: 404 });
+  checking.add(productId);
+  try {
+    const comps = db.prepare(`SELECT * FROM competitors WHERE ${competitorId ? 'id=?' : 'enabled=1'} ORDER BY position, id`).all(...(competitorId ? [competitorId] : []));
+    const aiCfg = aiConfig(db);
+    const ensure = db.prepare("INSERT OR IGNORE INTO matches(product_id, competitor_id, status) VALUES (?,?,'pending')");
+    const results = await Promise.all(comps.map(async (c) => {
+      ensure.run(p.id, c.id);
+      const m = db.prepare('SELECT * FROM matches WHERE product_id=? AND competitor_id=?').get(p.id, c.id);
+      const ai = aiCfg.key && c.ai_mode !== 'off' ? { cfg: aiCfg, mode: c.ai_mode } : null;
+      try {
+        const r = await processItem(db, c, p, m, undefined, ai);
+        return { competitor: c.name, found: Boolean(r.found), error: r.error ?? null };
+      } catch (e) {
+        return { competitor: c.name, found: false, error: e.message };
+      }
+    }));
+    return results;
+  } finally {
+    checking.delete(productId);
+  }
 }

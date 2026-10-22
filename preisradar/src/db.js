@@ -118,6 +118,11 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   if (!compCols.includes('sitemap_url')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_url TEXT');
   if (!compCols.includes('sitemap_fetched_at')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_fetched_at TEXT');
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_note')) db.exec('ALTER TABLE matches ADD COLUMN ai_note TEXT');
+  const prodCols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
+  if (!prodCols.includes('offline_since')) db.exec('ALTER TABLE products ADD COLUMN offline_since TEXT');
+  const compCols2 = db.prepare('PRAGMA table_info(competitors)').all().map((c) => c.name);
+  if (!compCols2.includes('sitemap_categories')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_categories TEXT');
+  if (!compCols2.includes('manual_search_url')) db.exec('ALTER TABLE competitors ADD COLUMN manual_search_url TEXT');
   if (!db.prepare('PRAGMA table_info(runs)').all().some((c) => c.name === 'heartbeat')) db.exec('ALTER TABLE runs ADD COLUMN heartbeat TEXT');
   return db;
 }
@@ -145,7 +150,7 @@ export function upsertProducts(db, rows, source, { tracked = true } = {}) {
     'INSERT INTO products(number, ean, mpn, name, manufacturer, url, price, active, source, updated_at, tracked) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
   );
   const upd = db.prepare(
-    'UPDATE products SET ean=?, mpn=?, name=?, manufacturer=?, url=COALESCE(?, url), price=?, active=?, source=?, updated_at=? WHERE id=?',
+    'UPDATE products SET ean=?, mpn=?, name=?, manufacturer=?, url=COALESCE(?, url), price=?, active=?, source=?, updated_at=?, offline_since=NULL WHERE id=?',
   );
   const hist = db.prepare('INSERT INTO product_price_history(product_id, price, at) VALUES (?,?,?)');
   let created = 0;

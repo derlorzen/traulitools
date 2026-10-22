@@ -34,13 +34,13 @@ const BUCKETS = [
 
 export function analyse(db, rules = RULES) {
   const now = Date.now();
-  const tracked = db.prepare('SELECT id, number, name, manufacturer, price FROM products WHERE active=1 AND tracked=1').all();
+  const tracked = db.prepare('SELECT id, number, name, manufacturer, price FROM products WHERE active=1 AND tracked=1 AND offline_since IS NULL').all();
   const comps = db.prepare('SELECT id, name FROM competitors WHERE enabled=1 ORDER BY position, id').all();
   const ms = db
     .prepare(
       `SELECT m.id, m.product_id, m.competitor_id, m.status, m.price, m.availability, m.last_checked, m.last_error
        FROM matches m JOIN competitors c ON c.id=m.competitor_id JOIN products p ON p.id=m.product_id
-       WHERE c.enabled=1 AND p.active=1 AND p.tracked=1`,
+       WHERE c.enabled=1 AND p.active=1 AND p.tracked=1 AND p.offline_since IS NULL`,
     )
     .all();
   const compName = new Map(comps.map((c) => [c.id, c.name]));
@@ -123,7 +123,7 @@ export function analyse(db, rules = RULES) {
   const ownById = new Map(tracked.map((p) => [p.id, p]));
   const since = new Date(now - rules.moveDays * 86400000).toISOString();
   const hist = db
-    .prepare('SELECT h.match_id, h.price, h.at FROM price_history h JOIN matches m ON m.id=h.match_id JOIN products p ON p.id=m.product_id WHERE p.tracked=1 AND p.active=1 ORDER BY h.match_id, h.at')
+    .prepare('SELECT h.match_id, h.price, h.at FROM price_history h JOIN matches m ON m.id=h.match_id JOIN products p ON p.id=m.product_id WHERE p.tracked=1 AND p.active=1 AND p.offline_since IS NULL ORDER BY h.match_id, h.at')
     .all();
   const histBy = new Map();
   for (const h of hist) {
@@ -187,6 +187,8 @@ export function analyse(db, rules = RULES) {
 
   // --- Hinweise (Datenqualität und Auffälligkeiten) ---
   const hints = [];
+  const offline = db.prepare('SELECT COUNT(*) AS n FROM products WHERE active=1 AND tracked=1 AND offline_since IS NOT NULL').get().n;
+  if (offline) hints.push({ level: 'warn', text: `${offline} beobachtete Artikel sind bei dir offline (nicht mehr in deiner Sitemap). Sie bleiben gespeichert, zählen aber nicht in der Analyse und werden nicht mehr abgefragt.` });
   const pendingTotal = competitors.reduce((s, c) => s + c.pending, 0);
   if (!comps.length) hints.push({ level: 'info', text: 'Es ist noch kein aktiver Mitbewerber angelegt.' });
   if (tracked.length && !stats.compared) hints.push({ level: 'info', text: 'Noch kein Artikel hat bestätigte Vergleichspreise. Starte einen Abruf oder warte auf den nächsten Lauf.' });

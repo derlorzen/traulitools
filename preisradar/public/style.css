@@ -99,7 +99,7 @@ table.plain { border-collapse: collapse; width: 100%; }
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); z-index: 40; background: var(--surface); border-left: 1px solid var(--line); box-shadow: -12px 0 32px rgba(0,0,0,.12); overflow: auto; padding: 20px 22px 40px; animation: slide .18s ease-out; }
 @keyframes slide { from { transform: translateX(24px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .drawer { animation: none; } }
-.drawer h2 { padding-right: 36px; }
+.drawer h2 { padding-right: 96px; }
 .drawer .close { position: absolute; top: 14px; right: 16px; }
 .mrow { border-top: 1px solid var(--line); padding: 12px 0; }
 .mrow .line { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
@@ -259,3 +259,30 @@ table.comp { width: 100%; border-collapse: collapse; margin-top: 6px; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; }
 .hints li { border-radius: 8px; }
+
+/* ---------- Preisliste, Suche, Kategorien ---------- */
+.thbtn { all: unset; cursor: pointer; display: inline-flex; gap: 2px; }
+.thbtn:focus-visible { outline: 2px solid var(--petrol); outline-offset: 2px; }
+th.sorted { color: var(--ink) !important; }
+th.prod .thbtn { justify-content: flex-start; }
+.liststatus { padding: 12px 16px; color: var(--muted); font-size: 13px; }
+.prices tr.offline td.prod .pname { color: var(--muted); }
+.prices tr.offline td.prod .tag { margin-top: 4px; }
+.searchlink { display: block; font-size: 11px; margin-top: 2px; }
+.searchrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+.searchrow .btn { text-decoration: none; color: var(--ink); }
+.mrow.missing { background: color-mix(in srgb, var(--sunk) 60%, transparent); margin: 0 -10px; padding: 12px 10px; border-radius: 8px; }
+.note { padding: 8px 12px; border-radius: 8px; background: var(--petrol-soft); margin: 8px 0; }
+.note.warn { background: var(--warn-bg); color: var(--ink); }
+input.numin { width: 120px; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 7px 10px; }
+.cats { margin-top: 10px; }
+.cats summary { cursor: pointer; font-weight: 600; }
+.catbox { margin-top: 8px; display: grid; gap: 8px; }
+.catbox input[type=search] { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 6px 9px; flex: 1; }
+.catlist { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px; background: var(--surface); }
+.catitem { display: flex; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.catitem:hover { background: var(--sunk); }
+.catitem span { flex: 1; text-transform: none; }
+.catitem.l1 span { font-weight: 600; }
+.catitem.l2 { padding-left: 28px; }
+.catitem small { color: var(--muted); }

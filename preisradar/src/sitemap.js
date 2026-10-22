@@ -121,6 +121,9 @@ export async function refreshSitemaps(db, comp) {
 export async function refreshOwnSitemap(db, urls) {
   const { found, report } = await collectSitemapUrls(urls);
   let assigned = 0;
+  let offline = 0;
+  let online = 0;
+  const before = db.prepare('SELECT COUNT(*) AS n FROM own_sitemap_urls').get().n;
   if (found.size) {
     const ins = db.prepare('INSERT OR IGNORE INTO own_sitemap_urls(url, slug) VALUES (?,?)');
     db.exec('BEGIN');
@@ -133,8 +136,28 @@ export async function refreshOwnSitemap(db, urls) {
       throw e;
     }
     assigned = assignOwnUrls(db, [...found]);
+    // Artikel, deren Seite nicht mehr in der Sitemap steht, gelten als offline (bleiben aber erhalten).
+    // Schutz vor Fehlalarm: nur wenn die Sitemap nicht plötzlich deutlich kleiner ist.
+    if (found.size >= before * 0.8) {
+      const now = new Date().toISOString();
+      const norm = (u) => { try { const x = new URL(u); return x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/$/, ''); } catch { return u; } };
+      const present = new Set([...found].map(norm));
+      const off = db.prepare('UPDATE products SET offline_since=? WHERE id=? AND offline_since IS NULL');
+      const on = db.prepare('UPDATE products SET offline_since=NULL WHERE id=? AND offline_since IS NOT NULL');
+      const ownHosts = new Set([...found].map((u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }));
+      db.exec('BEGIN');
+      for (const p of db.prepare('SELECT id, url FROM products WHERE url IS NOT NULL').all()) {
+        let host = '';
+        try { host = new URL(p.url).hostname.replace(/^www\./, ''); } catch { continue; }
+        if (!ownHosts.has(host)) continue;
+        if (present.has(norm(p.url))) online += on.run(p.id).changes;
+        else offline += off.run(now, p.id).changes;
+      }
+      db.exec('COMMIT');
+    }
   }
-  return { count: found.size, assigned, report };
+  db.prepare("INSERT INTO settings(key, value) VALUES ('own_sitemap_fetched_at', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(new Date().toISOString());
+  return { count: found.size, assigned, offline, online, report };
 }
 
 /** Eigene Produkte ↔ URL: Artikelnummer als Pfadsegment (Shopware) oder sehr ähnliche Bezeichnung. */
@@ -166,9 +189,51 @@ export function sitemapDue(db, comp) {
   return Date.now() - Date.parse(comp.sitemap_fetched_at) > WEEK;
 }
 
+/** Kategoriepfad einer URL: alle Pfadsegmente außer dem letzten ('' = direkt unter der Domain). */
+export function categoryOf(url) {
+  try {
+    const segs = new URL(url).pathname.split('/').filter(Boolean);
+    return segs.slice(0, -1).join('/').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+const inCategories = (cat, sel) => sel.some((c) => (c === '' ? cat === '' : cat === c || cat.startsWith(c + '/')));
+export function selectedCategories(db, compId) {
+  try { return JSON.parse(db.prepare('SELECT sitemap_categories FROM competitors WHERE id=?').get(compId)?.sitemap_categories || '[]'); } catch { return []; }
+}
+export const clearSitemapCache = (compId) => cache.delete(compId);
+
+/**
+ * Kategorien aus den Sitemap-URLs eines Mitbewerbers (zwei Ebenen) mit Anzahl der Produkt-URLs.
+ * flat = Produkte liegen überwiegend ohne Kategorie in der URL (dann bringt eine Auswahl wenig).
+ */
+export function sitemapCategories(db, compId) {
+  const counts = new Map();
+  let total = 0;
+  let root = 0;
+  for (const { url } of db.prepare('SELECT url FROM sitemap_urls WHERE competitor_id=?').all(compId)) {
+    total++;
+    const segs = categoryOf(url).split('/').filter(Boolean);
+    if (!segs.length) { root++; continue; }
+    for (let i = 1; i <= Math.min(2, segs.length); i++) {
+      const k = segs.slice(0, i).join('/');
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+  }
+  const top = [...counts.keys()].filter((k) => !k.includes('/'));
+  const flat = top.length > 150 || root > total * 0.5;
+  const list = [...counts.entries()].filter(([k, n]) => n >= 3 && (!k.includes('/') || counts.get(k.split('/')[0]) > n))
+    .map(([path, count]) => ({ path, count, level: path.split('/').length }))
+    .sort((a, b) => a.path.localeCompare(b.path, 'de'));
+  return { total, root, flat, categories: flat ? list.filter((c) => c.level === 1).sort((a, b) => b.count - a.count).slice(0, 60) : list, selected: selectedCategories(db, compId) };
+}
+
 function entries(db, compId) {
   if (!cache.has(compId)) {
-    cache.set(compId, db.prepare('SELECT url, slug FROM sitemap_urls WHERE competitor_id=?').all(compId).map((r) => {
+    const sel = selectedCategories(db, compId);
+    const rows = db.prepare('SELECT url, slug FROM sitemap_urls WHERE competitor_id=?').all(compId).filter((r) => !sel.length || inCategories(categoryOf(r.url), sel));
+    cache.set(compId, rows.map((r) => {
       let path = r.url;
       try { path = decodeURIComponent(new URL(r.url).pathname); } catch { /* Rohwert */ }
       const parts = path.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);

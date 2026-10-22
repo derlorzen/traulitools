@@ -54,6 +54,11 @@ export function extractOwnProduct(html, url) {
   return { number, name, manufacturer: brand, ean, mpn, price: ext.price, url };
 }
 
+/** Eigener Artikel nicht mehr erreichbar: bleibt in der Datenbank, wird als offline vermerkt. */
+export function markOffline(db, url, at = new Date().toISOString()) {
+  return db.prepare('UPDATE products SET offline_since=COALESCE(offline_since, ?) WHERE url=?').run(at, url).changes;
+}
+
 export function startOwnImport(db, { limit = null, all = false, tracked = false, delayMs = Number(process.env.OWN_IMPORT_DELAY_MS ?? 400) } = {}) {
   if (ownImportState.running) return false;
   const known = new Set(db.prepare("SELECT url FROM products WHERE source='sitemap' AND url IS NOT NULL").all().map((r) => r.url));
@@ -77,6 +82,7 @@ export function startOwnImport(db, { limit = null, all = false, tracked = false,
       try {
         if (!(await robotsAllows(url))) throw new Error('robots.txt untersagt den Abruf');
         const r = await fetchText(url);
+        if (r.status === 404 || r.status === 410) markOffline(db, url);
         if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
         const p = extractOwnProduct(r.text, r.finalUrl);
         if (p) batch.push(p);
