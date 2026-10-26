@@ -370,7 +370,9 @@ select { background-color: var(--surface); color: var(--ink); }
   #tablewrap .prices td.mcell .searchlink { display: inline; font-size: 13px; }
   #tablewrap .prices td.gapcell { background: var(--sunk); }
   #tablewrap .prices td.gapcell small { display: inline; }
-  #tablewrap .prices td.ladcell { display: none; }
+  #tablewrap .prices td.poscell { grid-column: 1 / -1; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 9px 14px; border-top: 1px solid var(--line); }
+  #tablewrap .prices td.poscell::before { content: attr(data-label); margin-right: auto; color: var(--muted); font-size: 13px; }
+  #tablewrap .prices td.poscell .pos { grid-template-columns: auto 110px; }
   #tablewrap .prices td.actcell { grid-column: 1 / -1; padding: 0 14px 12px; background: var(--sunk); text-align: right; }
   #tablewrap .prices td.actcell .btn { width: 100%; }
   .liststatus { text-align: center; }
@@ -411,3 +413,163 @@ main[aria-busy="true"] { opacity: .55; }
 .tpls { list-style: none; padding: 0; margin: 4px 0 0; display: grid; gap: 6px; }
 .tpls li { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 .tpls code { background: var(--sunk); padding: 2px 6px; border-radius: 4px; font-size: 12px; overflow-wrap: anywhere; }
+
+/* =====================================================================
+   Glas-Design: lichtdurchlässige Flächen über einem ruhig bewegten Farbgrund
+   ===================================================================== */
+:root {
+  --glass: rgba(255, 255, 255, .58);
+  --glass-strong: rgba(255, 255, 255, .78);
+  --glass-soft: rgba(255, 255, 255, .38);
+  --glass-border: rgba(255, 255, 255, .75);
+  --glass-edge: rgba(13, 84, 102, .12);
+  --glass-shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 10px 30px -12px rgba(13, 50, 60, .22);
+  --surface-solid: #f6f9f9;
+  --blur: blur(18px) saturate(160%);
+  --blob1: rgba(15, 120, 140, .42); --blob2: rgba(200, 140, 50, .30); --blob3: rgba(31, 95, 168, .32); --blob4: rgba(80, 180, 160, .32);
+  --bg: #e9f0f0;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --glass: rgba(22, 38, 43, .55);
+    --glass-strong: rgba(22, 38, 43, .82);
+    --glass-soft: rgba(255, 255, 255, .05);
+    --glass-border: rgba(255, 255, 255, .09);
+    --glass-edge: rgba(255, 255, 255, .06);
+    --glass-shadow: 0 1px 0 rgba(255,255,255,.06) inset, 0 14px 34px -14px rgba(0, 0, 0, .6);
+    --surface-solid: #142328;
+    --blob1: rgba(30, 140, 160, .36); --blob2: rgba(200, 150, 70, .2); --blob3: rgba(60, 110, 200, .3); --blob4: rgba(40, 160, 130, .24);
+    --bg: #0b1518;
+  }
+}
+body { background: var(--bg); }
+body::before {
+  content: ""; position: fixed; inset: -20vmax; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(38vmax 38vmax at 18% 22%, var(--blob1), transparent 70%),
+    radial-gradient(34vmax 34vmax at 82% 12%, var(--blob2), transparent 70%),
+    radial-gradient(40vmax 40vmax at 70% 78%, var(--blob3), transparent 70%),
+    radial-gradient(30vmax 30vmax at 28% 86%, var(--blob4), transparent 70%);
+  animation: drift 38s ease-in-out infinite alternate;
+  will-change: transform;
+}
+@keyframes drift {
+  0% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50% { transform: translate3d(3vmax, -2vmax, 0) rotate(8deg) scale(1.05); }
+  100% { transform: translate3d(-3vmax, 2vmax, 0) rotate(-6deg) scale(1.02); }
+}
+.shell { background: none; }
+
+/* Glasflächen (Unschärfe nur auf großen Flächen, nicht auf Zeilen) */
+.side, .panel, .kpi, .tablewrap, .morebox, .drawer, .help-toc, .list, .gauge, .catlist, .authbox {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+.side { border-width: 0 1px 0 0; border-color: var(--glass-edge); }
+.panel, .kpi, .morebox, .tablewrap { border-radius: 16px; }
+.list { border-radius: 16px; border-top: 1px solid var(--glass-border); padding: 14px 16px 6px; }
+.list li:hover { background: var(--glass-soft); border-radius: 10px; }
+.gauge { border-radius: 16px; padding: 16px; }
+.drawer { background: var(--glass-strong); border-left: 1px solid var(--glass-border); box-shadow: -24px 0 60px -20px rgba(0,0,0,.35); }
+.runbar { background: var(--glass-soft); border: 1px solid var(--glass-border); border-radius: 12px; }
+.hints li { background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-radius: 12px; }
+.hints li.warn { background: color-mix(in srgb, var(--warn-bg) 70%, transparent); }
+.btn, .chip { background: var(--glass-soft); border-color: var(--glass-border); }
+.btn.primary { background: var(--petrol); border-color: transparent; box-shadow: 0 6px 16px -8px var(--petrol); }
+.chip.on { background: var(--ink); color: var(--surface-solid); border-color: transparent; }
+.toolbar input[type=search], .toolbar select, .field input, .field select, .field textarea, input.numin, .mrow input, .catbox input[type=search], .plain input, .panel .row > input {
+  background: var(--glass-strong); border-color: var(--glass-border);
+}
+#tabs button.on { background: var(--glass-strong); box-shadow: var(--glass-shadow); }
+.kpi { border-top: 1px solid var(--glass-border); position: relative; overflow: hidden; }
+.kpi::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--line); }
+.kpi.cool::after { background: var(--cool); } .kpi.warm::after { background: var(--warm); }
+
+/* Tabelle auf Glas: feste Spalten brauchen eine deckende Fläche */
+.prices thead th { background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); }
+.prices td.prod, .prices th.prod { background: var(--surface-solid); }
+.prices thead th.prod { background: var(--glass-strong); }
+.prices td { border-bottom-color: var(--glass-edge); }
+.prices tbody tr:hover td { background: var(--glass-soft); }
+.prices tbody tr:hover td.prod { background: var(--surface-solid); }
+.prices td.own { background: color-mix(in srgb, var(--petrol-soft) 60%, transparent); }
+.prices td.own.warm { background: color-mix(in srgb, var(--warm) 14%, transparent); color: var(--warm); }
+.prices td.own.cool { background: color-mix(in srgb, var(--cool) 14%, transparent); color: var(--cool); }
+.prices td.own.near { background: color-mix(in srgb, var(--even) 16%, transparent); }
+
+/* Position: Platz und Abstand */
+.prices th.posh { text-align: center; }
+.pos { display: grid; grid-template-columns: auto 130px; grid-template-areas: "rank bar" "rank label"; gap: 3px 12px; align-items: center; justify-content: end; }
+.rank { grid-area: rank; font-family: var(--display); line-height: 1; text-align: center; min-width: 44px; padding: 6px 8px; border-radius: 10px; background: var(--glass-soft); border: 1px solid var(--glass-border); }
+.rank b { font-size: 20px; font-weight: 600; }
+.rank small { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.rank.cool b { color: var(--cool); } .rank.warm b { color: var(--warm); } .rank.near b { color: var(--muted); }
+.posbar { grid-area: bar; position: relative; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--line) 70%, transparent); }
+.posbar .mid { position: absolute; left: calc(50% - 1px); top: -4px; bottom: -4px; width: 2px; border-radius: 1px; background: var(--ink); opacity: .45; }
+.posbar i { position: absolute; top: 0; bottom: 0; }
+.posbar i.r { left: 50%; border-radius: 0 4px 4px 0; transform-origin: left center; }
+.posbar i.l { right: 50%; border-radius: 4px 0 0 4px; transform-origin: right center; }
+.posbar i.warm { background: var(--warm); } .posbar i.cool { background: var(--cool); } .posbar i.near { background: var(--even); }
+.poslabel { grid-area: label; font-size: 12px; text-align: center; white-space: nowrap; }
+.poslabel.warm { color: var(--warm); } .poslabel.cool { color: var(--cool); } .poslabel.near { color: var(--muted); }
+
+/* ---------- Bewegung ---------- */
+@keyframes rise { from { opacity: 0; transform: translate3d(0, 12px, 0); } }
+@keyframes fadein { from { opacity: 0; } }
+@keyframes reveal { from { clip-path: inset(0 100% 0 0 round 6px); } to { clip-path: inset(0 0 0 0 round 6px); } }
+@keyframes growx { from { transform: scaleX(0); } }
+@keyframes pop { from { opacity: 0; transform: translate3d(0, 8px, 0) scale(.97); } }
+@keyframes flash { 0% { background-color: color-mix(in srgb, var(--brass) 30%, transparent); } 100% { background-color: transparent; } }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes slidein { from { transform: translate3d(32px, 0, 0); opacity: 0; } }
+
+main.enter > * { animation: rise .6s cubic-bezier(.2, .8, .2, 1) both; }
+main.enter > *:nth-child(2) { animation-delay: .05s; } main.enter > *:nth-child(3) { animation-delay: .1s; }
+main.enter > *:nth-child(4) { animation-delay: .15s; } main.enter > *:nth-child(5) { animation-delay: .2s; }
+main.enter > *:nth-child(6) { animation-delay: .25s; } main.enter > *:nth-child(n+7) { animation-delay: .3s; }
+main.enter .gauge-bar { animation: reveal 1.1s .2s cubic-bezier(.2, .8, .2, 1) both; }
+main.enter .cols .list li { animation: rise .5s cubic-bezier(.2, .8, .2, 1) both; }
+main.enter .cols .list li:nth-child(1) { animation-delay: .25s; } main.enter .cols .list li:nth-child(2) { animation-delay: .3s; }
+main.enter .cols .list li:nth-child(3) { animation-delay: .35s; } main.enter .cols .list li:nth-child(4) { animation-delay: .4s; }
+main.enter .cols .list li:nth-child(5) { animation-delay: .45s; } main.enter .cols .list li:nth-child(n+6) { animation-delay: .5s; }
+main.enter .kpi { animation: pop .55s cubic-bezier(.2, .8, .2, 1) both; }
+main.enter .kpi:nth-child(2) { animation-delay: .05s; } main.enter .kpi:nth-child(3) { animation-delay: .1s; }
+main.enter .kpi:nth-child(4) { animation-delay: .15s; } main.enter .kpi:nth-child(5) { animation-delay: .2s; } main.enter .kpi:nth-child(6) { animation-delay: .25s; }
+main.enter .hbar, main.enter .covbar { animation: growx .9s .2s cubic-bezier(.2, .8, .2, 1) both; transform-origin: left center; }
+.hero-n { display: inline-block; min-width: 1ch; }
+#rows tr { animation: fadein .35s ease-out both; }
+#rows .posbar i { animation: growx .7s cubic-bezier(.2, .8, .2, 1) both; }
+#rows.still tr, #rows.still .posbar i { animation: none; }
+#rows tr.flash td { animation: flash 1.8s ease-out; }
+.drawer { animation: slidein .45s cubic-bezier(.16, 1, .3, 1); }
+.btn, .chip, #tabs button, .linkbtn { transition: transform .12s ease, background-color .2s ease, border-color .2s ease, color .2s ease, box-shadow .2s ease; }
+.btn:active, .chip:active { transform: scale(.97); }
+.list li { transition: background-color .2s ease, transform .2s ease; }
+.list li:hover { transform: translateX(2px); }
+.btn.primary:hover { box-shadow: 0 10px 22px -10px var(--petrol); }
+.liststatus:not(:empty) { background: linear-gradient(90deg, transparent 0%, var(--glass-soft) 40%, transparent 80%) 0 0 / 200% 100%; animation: shimmer 2.2s linear infinite; }
+#tabs button.on::before { transition: top .25s ease, bottom .25s ease; }
+
+/* Fallback ohne Unschärfe: deckendere Flächen */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root { --glass: rgba(255, 255, 255, .9); --glass-strong: #fff; }
+  @media (prefers-color-scheme: dark) { :root { --glass: rgba(22, 38, 43, .95); --glass-strong: #16262b; } }
+}
+/* Mobil: Unschärfe sparsam (Akku), kein Hover-Versatz */
+@media (max-width: 700px) {
+  .list li:hover { transform: none; }
+  #tablewrap .prices tr { background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-color: var(--glass-border); border-radius: 16px; }
+  #tablewrap .prices td.gapcell, #tablewrap .prices td.actcell { background: var(--glass-soft); }
+  #tablewrap { background: none; -webkit-backdrop-filter: none; backdrop-filter: none; border: 0; box-shadow: none; }
+  #tablewrap .prices td.prod { background: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: .001ms !important; }
+  body::before { animation: none; }
+}
+
+table.prices { min-width: 1120px; }
+.prices td.prod, .prices th.prod { width: 300px; min-width: 260px; max-width: 320px; }
+@media (max-width: 700px) { #tablewrap table.prices { min-width: 0; } }

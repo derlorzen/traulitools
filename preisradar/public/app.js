@@ -76,25 +76,32 @@ function analyse(p, comps) {
   return { moved, problem, notFound, oos, cells, ok, min, kind, gap, gapPct: gap != null && min ? (gap / min) * 100 : null, review };
 }
 
-// ---------- Preisleiter ----------
-function ladder(p, a) {
-  const W = 150, H = 26, pad = 7;
-  const vals = [p.price, ...a.ok.map(({ m }) => m.price)].filter((v) => v != null);
-  const svg = s('svg', { class: 'ladder', width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Preisposition' });
-  if (a.ok.length === 0 || p.price == null) return svg;
-  const lo = Math.min(...vals), hi = Math.max(...vals);
-  const x = (v) => (hi === lo ? W / 2 : pad + ((v - lo) / (hi - lo)) * (W - pad * 2));
-  const y = H / 2;
-  svg.append(s('line', { x1: x(lo), x2: x(hi), y1: y, y2: y, stroke: 'var(--line)', 'stroke-width': 2, 'stroke-linecap': 'round' }));
-  if (a.kind === 'undercut') svg.append(s('line', { x1: x(a.min), x2: x(p.price), y1: y, y2: y, stroke: 'var(--bad)', 'stroke-width': 3, 'stroke-linecap': 'round' }));
-  if (a.kind === 'cheapest') {
-    const second = Math.min(...a.ok.map(({ m }) => m.price));
-    svg.append(s('line', { x1: x(p.price), x2: x(second), y1: y, y2: y, stroke: 'var(--good)', 'stroke-width': 3, 'stroke-linecap': 'round' }));
-  }
-  for (const { m, c } of a.ok) svg.append(s('circle', { cx: x(m.price), cy: y, r: 3.5, fill: 'var(--surface)', stroke: 'var(--ink)', 'stroke-width': 1.5 }, s('title', {}, `${c.name}: ${eur.format(m.price)}`)));
-  svg.append(s('circle', { cx: x(p.price), cy: y, r: 5.5, fill: a.kind === 'undercut' ? 'var(--bad)' : 'var(--petrol)', stroke: 'var(--surface)', 'stroke-width': 1.5 }, s('title', {}, `${state.data.own.name}: ${eur.format(p.price)}`)));
-  return svg;
+// ---------- Position: Platz und Abstand zum günstigsten Angebot ----------
+const TOL = 2; // % wie in der Analyse
+function position(p, a) {
+  if (p.price == null || a.min == null) return null;
+  const prices = a.ok.map(({ m }) => m.price);
+  const rank = 1 + prices.filter((x) => x < p.price - 0.004).length;
+  const pctv = ((p.price - a.min) / a.min) * 100; // 0 = günstigster, >0 = teurer als das günstigste Angebot
+  const second = prices.length ? Math.min(...prices) : null;
+  const lead = rank === 1 && second != null ? ((second - p.price) / p.price) * 100 : null; // Vorsprung als Günstigster
+  const tone = rank === 1 ? 'cool' : pctv <= TOL ? 'near' : 'warm';
+  return { rank, n: prices.length + 1, pct: pctv, lead, tone };
 }
+function positionCell(p, a) {
+  const pos = position(p, a);
+  if (!pos) return h('td', { class: 'poscell', 'data-label': 'Position' }, h('span', { class: 'tag mute' }, 'kein Vergleich'));
+  // Balken um die Mitte: rechts = teurer als der Günstigste, links = Vorsprung als Günstigster (bis ±25 %)
+  const val = pos.rank === 1 ? -(pos.lead ?? 0) : pos.pct;
+  const w = Math.min(Math.abs(val), 25) / 25 * 50;
+  const label = pos.rank === 1 ? (pos.lead > 0.05 ? `${pct.format(pos.lead)} % Vorsprung` : 'gleichauf') : `${pct.format(pos.pct)} % teurer`;
+  return h('td', { class: `poscell ${pos.tone}`, 'data-label': 'Position', title: `Platz ${pos.rank} von ${pos.n} Anbietern. ${label}.` },
+    h('div', { class: 'pos' },
+      h('span', { class: `rank ${pos.tone}` }, h('b', {}, String(pos.rank)), h('small', {}, ` von ${pos.n}`)),
+      h('span', { class: 'posbar', 'aria-hidden': 'true' }, h('span', { class: 'mid' }), h('i', { class: `${val < 0 ? 'l' : 'r'} ${pos.tone}`, style: `width:${Math.max(w, val ? 2 : 0)}%` })),
+      h('span', { class: `poslabel ${pos.tone}` }, label)));
+}
+
 
 // ---------- Preise ----------
 function matchCell(p, a, { c, m }) {
@@ -247,7 +254,7 @@ function buildTable() {
       sortHead(h('span', { id: 'prodcount' }, 'Produkt'), 'name', 'prod'),
       sortHead(d.own.name, 'price', 'own', 'desc'),
       d.competitors.map((c) => sortHead(`${c.name}${c.enabled ? '' : ' (aus)'}`, `comp:${c.id}`)),
-      has ? [h('th', {}, 'Position'), sortHead('Abstand zum günstigsten', 'gap', '', 'desc'), h('th', {}, '')] : null)),
+      has ? [sortHead('Position (Platz)', 'gappct', 'posh', 'desc'), sortHead('Abstand zum günstigsten', 'gap', '', 'desc'), h('th', {}, '')] : null)),
     h('tbody', { id: 'rows' }));
   const status = h('div', { id: 'liststatus', class: 'liststatus' }, 'Wird geladen …');
   wrap.replaceChildren(table, status);
@@ -272,6 +279,7 @@ async function loadRows(reset, { keep = false } = {}) {
     const tbody = document.getElementById('rows');
     if (!tbody) return;
     const els = r.rows.map(rowEl);
+    tbody.classList.toggle('still', Boolean(keep)); // beim Aktualisieren nicht erneut animieren
     if (reset) { list.rows = r.rows; tbody.replaceChildren(...els); if (!keep) document.getElementById('tablewrap').scrollTop = 0; }
     else { list.rows.push(...r.rows); tbody.append(...els); }
     renderChips();
@@ -296,11 +304,11 @@ function rowEl(p) {
     h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name),
       h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.mpn && p.mpn !== p.number ? `HAN ${p.mpn}` : null].filter(Boolean).join(' · ')),
       p.offline_since ? h('span', { class: 'tag warn', title: `Seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar` }, 'bei dir offline') : null),
-    h('td', { class: 'own', 'data-label': d.own.name }, p.price != null ? eur.format(p.price) : '–'),
+    h('td', { class: `own ${position(p, a)?.tone ?? ''}`, 'data-label': d.own.name }, p.price != null ? eur.format(p.price) : '–'),
     a.cells.map((cell) => matchCell(p, a, cell)),
-    d.competitors.length ? h('td', { class: 'ladcell' }, ladder(p, a)) : null,
+    d.competitors.length ? positionCell(p, a) : null,
     d.competitors.length ? h('td', { 'data-label': 'Abstand zum günstigsten', class: a.kind === 'undercut' ? 'gapcell gap bad' : a.kind === 'cheapest' ? 'gapcell gap good' : 'gapcell gap' },
-      a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `${pct.format(a.gapPct)} % über dem günstigsten`)]
+      a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `günstigster: ${a.ok.find(({ m }) => m.price === a.min)?.c.name ?? ''}`)]
         : a.kind === 'cheapest' ? ['günstigster', h('small', {}, a.min - p.price > 0.004 ? `${eur.format(a.min - p.price)} Vorsprung` : 'gleichauf')]
           : h('span', { class: 'tag mute' }, '–')) : null,
     d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, checkButton(p.id)) : null);
@@ -325,7 +333,9 @@ function checkButton(id, label = 'Prüfen') {
 function replaceRow(p) {
   const i = list.rows.findIndex((x) => x.id === p.id);
   if (i >= 0) list.rows[i] = p;
-  document.querySelector(`#rows tr[data-id="${p.id}"]`)?.replaceWith(rowEl(p));
+  const nr = rowEl(p);
+  nr.classList.add('flash');
+  document.querySelector(`#rows tr[data-id="${p.id}"]`)?.replaceWith(nr);
 }
 
 // ---------- Detailansicht ----------
@@ -751,7 +761,7 @@ async function renderStart(root) {
   const hero = h('section', { class: 'hero' },
     h('p', { class: 'hero-k' }, `${k.tracked} beobachtete Artikel, ${d.competitors.filter((c) => c.enabled).length} Mitbewerber`),
     k.compared
-      ? h('h1', {}, h('span', { class: 'hero-n' }, String(dearerAny)), ` von ${k.compared} verglichenen Artikeln gibt es bei einem Mitbewerber günstiger.`)
+      ? h('h1', {}, h('span', { class: 'hero-n', 'data-count': dearerAny }, dearerAny.toLocaleString('de-DE')), ` von ${k.compared.toLocaleString('de-DE')} verglichenen Artikeln gibt es bei einem Mitbewerber günstiger.`)
       : h('h1', {}, 'Noch keine bestätigten Vergleichspreise.'),
     h('p', { class: 'hero-sub' }, k.compared
       ? `${seg.dearer} davon mehr als ${tol} % teurer. Im Schnitt liegst du ${fmtPct(k.avg_gap)} über dem günstigsten lieferbaren Angebot (Median ${fmtPct(k.median_gap)}). ${k.erhoehen ? `${k.erhoehen} Artikel haben Spielraum nach oben.` : ''}`
@@ -860,7 +870,7 @@ function renderHelp(root) {
           ['ausstehend', 'Noch nicht abgefragt, kommt mit einem der nächsten Pakete.'],
           ['Fehler / gesperrt', 'Die Seite war nicht erreichbar, oder der Mitbewerber erlaubt den Abruf dieser Seite nicht (robots.txt).'],
           ['bei dir offline', 'Der Artikel steht nicht mehr in deiner eigenen Sitemap. Er bleibt mit allen Daten erhalten, wird aber nicht mehr abgefragt und zählt nicht in der Analyse.'],
-          ['Position', 'Die Linie zeigt alle Preise nebeneinander: dein Preis als gefüllter Punkt, Mitbewerber als Kreise.'],
+          ['Position', 'Dein Platz unter allen Anbietern mit bestätigtem Preis (1 = günstigster). Der Balken zeigt, wie weit du über dem günstigsten Angebot liegst (rot, nach rechts) oder wie viel Vorsprung du als Günstigster hast (blau, nach links). Grau: bis 2 % teurer, praktisch gleichauf. Dein Preis ist in derselben Farbe hinterlegt.'],
         ].map(([a, b]) => h('tr', {}, h('th', {}, a), h('td', {}, b)))))),
 
     sec('h-abruf', 'Wann und wie oft abgefragt wird',
@@ -1050,8 +1060,8 @@ async function renderAnalysis(root) {
       kpiTile('Konkurrenzfähig', k.share_competitive == null ? '–' : `${String(k.share_competitive).replace('.', ',')} %`, 'höchstens 2 % über dem Günstigsten', 'cool'),
       kpiTile('Günstigster oder gleichauf', k.cheapest_share == null ? '–' : `${String(k.cheapest_share).replace('.', ',')} %`, 'der verglichenen Artikel'),
       kpiTile('Ø Abstand', fmtPct(k.avg_gap), `Median ${fmtPct(k.median_gap)}`, k.avg_gap > 2 ? 'warm' : ''),
-      kpiTile('Zu teuer', String(k.senken), k.gap_sum_down ? `${eur.format(k.gap_sum_down)} Differenz je Stück gesamt` : '', k.senken ? 'warm' : ''),
-      kpiTile('Spielraum nach oben', String(k.erhoehen), k.gap_sum_up ? `${eur.format(k.gap_sum_up)} je Stück gesamt` : '', 'cool')),
+      kpiTile('Zu teuer', h('span', { 'data-count': k.senken }, String(k.senken)), k.gap_sum_down ? `${eur.format(k.gap_sum_down)} Differenz je Stück gesamt` : '', k.senken ? 'warm' : ''),
+      kpiTile('Spielraum nach oben', h('span', { 'data-count': k.erhoehen }, String(k.erhoehen)), k.gap_sum_up ? `${eur.format(k.gap_sum_up)} je Stück gesamt` : '', 'cool')),
     h('div', { class: 'grid2' }, histogramChart(a.histogram), competitorTable(a)),
     movesPanel(a),
     brandTable(a));
@@ -1216,6 +1226,29 @@ function renderRunbar() {
 function setTab(t) { state.tab = t; closeDrawer(); render(); }
 document.getElementById('tabs').addEventListener('click', (e) => { const t = e.target.closest('button')?.dataset.tab; if (t) setTab(t); });
 
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+/** Einstieg in einen Bereich: Inhalte gestaffelt einblenden, Zahlen hochzählen (nur beim Wechsel, nicht beim Aktualisieren). */
+function enterAnim(main) {
+  if (reducedMotion()) return;
+  main.classList.remove('enter');
+  void main.offsetWidth; // Animation neu starten
+  main.classList.add('enter');
+  clearTimeout(enterAnim.t);
+  enterAnim.t = setTimeout(() => main.classList.remove('enter'), 1600);
+  for (const el of main.querySelectorAll('[data-count]')) countUp(el);
+}
+function countUp(el) {
+  const to = Number(el.dataset.count);
+  if (!Number.isFinite(to) || to < 2) return;
+  const t0 = performance.now(), dur = 900;
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / dur);
+    el.textContent = Math.round(to * (1 - Math.pow(1 - k, 3))).toLocaleString('de-DE');
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
 let renderSeq = 0;
 let renderedTab = null;
 /**
@@ -1232,6 +1265,7 @@ function render() {
   const keepWin = window.scrollY;
   const seq = ++renderSeq;
   const done = () => {
+    if (!sameTab) enterAnim(main);
     renderedTab = state.tab;
     if (sameTab) { main.scrollTop = keepMain; window.scrollTo(0, keepWin); } else { main.scrollTop = 0; window.scrollTo(0, 0); }
   };
