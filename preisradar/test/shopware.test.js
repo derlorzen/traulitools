@@ -19,7 +19,7 @@ test('Shopware-Abgleich: Preise, Einkaufspreise, Bestand, Verkäufe; Mindestmarg
       const send = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
       if (req.url === '/api/oauth/token') return send({ access_token: 't' });
       if (req.url === '/api/search/product') return send({ total: 3, data: [
-        { id: 'p1', productNumber: 'A1', childCount: 0, price: [{ gross: 119 }], purchasePrices: [{ net: 80 }], availableStock: 7, tax: { taxRate: 19 } },
+        { id: 'p1', productNumber: 'A1', childCount: 0, price: [{ gross: 119 }], purchasePrices: [{ net: 80 }], stock: 7, availableStock: 3, tax: { taxRate: 19 } },
         { id: 'p2', productNumber: 'A2', childCount: 0, price: [{ gross: 59.5 }], purchasePrices: null, availableStock: 0, tax: { taxRate: 19 } },
         { id: 'p3', productNumber: 'FREMD', childCount: 0, price: [{ gross: 1 }] },
       ] });

@@ -1361,7 +1361,7 @@ async function renderSettings(root) {
         imp.limit,
         imp.start, imp.stop, imp.msg)),
     h('h3', { style: 'margin-top:20px' }, 'Shopware-Zugang'),
-    h('p', { class: 'sub' }, 'In Shopware unter Einstellungen → System → Integrationen eine Integration anlegen. Lesezugriff genügt: Produkte (Preise, Einkaufspreise, Bestand) und Bestellungen (verkaufte Stück und Umsatz). Preisradar ändert in Shopware nichts, preisführend bleibt deine Warenwirtschaft. Das Secret wird verschlüsselt gespeichert und nie wieder angezeigt.'),
+    h('p', { class: 'sub' }, 'In Shopware unter Einstellungen → System → Integrationen eine Integration anlegen. Lesezugriff genügt (für Shopware 6.7: Rolle mit Lesen auf Produkte, Steuersätze, Bestellungen inklusive Positionen und Status). Daraus kommen Preise, Einkaufspreise, Bestand sowie verkaufte Stück und Umsatz. Preisradar ändert in Shopware nichts, preisführend bleibt deine Warenwirtschaft. Das Secret wird verschlüsselt gespeichert und nie wieder angezeigt.'),
     cur.shopware_from_env ? h('p', { class: 'pmeta' }, 'Aktuell werden die Zugangsdaten aus der Server-Umgebung verwendet. Wenn du hier speicherst, gelten deine Eingaben.') : null,
     h('div', { class: 'grid' },
       f('Shopware-URL', 'shopware_url', cur.shopware_url, { type: 'url', ph: 'https://www.belkai.de' }),

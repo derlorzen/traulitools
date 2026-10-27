@@ -106,7 +106,9 @@ export async function fetchShopwareProducts(cfg) {
 }
 
 /*
- * Täglicher Abgleich mit Shopware (nur lesen; preisführend bleibt die Warenwirtschaft):
+ * Täglicher Abgleich mit Shopware 6.5 bis 6.7 (nur lesen; preisführend bleibt die Warenwirtschaft).
+ * Ab 6.6 ist `stock` der verkaufbare Bestand (`availableStock` spiegelt ihn nur noch).
+ * Benötigte Rechte der Integration (lesen): product, tax, order, order_line_item, state_machine_state.
  * Verkaufspreis, Einkaufspreis, Steuersatz und Bestand der bekannten Artikel sowie verkaufte Stück und Umsatz
  * der letzten 30 und 90 Tage (ohne stornierte Bestellungen).
  */
@@ -173,7 +175,7 @@ export async function syncShopware(db) {
       const price = money(first(p.price)?.gross ?? first(parent?.price)?.gross);
       const purchase = money(first(p.purchasePrices)?.net ?? first(parent?.purchasePrices)?.net);
       const tax = p.tax?.taxRate ?? parent?.tax?.taxRate ?? null;
-      upd.run(p.id, price, purchase && purchase > 0 ? purchase : null, tax, p.availableStock ?? p.stock ?? null, now, local.id);
+      upd.run(p.id, price, purchase && purchase > 0 ? purchase : null, tax, p.stock ?? p.availableStock ?? null, now, local.id);
       if (price != null && price !== local.price) hist.run(local.id, price, now);
       if (purchase > 0) withPurchase++;
       swToLocal.set(p.id, local.id);
