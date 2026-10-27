@@ -187,7 +187,7 @@ function renderPrices(root) {
       h('select', { id: 'brandsel', 'aria-label': 'Hersteller', onchange: (e) => { state.brand = e.target.value; reload(); } },
         h('option', { value: '' }, 'Alle Hersteller'), list.brands.map((b) => h('option', { value: b, selected: b === state.brand }, b))),
       h('select', { 'aria-label': 'Sortierung', onchange: (e) => { const [s, dir] = e.target.value.split(':'); state.sort = s; state.dir = dir; render(); } },
-        [['name:asc', 'Name A–Z'], ['name:desc', 'Name Z–A'], ['number:asc', 'Artikelnummer'], ['gap:desc', 'Größter Rückstand in €'], ['gappct:desc', 'Größter Rückstand in %'], ['gap:asc', 'Größter Vorsprung'], ['price:desc', 'Preis absteigend'], ['price:asc', 'Preis aufsteigend'], ['cheapest:asc', 'Günstigster Mitbewerberpreis'], ['impressions:desc', 'Meiste Impressionen (Google)'], ['clicks:desc', 'Meiste Klicks (Google)'], ['updated:desc', 'Zuletzt aktualisiert']]
+        [['name:asc', 'Name A–Z'], ['name:desc', 'Name Z–A'], ['number:asc', 'Artikelnummer'], ['gap:desc', 'Größter Rückstand in €'], ['gappct:desc', 'Größter Rückstand in %'], ['gap:asc', 'Größter Vorsprung'], ['price:desc', 'Preis absteigend'], ['price:asc', 'Preis aufsteigend'], ['cheapest:asc', 'Günstigster Mitbewerberpreis'], ['units:desc', 'Meistverkauft (30 Tage)'], ['revenue:desc', 'Meister Umsatz (90 Tage)'], ['margin:asc', 'Geringste Marge'], ['benchmark:desc', 'Am weitesten über Google-Vergleichspreis'], ['impressions:desc', 'Meiste Impressionen (Google)'], ['clicks:desc', 'Meiste Klicks (Google)'], ['updated:desc', 'Zuletzt aktualisiert']]
           .map(([v, l]) => h('option', { value: v, selected: v === `${state.sort}:${state.dir}` }, l))),
       noComps ? null : h('button', { class: `btn${state.more ? ' on' : ''}`, 'aria-expanded': state.more ? 'true' : 'false', onclick: () => { state.more = !state.more; render(); } }, extra ? `Weitere Filter (${extra})` : 'Weitere Filter'),
       state.q || state.brand || state.filter !== 'all' || extra ? h('button', { class: 'linkbtn', onclick: reset }, 'Zurücksetzen') : null),
@@ -303,6 +303,7 @@ function rowEl(p) {
     h('td', { class: 'trackcell', onclick: (e) => e.stopPropagation() }, h('input', { type: 'checkbox', checked: Boolean(p.tracked), 'aria-label': `${p.name} beobachten`, onchange: guard((e) => track([p.id], e.target.checked)) })),
     h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name),
       h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.mpn && p.mpn !== p.number ? `HAN ${p.mpn}` : null].filter(Boolean).join(' · ')),
+      econLine(p),
       p.seo ? h('div', { class: 'seoline', title: `Google, letzte 28 Tage: ${p.seo.clicks} Klicks, ${p.seo.impressions} Impressionen, Ø Position ${p.seo.position}` }, `${nf.format(p.seo.impressions)} Impr. · ${nf.format(p.seo.clicks)} Klicks · Pos. ${nf1.format(p.seo.position)}`) : null,
       p.offline_since ? h('span', { class: 'tag warn', title: `Seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar` }, 'bei dir offline') : null),
     h('td', { class: `own ${position(p, a)?.tone ?? ''}`, 'data-label': d.own.name }, p.price != null ? eur.format(p.price) : '–'),
@@ -314,6 +315,16 @@ function rowEl(p) {
           : h('span', { class: 'tag mute' }, '–')) : null,
     d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, checkButton(p.id)) : null);
   return tr;
+}
+
+/** Verkäufe, Bestand und Marge eines Artikels in einer Zeile. */
+function econLine(p) {
+  const parts = [];
+  if (p.sales) parts.push(`${nf.format(p.sales.units_30)} verkauft (30 T)`);
+  if (p.stock != null) parts.push(`Bestand ${nf.format(p.stock)}`);
+  if (p.google?.benchmark && p.price) parts.push(`Google-Vergleich ${eur.format(p.google.benchmark)}`);
+  if (p.purchase_price > 0 && p.price) { const net = p.price / (1 + (p.tax_rate ?? 19) / 100); parts.push(`Marge ${nf1.format(((net - p.purchase_price) / net) * 100)} %`); }
+  return parts.length ? h('div', { class: 'econline' }, parts.join(' · ')) : null;
 }
 
 /** Sofortprüfung eines Artikels bei allen Mitbewerbern; ersetzt danach Zeile und Detailansicht. */
@@ -401,9 +412,12 @@ async function openDrawer(id, given = null) {
     p.offline_since ? h('p', { class: 'note warn' }, `Bei dir offline: seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar. Der Artikel bleibt mit seinen Daten erhalten und wird bei Mitbewerbern nicht mehr automatisch abgefragt.`) : null,
     h('div', { class: 'row', style: 'margin:10px 0 4px' },
       h('strong', {}, `${d.own.name}: ${p.price != null ? eur.format(p.price) : '–'}`),
+      p.purchase_price > 0 ? h('span', { class: 'pmeta' }, `EK ${eur.format(p.purchase_price)} netto`) : null,
       p.url ? h('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, 'im Shop öffnen') : null,
       h('span', { class: 'spacer' }),
       checkButton(p.id, 'Jetzt alle Mitbewerber prüfen')),
+    econLine(p),
+    p.google?.suggested && Math.abs(p.google.suggested - p.price) >= 0.01 ? h('p', { class: 'note' }, `Google-Preisvorschlag: ${eur.format(p.google.suggested)}${p.google.conversions_change != null ? `, erwartet ${p.google.conversions_change > 0 ? '+' : ''}${Math.round(p.google.conversions_change * 100)} % Verkäufe in Shopping` : ''}.`) : null,
     h('h3', { style: 'margin-top:18px' }, 'Preisverlauf'), histBox,
     h('h3', { style: 'margin-top:22px' }, 'Bei Google (letzte 28 Tage)'), seoDrawerBox(p.id),
     h('h3', { style: 'margin-top:22px' }, 'Mitbewerber'),
@@ -648,9 +662,34 @@ function quickSetupPanel() {
     h('div', { class: 'row' }, url, name, analyse), out);
 }
 
+function googleCompetitorsPanel() {
+  const box = h('div', { class: 'panel', hidden: true });
+  if (!state.data.config.merchant) return box;
+  api('/api/merchant').then((mc) => {
+    const list = mc.competitors.filter((c) => !c.known);
+    if (!mc.competitors.length) return;
+    box.hidden = false;
+    box.replaceChildren(h('h3', {}, 'Weitere Mitbewerber laut Google'),
+      h('p', { class: 'sub' }, 'Shops, die in deinen Kategorien bei Google Shopping sichtbar sind (Merchant Center, Wettbewerbsübersicht). Überschneidung: Anteil der Suchen, bei denen ihr beide erscheint. Öfter vor dir: Anteil, bei dem dieser Shop höher steht.'),
+      list.length ? h('table', { class: 'plain' }, h('thead', {}, h('tr', {}, ['Shop', 'Überschneidung', 'Öfter vor dir', 'Sichtbarkeit', ''].map((t) => h('th', {}, t)))),
+        h('tbody', {}, list.slice(0, 20).map((c) => h('tr', {},
+          h('td', {}, h('a', { href: `https://${c.domain}`, target: '_blank', rel: 'noopener noreferrer' }, c.domain)),
+          h('td', {}, c.overlap != null ? `${nf.format(Math.round(c.overlap * 100))} %` : '–'),
+          h('td', {}, c.higher != null ? `${nf.format(Math.round(c.higher * 100))} %` : '–'),
+          h('td', {}, c.visibility != null ? nf1.format(c.visibility) : '–'),
+          h('td', {}, h('button', { class: 'btn small', onclick: guard(async (e) => {
+            e.target.disabled = true; e.target.textContent = 'wird eingerichtet …';
+            try { const r = await api('/api/competitors/from-domain', { body: { domain: c.domain } }); toast(`${r.name} angelegt${r.sitemaps.length ? `, ${r.sitemaps.length} Sitemap(s) gefunden` : ', keine Sitemap gefunden'}`); await refresh(); }
+            finally { e.target.disabled = false; e.target.textContent = 'Anlegen'; }
+          }) }, 'Anlegen')))))) : h('p', { class: 'pmeta' }, 'Alle von Google genannten Shops sind bereits angelegt.'));
+  }).catch(() => {});
+  return box;
+}
+
 function renderCompetitors(root) {
   root.append(h('h2', {}, 'Mitbewerber'),
     h('p', { class: 'sub' }, 'Jeder Mitbewerber braucht eine Such-URL (Suche per EAN oder Herstellernummer) und/oder Sitemap-URLs (Zuordnung über Marke und Name). Alternativ trägst du Produkt-URLs direkt im Import oder in der Detailansicht ein. Die robots.txt der Shops wird immer beachtet.'),
+    googleCompetitorsPanel(),
     quickSetupPanel(),
     ...state.data.competitors.map((c) => competitorPanel(c)),
     h('h3', {}, 'Neuen Mitbewerber hinzufügen'), competitorPanel(null));
@@ -678,8 +717,8 @@ async function renderImport(root) {
         : 'Der Shopware-Zugang ist noch nicht eingerichtet: SHOPWARE_URL, SHOPWARE_CLIENT_ID und SHOPWARE_CLIENT_SECRET als Umgebungsvariablen setzen (Integration unter Einstellungen → System → Integrationen). Bis dahin geht der Import per CSV.'),
       h('div', { class: 'row' },
         h('button', { class: 'btn primary', disabled: !d.config.shopware, onclick: guard(async (e) => { e.target.disabled = true; try { const r = await api('/api/import/shopware', { method: 'POST', body: {} }); toast(`${r.created} neu, ${r.updated} aktualisiert`); await refresh(); } finally { e.target.disabled = false; } }) }, 'Aus Shopware importieren'),
-        fileButton('Produkt-CSV hochladen', '/api/import/csv', (r) => `${r.created} neu, ${r.updated} aktualisiert`)),
-      h('p', { class: 'pmeta', style: 'margin-top:8px' }, 'CSV-Spalten: Artikelnummer, Name, EAN, Herstellernummer, Hersteller, Preis (brutto), URL.')),
+        fileButton('Produkt-CSV hochladen', '/api/import/csv', (r) => `${r.created} neu, ${r.updated} aktualisiert${r.purchase_prices ? `, ${r.purchase_prices} Einkaufspreise` : ''}`)),
+      h('p', { class: 'pmeta', style: 'margin-top:8px' }, 'CSV-Spalten: Artikelnummer, Name, EAN, Herstellernummer, Hersteller, Preis (brutto), Einkaufspreis (netto), URL. Nur Einkaufspreise nachtragen (z. B. Export aus JTL-Wawi): Artikelnummer und Einkaufspreis genügen.')),
     h('div', { class: 'panel' }, h('h3', {}, 'Bekannte Mitbewerber-URLs'),
       h('p', { class: 'sub' }, 'Wenn du die Produktseiten schon kennst: CSV mit den Spalten Artikelnummer, Mitbewerber (Name wie angelegt) und URL. Diese Zuordnungen werden nicht per Suche überschrieben.'),
       fileButton('URL-CSV hochladen', '/api/import/urls', (r) => `${r.set} URLs gesetzt${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)));
@@ -811,7 +850,9 @@ async function renderStart(root) {
       h('dt', {}, 'Aktualität'), h('dd', {}, `jeder Artikel höchstens alle ${sch.refresh} Stunden`),
       h('dt', {}, 'Artikel'), h('dd', {}, `${d.counts.all} gesamt, ${d.counts.tracked} beobachtet`),
       imp?.running ? [h('dt', {}, 'Import'), h('dd', {}, `läuft: ${imp.done} von ${imp.total}`)] : imp?.finishedAt ? [h('dt', {}, 'Letzter Import'), h('dd', {}, `${dt.format(new Date(imp.finishedAt))}, ${imp.created} neu, ${imp.updated} aktualisiert${imp.errors ? `, ${imp.errors} Fehler` : ''}`)] : null,
+      h('dt', {}, 'Shopware'), h('dd', {}, d.config.shopware ? (d.config.swSynced ? `Abgleich ${dt.format(new Date(d.config.swSynced))}` : 'verbunden, Abgleich steht aus') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht verbunden (Verkäufe, Einkaufspreise)')),
       h('dt', {}, 'Google'), h('dd', {}, d.config.gsc ? h('button', { class: 'linkbtn', onclick: () => setTab('sichtbarkeit') }, 'Search Console verbunden, zur Sichtbarkeit') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'Search Console noch nicht verbunden')),
+      h('dt', {}, 'E-Mail'), h('dd', {}, h('button', { class: 'linkbtn', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('mail-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'Tägliche Zusammenfassung einstellen')),
       h('dt', {}, 'KI'), h('dd', {}, d.config.ai
         ? [h('div', { class: 'aimeter', title: `${d.config.aiUsage.today} von ${d.config.aiUsage.limit} KI-Anfragen heute` }, h('div', { style: `width:${Math.min(100, (d.config.aiUsage.today / Math.max(1, d.config.aiUsage.limit)) * 100)}%` })),
           `${d.config.aiUsage.today.toLocaleString('de-DE')} von ${d.config.aiUsage.limit.toLocaleString('de-DE')} Anfragen heute${d.config.aiUsage.today >= d.config.aiUsage.limit ? ' (Grenze erreicht, weiter ohne KI)' : ''}`]
@@ -873,8 +914,8 @@ function lineChart(series, { height = 220, fmtY = (v) => nf.format(Math.round(v)
 
 function seoSetupHint() {
   return h('div', { class: 'panel empty' },
-    h('h3', {}, 'Google Search Console verbinden'),
-    h('p', { style: 'max-width:62ch;margin:0 auto 12px' }, 'Dann siehst du, wie oft deine Produktseiten bei Google erscheinen und angeklickt werden, mit welchen Suchbegriffen sie gefunden werden und wo Preis und Auffindbarkeit nicht zusammenpassen.'),
+    h('h3', {}, 'Google verbinden'),
+    h('p', { style: 'max-width:62ch;margin:0 auto 12px' }, 'Mit der Search Console siehst du, wie oft deine Produktseiten bei Google erscheinen und angeklickt werden und wo Preis und Auffindbarkeit nicht zusammenpassen. Mit dem Merchant Center kommen Googles Vergleichspreise, Preisvorschläge und weitere Mitbewerber dazu.'),
     h('div', { class: 'row', style: 'justify-content:center' }, h('button', { class: 'btn primary', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('seo-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'Zugang einrichten')));
 }
 
@@ -895,13 +936,51 @@ function pollSeo() {
 }
 
 async function renderSeo(root) {
-  const o = await api('/api/seo');
+  const [o, mc] = await Promise.all([api('/api/seo'), api('/api/merchant')]);
   root.append(h('div', { class: 'pagehead' }, h('h2', {}, 'Sichtbarkeit')),
-    h('p', { class: 'sub' }, 'Wie gut deine Artikel bei Google gefunden werden, im Zusammenspiel mit deinen Preisen. Quelle: Google Search Console, letzte 28 Tage.'));
-  if (!o.status.gsc.configured) { root.append(seoSetupHint()); return; }
+    h('p', { class: 'sub' }, 'Wie gut deine Artikel bei Google gefunden werden und wie deine Preise im Google-Shopping-Vergleich stehen.'));
+  if (!o.status.gsc.configured && !mc.configured) { root.append(seoSetupHint()); return; }
+  if (o.status.gsc.configured) renderGsc(root, o);
+  if (mc.configured) renderMerchant(root, mc);
+}
+
+function renderMerchant(root, mc) {
+  const pctTxt = (f) => (f == null ? '' : `${f > 0 ? '+' : ''}${nf.format(Math.round(f * 100))} %`);
+  root.append(h('h3', { class: 'sechead' }, 'Google Shopping (Merchant Center)'),
+    h('div', { class: 'syncbar' }, h('div', {}, h('b', {}, 'Merchant Center '), h('span', { class: 'pmeta' }, mc.synced_at ? `Konto ${mc.account}, Stand ${dt.format(new Date(mc.synced_at))}, ${nf.format(mc.offers)} Angebote, davon ${nf.format(mc.matched)} deinen Artikeln zugeordnet` : `Konto ${mc.account}, noch nicht abgeglichen`),
+      h('button', { class: 'btn small', disabled: mc.job.running, onclick: guard(async () => { await api('/api/merchant/sync', { method: 'POST', body: {} }); toast('Abgleich gestartet'); render(); const t = setInterval(guard(async () => { const x = await api('/api/merchant'); if (!x.job.running) { clearInterval(t); toast(x.job.error ? `Fehlgeschlagen: ${x.job.error}` : 'Merchant Center abgeglichen', Boolean(x.job.error)); if (state.tab === 'sichtbarkeit') render(); } }), 4000); }) }, mc.job.running ? 'Abgleich läuft …' : 'Jetzt abgleichen')),
+      mc.job.error ? h('div', { class: 'warmtxt' }, `Letzter Abgleich: ${mc.job.error}`) : null,
+      mc.job.result?.warnings?.length ? h('div', { class: 'pmeta' }, `Hinweise: ${mc.job.result.warnings.join(' · ')}`) : null));
+  if (!mc.offers) { root.append(h('p', { class: 'pmeta' }, 'Noch keine Daten aus dem Merchant Center.')); return; }
+  const b = mc.benchmark;
+  root.append(h('div', { class: 'kpis' },
+    kpiTile('Mit Google-Vergleichspreis', h('span', { 'data-count': b.total }, nf.format(b.total)), 'Artikel, für die Google einen Marktpreis kennt'),
+    kpiTile('Über dem Vergleichspreis', h('span', { 'data-count': b.above }, nf.format(b.above)), 'mehr als 2 % teurer', b.above ? 'warm' : ''),
+    kpiTile('Unter dem Vergleichspreis', h('span', { 'data-count': b.below }, nf.format(b.below)), 'mehr als 2 % günstiger', 'cool')));
+  const open = (id) => () => { state.tab = 'preise'; render(); openDrawer(id); };
+  root.append(h('div', { class: 'grid2 eq' },
+    h('div', { class: 'panel flush' },
+      h('div', { class: 'panelhead' }, h('h3', {}, 'Über dem Google-Vergleichspreis'), h('p', { class: 'pmeta' }, 'Google vergleicht mit allen Händlern, die dasselbe Produkt in Shopping anbieten, auch mit solchen, die du noch nicht beobachtest.')),
+      mc.above_benchmark.length ? h('div', { class: 'tablewrap', style: 'max-height:460px' }, h('table', { class: 'prices', style: 'min-width:0' },
+        h('thead', {}, h('tr', {}, ['Artikel', 'Dein Preis', 'Vergleichspreis', 'Abstand'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
+        h('tbody', {}, mc.above_benchmark.map((r) => h('tr', { onclick: open(r.id) },
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, r.number)),
+          h('td', {}, eur.format(r.own_price)), h('td', {}, eur.format(r.benchmark)), h('td', { class: 'gap bad' }, fmtPct(r.gap_percent))))))) : h('p', { class: 'list-empty', style: 'padding:0 16px 14px' }, 'Kein Artikel deutlich über dem Vergleichspreis.')),
+    h('div', { class: 'panel flush' },
+      h('div', { class: 'panelhead' }, h('h3', {}, 'Preisvorschläge von Google'), h('p', { class: 'pmeta' }, 'Googles Schätzung, wie sich ein anderer Preis auf Klicks und Verkäufe in Shopping auswirkt. Marge vorher prüfen.')),
+      mc.suggestions.length ? h('div', { class: 'tablewrap', style: 'max-height:460px' }, h('table', { class: 'prices', style: 'min-width:0' },
+        h('thead', {}, h('tr', {}, ['Artikel', 'Dein Preis', 'Vorschlag', 'Klicks', 'Verkäufe'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
+        h('tbody', {}, mc.suggestions.map((r) => h('tr', { onclick: open(r.id) },
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, [r.number, r.effectiveness ? `Wirkung: ${{ HIGH: 'hoch', MEDIUM: 'mittel', LOW: 'gering' }[r.effectiveness] ?? r.effectiveness}` : null].filter(Boolean).join(' · '))),
+          h('td', {}, eur.format(r.own_price)), h('td', { style: 'font-weight:700' }, eur.format(r.suggested)),
+          h('td', { class: r.clicks_change > 0 ? 'cooltxt' : '' }, pctTxt(r.clicks_change)), h('td', { class: r.conversions_change > 0 ? 'cooltxt' : '' }, pctTxt(r.conversions_change))))))) : h('p', { class: 'list-empty', style: 'padding:0 16px 14px' }, 'Derzeit keine Vorschläge.'))));
+  if (mc.competitors.length) root.append(h('p', { class: 'pmeta', style: 'margin-top:12px' }, `${mc.competitors.filter((c) => !c.known).length} weitere Shops sind in deinen Kategorien bei Google sichtbar. `, h('button', { class: 'linkbtn', onclick: () => setTab('mitbewerber') }, 'Unter Mitbewerber ansehen')));
+}
+
+function renderGsc(root, o) {
   root.append(seoSyncBar(o));
   if (o.job.running && !o.daily.length) pollSeo();
-  if (!o.daily.length) { root.append(h('p', { class: 'pmeta' }, 'Noch keine Daten. Der erste Abgleich läuft automatisch nach dem Einrichten oder über „Jetzt abgleichen“.')); return; }
+  if (!o.daily.length) { root.append(h('p', { class: 'pmeta' }, 'Noch keine Daten aus der Search Console. Der erste Abgleich läuft automatisch nach dem Einrichten oder über „Jetzt abgleichen“.')); return; }
   const k = o.kpi;
   root.append(h('div', { class: 'kpis' },
     kpiTile('Klicks', h('span', { 'data-count': Math.round(k.clicks) }, nf.format(k.clicks)), delta(k.clicks, k.clicks_prev), 'cool'),
@@ -975,7 +1054,7 @@ function renderHelp(root) {
     ['h-status', 'Was die Angaben in der Preisliste bedeuten'],
     ['h-abruf', 'Wann und wie oft abgefragt wird'],
     ['h-ki', 'Was die KI macht und was sie kostet'],
-    ['h-google', 'Was die Google-Daten zeigen'],
+    ['h-google', 'Google-Daten und tägliche E-Mail'],
     ['h-analyse', 'Wie die Empfehlungen entstehen'],
     ['h-selbst', 'Was du selbst tun kannst'],
     ['h-daten', 'Deine Daten und faires Verhalten'],
@@ -1034,7 +1113,7 @@ function renderHelp(root) {
         '. Ist sie erreicht, arbeitet Preisradar bis Mitternacht ohne KI weiter. Bei nicht gefundenen Artikeln fragt Preisradar die KI höchstens einmal pro Woche erneut.'),
       p(d.config.ai ? 'Die KI ist eingerichtet. ' : h('b', {}, 'Die KI ist derzeit nicht eingerichtet. '), 'Ohne KI funktioniert Preisradar trotzdem, nur bei schwierigen Shops werden weniger Artikel gefunden. Schlüssel, Modell und Tagesgrenze unter ', go('einstellungen', 'Einstellungen → KI'), '. Pro Mitbewerber lässt sich die KI auch ganz abschalten.')),
 
-    sec('h-google', 'Was die Google-Daten zeigen',
+    sec('h-google', 'Google-Daten und tägliche E-Mail',
       p('Ist die Google Search Console verbunden, holt Preisradar einmal täglich, wie oft deine Seiten in den letzten 28 Tagen bei Google erschienen sind (Impressionen), wie oft sie angeklickt wurden (Klicks) und auf welchem Platz sie im Schnitt standen. Die Daten kommen direkt von Google und sind 2 bis 3 Tage alt.'),
       p('Spannend wird es zusammen mit den Preisen. Unter ', go('sichtbarkeit', 'Sichtbarkeit'), ' findest du vier Listen:'),
       h('ul', { class: 'plainlist' },
@@ -1042,7 +1121,9 @@ function renderHelp(root) {
         h('li', {}, h('b', {}, 'Günstigster, aber kaum gefunden: '), 'Du hast den besten Preis, aber die Seite steht weit hinten. Hier hilft Arbeit an Titel, Beschreibung und internen Links mehr als der Preis.'),
         h('li', {}, h('b', {}, 'Knapp vor Seite 1: '), 'Seiten auf Platz 8 bis 15. Schon wenige Plätze mehr bringen deutlich mehr Besucher.'),
         h('li', {}, h('b', {}, 'Gut platziert, wenig Klicks: '), 'Weit oben, aber selten angeklickt. Oft helfen ein besserer Seitentitel oder sichtbare Vorteile wie Versand oder Preis im Suchergebnis.')),
-      p('In der Preisliste kannst du nach Impressionen oder Klicks sortieren, und in der Analyse die Empfehlungen nach „Nachfrage × Abstand“: Zuerst kommen die Artikel, bei denen ein besserer Preis die meisten Interessenten erreicht.')),
+      p('In der Preisliste kannst du nach Impressionen oder Klicks sortieren, und in der Analyse die Empfehlungen nach „Nachfrage × Abstand“: Zuerst kommen die Artikel, bei denen ein besserer Preis die meisten Interessenten erreicht.'),
+      p(h('b', {}, 'Merchant Center: '), 'Google kennt für viele Produkte den Preis, zu dem andere Händler sie in Shopping anbieten (Vergleichspreis), auch Händler, die du noch nicht beobachtest. Dazu kommen Googles Preisvorschläge mit geschätzter Wirkung auf Klicks und Verkäufe. Unter Mitbewerber zeigt Preisradar außerdem Shops, die in deinen Kategorien bei Google sichtbar sind, und legt sie auf Klick an.'),
+      p(h('b', {}, 'Tägliche E-Mail: '), 'Auf Wunsch kommt jeden Morgen eine Zusammenfassung: wer seit gestern seine Preise geändert hat und wer jetzt unter deinem Preis liegt, die wichtigsten Preissenkungs-Kandidaten nach Umsatz und Nachfrage, neu offline gegangene Artikel und die Google-Zahlen. Einrichten unter ', go('einstellungen', 'Einstellungen'), '.')),
 
     sec('h-analyse', 'Wie die Empfehlungen entstehen',
       p('Die Empfehlungen folgen festen, nachvollziehbaren Regeln, nicht der KI. Verglichen wird dein Preis mit dem günstigsten bestätigten Angebot eines Mitbewerbers, der den Artikel liefern kann:'),
@@ -1051,7 +1132,8 @@ function renderHelp(root) {
         h('li', {}, h('b', {}, 'Preis senken: '), `mehr als ${r.tolerance} % teurer. Vorgeschlagen wird der Preis des günstigsten Angebots.`),
         h('li', {}, h('b', {}, 'Preis erhöhen: '), `mehr als ${r.raiseAbove} % günstiger als alle anderen. Vorgeschlagen wird knapp unter dem günstigsten Angebot.`),
         h('li', {}, h('b', {}, 'Prüfen: '), `Abweichungen über ${r.outlier} % sind meist eine falsche Zuordnung (andere Größe, anderes Set) und werden nicht als Marktpreis gewertet.`)),
-      p('Preisradar kennt deine Einkaufspreise und Margen nicht. Prüfe eine Senkung deshalb immer gegen deine Marge.')),
+      p(h('b', {}, 'Mindestmarge: '), `Liegt ein Einkaufspreis vor (aus Shopware oder per CSV, z. B. Export aus JTL-Wawi), schlägt Preisradar nie einen Preis unter deiner Mindestmarge vor (derzeit ${r.minMargin ?? 10} %, bezogen auf den Nettoverkaufspreis). Liegt der Mitbewerber darunter, lautet die Empfehlung „halten“ mit Hinweis. Ohne Einkaufspreis prüfe Senkungen bitte selbst gegen deine Marge.`),
+      p(h('b', {}, 'Verkäufe: '), 'Ist Shopware angebunden, siehst du je Artikel die verkauften Stück der letzten 30 Tage und kannst die Empfehlungen nach „Umsatz × Abstand“ sortieren. Zuerst kommen dann die Artikel, bei denen der Preis am meisten Umsatz betrifft. Preisradar liest aus Shopware nur, preisführend bleibt deine Warenwirtschaft.')),
 
     sec('h-selbst', 'Was du selbst tun kannst',
       h('ul', { class: 'plainlist' },
@@ -1061,7 +1143,7 @@ function renderHelp(root) {
         h('li', {}, 'Nur die Artikel beobachten, deren Preise dich wirklich interessieren.'))),
 
     sec('h-daten', 'Deine Daten und faires Verhalten',
-      p('Alle Daten liegen auf deinem eigenen Server. Die Oberfläche lädt nichts von fremden Servern (keine Schriften, kein Tracking). An OpenAI gehen nur der Inhalt öffentlicher Mitbewerberseiten und die Produktangaben deines Artikels (Name, Marke, Nummern), keine Kunden- oder Bestelldaten. Von Google liest Preisradar nur die Search-Console-Statistik deiner Seiten, mit reinem Lesezugriff. Zugangsdaten werden verschlüsselt gespeichert.'),
+      p('Alle Daten liegen auf deinem eigenen Server. Die Oberfläche lädt nichts von fremden Servern (keine Schriften, kein Tracking). An OpenAI gehen nur der Inhalt öffentlicher Mitbewerberseiten und die Produktangaben deines Artikels (Name, Marke, Nummern), keine Kunden- oder Bestelldaten. Von Google liest Preisradar nur Statistiken aus Search Console und Merchant Center, aus Shopware nur Artikel und Bestellsummen, jeweils mit reinem Lesezugriff. Kundendaten werden nicht übernommen. Zugangsdaten werden verschlüsselt gespeichert.'),
       p('Über den Claude-Zugang (', go('einstellungen', 'Einstellungen'), ') kannst du Preisradar auch im Gespräch mit Claude abfragen und bedienen. Preise in deinem Shop werden auch dort nie geändert.'))));
 }
 
@@ -1147,6 +1229,7 @@ function recommendations(a) {
   });
   const sorters = {
     gap: (x, y) => Math.abs(y.gap_percent) - Math.abs(x.gap_percent),
+    sales: (x, y) => (y.revenue_90 ?? -1) * Math.max(0.1, Math.abs(y.gap_percent)) - (x.revenue_90 ?? -1) * Math.max(0.1, Math.abs(x.gap_percent)),
     demand: (x, y) => (y.impressions ?? -1) * Math.max(0.1, Math.abs(y.gap_percent)) - (x.impressions ?? -1) * Math.max(0.1, Math.abs(x.gap_percent)),
     diff: (x, y) => Math.abs(y.diff) - Math.abs(x.diff),
     price: (x, y) => y.own_price - x.own_price,
@@ -1162,7 +1245,7 @@ function recommendations(a) {
       h('tbody', {}, rows.slice(0, 300).map((x) => {
         const [label, cls] = ACTION_TAG[x.action] ?? [x.action, ''];
         return h('tr', { tabindex: 0, onclick: () => { state.tab = 'preise'; render(); openDrawer(x.id); } },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, x.name), h('div', { class: 'pmeta' }, [x.brand, x.number, x.impressions != null ? `${nf.format(x.impressions)} Impr. bei Google` : null].filter(Boolean).join(' · '))),
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, x.name), h('div', { class: 'pmeta' }, [x.brand, x.number, x.units_30 != null ? `${nf.format(x.units_30)} verkauft (30 T)` : null, x.margin_percent != null ? `Marge ${nf1.format(x.margin_percent)} %` : null, x.impressions != null ? `${nf.format(x.impressions)} Impr. bei Google` : null].filter(Boolean).join(' · '))),
           h('td', {}, h('span', { class: `tag ${cls}` }, label)),
           h('td', {}, eur.format(x.own_price)),
           h('td', {}, eur.format(x.cheapest), h('div', { class: 'pmeta' }, x.cheapest_competitor)),
@@ -1183,7 +1266,7 @@ function recommendations(a) {
       h('select', { 'aria-label': 'Marke', onchange: (e) => { aState.brand = e.target.value; refreshRecs(); } }, h('option', { value: '' }, 'Alle Marken'), brands.map((b) => h('option', { value: b, selected: b === aState.brand }, b))),
       h('select', { 'aria-label': 'Günstigster Mitbewerber', onchange: (e) => { aState.comp = e.target.value; refreshRecs(); } }, h('option', { value: '' }, 'Jeder Mitbewerber'), a.competitors.map((c) => h('option', { value: c.name, selected: c.name === aState.comp }, `${c.name} günstigster`))),
       h('select', { 'aria-label': 'Sortierung', onchange: (e) => { aState.sort = e.target.value; refreshRecs(); } },
-        [['gap', 'Größter Abstand in %'], ['diff', 'Größter Abstand in €'], ['demand', 'Nachfrage × Abstand (Google)'], ['price', 'Preis absteigend'], ['name', 'Name']].map(([v, l]) => h('option', { value: v, selected: v === aState.sort }, l)))),
+        [['gap', 'Größter Abstand in %'], ['diff', 'Größter Abstand in €'], ['sales', 'Umsatz × Abstand (Shopware)'], ['demand', 'Nachfrage × Abstand (Google)'], ['price', 'Preis absteigend'], ['name', 'Name']].map(([v, l]) => h('option', { value: v, selected: v === aState.sort }, l)))),
     tableEl);
 }
 const aRules = (a) => a.rules;
@@ -1278,18 +1361,30 @@ async function renderSettings(root) {
         imp.limit,
         imp.start, imp.stop, imp.msg)),
     h('h3', { style: 'margin-top:20px' }, 'Shopware-Zugang'),
-    h('p', { class: 'sub' }, 'In Shopware unter Einstellungen → System → Integrationen eine Integration anlegen (Lesezugriff auf Produkte genügt). Das Secret wird verschlüsselt gespeichert und nie wieder angezeigt.'),
+    h('p', { class: 'sub' }, 'In Shopware unter Einstellungen → System → Integrationen eine Integration anlegen. Lesezugriff genügt: Produkte (Preise, Einkaufspreise, Bestand) und Bestellungen (verkaufte Stück und Umsatz). Preisradar ändert in Shopware nichts, preisführend bleibt deine Warenwirtschaft. Das Secret wird verschlüsselt gespeichert und nie wieder angezeigt.'),
     cur.shopware_from_env ? h('p', { class: 'pmeta' }, 'Aktuell werden die Zugangsdaten aus der Server-Umgebung verwendet. Wenn du hier speicherst, gelten deine Eingaben.') : null,
     h('div', { class: 'grid' },
       f('Shopware-URL', 'shopware_url', cur.shopware_url, { type: 'url', ph: 'https://www.belkai.de' }),
       f('Client-ID', 'shopware_client_id', cur.shopware_client_id),
-      f('Client-Secret', 'shopware_client_secret', '', { type: 'password', ph: cur.shopware_secret_set ? '•••••••• (gespeichert)' : '', hint: cur.shopware_secret_set ? 'Leer lassen, um das gespeicherte Secret zu behalten' : '' })),
+      f('Client-Secret', 'shopware_client_secret', '', { type: 'password', ph: cur.shopware_secret_set ? '•••••••• (gespeichert)' : '', hint: cur.shopware_secret_set ? 'Leer lassen, um das gespeicherte Secret zu behalten' : '' }),
+      f('Mindestmarge (%)', 'min_margin', cur.min_margin, { type: 'number', hint: 'Untergrenze für Preisvorschläge: Marge auf den Nettoverkaufspreis. Wirkt nur, wenn ein Einkaufspreis vorliegt (aus Shopware oder per CSV).' })),
+    h('p', { class: 'pmeta', id: 'swstatus' }, cur.sw_synced_at ? `Letzter Abgleich (Preise, Einkaufspreise, Bestand, Verkäufe): ${dt.format(new Date(cur.sw_synced_at))}. Danach automatisch täglich.` : 'Noch kein Abgleich. Er läuft nach dem Speichern automatisch einmal täglich.'),
     h('div', { class: 'row', style: 'margin-top:14px' },
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
         out.hidden = false; out.textContent = 'Verbindung wird geprüft …';
         try { const r = await api('/api/settings/shopware/test', { body: vals() }); out.textContent = `Verbunden: ${r.products} aktive Produkte gefunden.`; }
         catch (e) { out.textContent = `Fehlgeschlagen: ${e.message}`; }
       }) }, 'Verbindung testen'),
+      cur.shopware_secret_set || cur.shopware_from_env ? h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
+        await api('/api/shopware/sync', { method: 'POST', body: {} });
+        out.hidden = false; out.textContent = 'Abgleich läuft …';
+        const t = setInterval(guard(async () => {
+          const st = await api('/api/shopware/status');
+          if (st.job.running) return;
+          clearInterval(t);
+          out.textContent = st.job.error ? `Fehlgeschlagen: ${st.job.error}` : `Fertig: ${st.job.result.updated} Artikel aktualisiert, davon ${st.job.result.with_purchase} mit Einkaufspreis, ${st.job.result.sold_90} in 90 Tagen verkauft. ${st.job.result.unknown} Shopware-Artikel sind nicht im Preisradar.`;
+        }), 3000);
+      }) }, 'Jetzt abgleichen') : null,
       h('span', { class: 'spacer' }),
       h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: vals() }); toast('Einstellungen gespeichert'); await refresh(); }) }, 'Speichern')),
     out);
@@ -1348,6 +1443,36 @@ async function renderSettings(root) {
       cur.mcp_enabled ? h('button', { class: 'btn danger', type: 'button', onclick: guard(async () => { if (confirm('Claude-Zugang abschalten?')) { await api('/api/settings/mcp-token', { method: 'DELETE' }); toast('Zugang abgeschaltet'); await refresh(); } }) }, 'Abschalten') : null),
     mcpOut);
 
+  const m = cur.mail;
+  const mout = h('div', { class: 'result', hidden: true });
+  const mailVals = () => ({ ...Object.fromEntries(new FormData(mail)), mail_enabled: mail.elements.mail_enabled.checked, mail_secure: mail.elements.mail_secure.checked });
+  const mail = h('form', { class: 'panel', id: 'mail-settings', onsubmit: (e) => e.preventDefault() },
+    h('h3', {}, 'Tägliche Zusammenfassung per E-Mail'),
+    h('p', { class: 'sub' }, 'Jeden Morgen eine kurze Mail: welche Mitbewerber seit gestern ihre Preise geändert haben (besonders, wer jetzt unter deinem Preis liegt), die wichtigsten Preissenkungs-Kandidaten nach Umsatz und Nachfrage, Spielraum nach oben, neu offline gegangene Artikel und die Google-Zahlen. Versand über deinen eigenen Mailserver (SMTP).'),
+    h('div', { class: 'grid' },
+      f('Empfänger', 'mail_to', m.to, { ph: 'marco@belkai.de, einkauf@belkai.de', hint: 'Mehrere Adressen mit Komma trennen' }),
+      f('Versand um (Uhr)', 'mail_hour', m.hour, { type: 'number', hint: 'Volle Stunde, deutsche Zeit' }),
+      f('Absender', 'mail_from', m.from, { ph: 'Preisradar <preisradar@belkai.de>' }),
+      f('SMTP-Server', 'mail_host', m.host, { ph: 'smtp.belkai.de' }),
+      f('Port', 'mail_port', m.port, { type: 'number', hint: '587 (STARTTLS) oder 465 (SSL)' }),
+      f('Benutzer', 'mail_user', m.user),
+      f('Passwort', 'mail_pass', '', { type: 'password', ph: m.pass_set ? '•••••••• (gespeichert)' : '', hint: m.pass_set ? 'Leer lassen, um das gespeicherte Passwort zu behalten' : '' })),
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('label', { class: 'row' }, h('input', { type: 'checkbox', name: 'mail_enabled', checked: m.enabled }), 'Täglich senden'),
+      h('label', { class: 'row' }, h('input', { type: 'checkbox', name: 'mail_secure', checked: m.secure }), 'SSL von Beginn an (Port 465)')),
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('a', { class: 'btn', href: '/api/digest/preview', target: '_blank', rel: 'noopener' }, 'Vorschau ansehen'),
+      h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
+        await api('/api/settings', { method: 'PUT', body: mailVals() });
+        mout.hidden = false; mout.textContent = 'Testmail wird gesendet …';
+        try { const r = await api('/api/digest/test', { method: 'POST', body: {} }); mout.textContent = `Gesendet an ${r.to.join(', ')}: „${r.subject}“`; }
+        catch (e) { mout.textContent = `Fehlgeschlagen: ${e.message}`; }
+      }) }, 'Speichern und Testmail senden'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: mailVals() }); toast('E-Mail-Einstellungen gespeichert'); await refresh(); }) }, 'Speichern')),
+    mout,
+    m.last_sent ? h('p', { class: 'pmeta' }, `Zuletzt gesendet: ${dt.format(new Date(m.last_sent))}`) : null);
+
   const g = cur.seo.gsc;
   const gout = h('div', { class: 'result', hidden: true });
   const gsc = h('form', { class: 'panel', id: 'seo-settings', onsubmit: (e) => e.preventDefault() },
@@ -1383,13 +1508,42 @@ async function renderSettings(root) {
     gout,
     g.synced_at ? h('p', { class: 'pmeta' }, `Letzter Abgleich: ${dt.format(new Date(g.synced_at))}. Danach automatisch einmal täglich.`) : null);
 
+  const mcCur = cur.merchant;
+  const mcout = h('div', { class: 'result', hidden: true });
+  const merchant = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
+    h('h3', {}, 'Google Merchant Center'),
+    h('p', { class: 'sub' }, 'Holt aus Google Shopping den Vergleichspreis anderer Händler, Googles Preisvorschläge und die Shops, die in deinen Kategorien sichtbar sind (so findest du weitere Mitbewerber). Nutzt dasselbe Dienstkonto wie die Search Console, nur lesend.'),
+    h('details', { class: 'howto' }, h('summary', {}, 'So richtest du den Zugang ein'),
+      h('ol', { class: 'plainlist' },
+        h('li', {}, 'Zuerst oben unter „Google Search Console“ den Dienstkonto-Schlüssel hinterlegen.'),
+        h('li', {}, 'In der Google Cloud Console im selben Projekt die „Merchant API“ aktivieren.'),
+        h('li', {}, 'Im Merchant Center unter „Einstellungen → Personen und Zugriff“ die Adresse des Dienstkontos als Nutzer hinzufügen (Zugriff auf Berichte, z. B. Standard).'),
+        h('li', {}, 'Die Konto-ID steht oben rechts im Merchant Center bzw. in der Adresszeile (Ziffern).'),
+        h('li', {}, 'Optional: Google-Produktkategorie-IDs für die Wettbewerbsübersicht, z. B. aus der Google-Produkttaxonomie. Ohne Kategorien gibt es Vergleichspreise und Vorschläge, aber keine Mitbewerberliste.'))),
+    h('div', { class: 'grid' },
+      f('Merchant-Center-Konto-ID', 'mc_account', mcCur.account, { ph: '123456789' }),
+      f('Land', 'mc_country', mcCur.country, { ph: 'DE' }),
+      f('Kategorie-IDs (optional)', 'mc_categories', mcCur.categories, { ph: 'z. B. 574, 2206', hint: 'Bis zu 10, mit Komma getrennt. Für die Liste weiterer Mitbewerber.' })),
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
+        await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(merchant)) });
+        mcout.hidden = false; mcout.textContent = 'Verbindung wird geprüft …';
+        try { const r = await api('/api/merchant/test', { method: 'POST', body: {} }); mcout.textContent = `Verbunden als ${r.email}.${r.sample ? ` Beispiel-Angebot: ${r.sample}.` : ''}`; }
+        catch (e) { mcout.textContent = e.message; }
+      }) }, 'Speichern und testen'),
+      mcCur.configured ? h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/merchant/sync', { method: 'POST', body: {} }); toast('Abgleich gestartet'); }) }, 'Jetzt abgleichen') : null,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(merchant)) }); toast('Merchant Center gespeichert'); await refresh(); }) }, 'Speichern')),
+    mcout,
+    mcCur.synced_at ? h('p', { class: 'pmeta' }, `Letzter Abgleich: ${dt.format(new Date(mcCur.synced_at))}. Danach automatisch täglich.`) : null);
+
   const pw = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
     h('h3', {}, 'Passwort ändern'),
     h('div', { class: 'grid' }, f('Aktuelles Passwort', 'current', '', { type: 'password' }), f('Neues Passwort (mind. 10 Zeichen)', 'password', '', { type: 'password' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
   const up = h('div', { id: 'userpanel' }, await userPanel());
-  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, ki, gsc, mcp, up, pw));
+  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, mail, ki, gsc, merchant, mcp, up, pw));
 }
 
 // ---------- Laufleiste ----------

@@ -104,3 +104,104 @@ export async function fetchShopwareProducts(cfg) {
   }
   return rows;
 }
+
+/*
+ * Täglicher Abgleich mit Shopware (nur lesen; preisführend bleibt die Warenwirtschaft):
+ * Verkaufspreis, Einkaufspreis, Steuersatz und Bestand der bekannten Artikel sowie verkaufte Stück und Umsatz
+ * der letzten 30 und 90 Tage (ohne stornierte Bestellungen).
+ */
+async function token(cfg) {
+  const tok = await api(cfg, '/oauth/token', { body: { grant_type: 'client_credentials', client_id: cfg.clientId, client_secret: cfg.clientSecret } });
+  if (!tok.access_token) throw new Error('Shopware: Kein Zugriffstoken erhalten');
+  return tok.access_token;
+}
+const money = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
+
+async function salesSince(cfg, tok, days) {
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+  const body = {
+    limit: 1,
+    filter: [
+      { type: 'equals', field: 'type', value: 'product' },
+      { type: 'range', field: 'order.orderDateTime', parameters: { gte: since } },
+      { type: 'not', operator: 'or', queries: [{ type: 'equals', field: 'order.stateMachineState.technicalName', value: 'cancelled' }] },
+    ],
+    aggregations: [
+      { name: 'units', type: 'terms', field: 'productId', limit: 50000, aggregation: { name: 'sum', type: 'sum', field: 'quantity' } },
+      { name: 'revenue', type: 'terms', field: 'productId', limit: 50000, aggregation: { name: 'sum', type: 'sum', field: 'totalPrice' } },
+    ],
+    includes: { order_line_item: ['id'] },
+  };
+  const res = await api(cfg, '/search/order-line-item', { token: tok, body });
+  const read = (name) => new Map((res.aggregations?.[name]?.buckets ?? []).filter((b) => b.key).map((b) => [b.key, Number(b.sum?.sum ?? 0)]));
+  return { units: read('units'), revenue: read('revenue') };
+}
+
+export async function syncShopware(db) {
+  const cfg = shopwareConfig(db);
+  if (!cfg.configured) throw new Error('Shopware-Zugang fehlt (Einstellungen → Shopware)');
+  const tok = await token(cfg);
+  const all = [];
+  for (let page = 1; page < 400; page++) {
+    const res = await api(cfg, '/search/product', {
+      token: tok,
+      body: {
+        page, limit: 500, 'total-count-mode': 1,
+        associations: { tax: {} },
+        includes: { product: ['id', 'productNumber', 'active', 'price', 'purchasePrices', 'stock', 'availableStock', 'parentId', 'childCount', 'tax', 'taxId'], tax: ['taxRate'] },
+      },
+    });
+    const data = res.data ?? [];
+    all.push(...data);
+    if (all.length >= (res.total ?? 0) || !data.length) break;
+  }
+  const byId = new Map(all.map((p) => [p.id, p]));
+  const first = (v) => (Array.isArray(v) ? v[0] : v) ?? null;
+  const known = new Map(db.prepare('SELECT id, number, price FROM products').all().map((p) => [p.number, p]));
+  const now = new Date().toISOString();
+  const upd = db.prepare('UPDATE products SET sw_id=?, price=COALESCE(?, price), purchase_price=COALESCE(?, purchase_price), tax_rate=COALESCE(?, tax_rate), stock=?, updated_at=? WHERE id=?');
+  const hist = db.prepare('INSERT INTO product_price_history(product_id, price, at) VALUES (?,?,?)');
+  const swToLocal = new Map();
+  let updated = 0, unknown = 0, withPurchase = 0;
+  db.exec('BEGIN');
+  try {
+    for (const p of all) {
+      if (p.childCount > 0) continue;
+      const local = known.get(String(p.productNumber));
+      if (!local) { unknown++; continue; }
+      const parent = p.parentId ? byId.get(p.parentId) : null;
+      const price = money(first(p.price)?.gross ?? first(parent?.price)?.gross);
+      const purchase = money(first(p.purchasePrices)?.net ?? first(parent?.purchasePrices)?.net);
+      const tax = p.tax?.taxRate ?? parent?.tax?.taxRate ?? null;
+      upd.run(p.id, price, purchase && purchase > 0 ? purchase : null, tax, p.availableStock ?? p.stock ?? null, now, local.id);
+      if (price != null && price !== local.price) hist.run(local.id, price, now);
+      if (purchase > 0) withPurchase++;
+      swToLocal.set(p.id, local.id);
+      updated++;
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  // Verkäufe
+  const s30 = await salesSince(cfg, tok, 30);
+  const s90 = await salesSince(cfg, tok, 90);
+  const ins = db.prepare('INSERT INTO product_sales(product_id, units_30, revenue_30, units_90, revenue_90, updated_at) VALUES (?,?,?,?,?,?)');
+  let sold = 0;
+  db.exec('BEGIN');
+  try {
+    db.exec('DELETE FROM product_sales');
+    for (const [swId, localId] of swToLocal) {
+      const u90 = s90.units.get(swId) ?? 0;
+      if (!u90) continue;
+      ins.run(localId, s30.units.get(swId) ?? 0, money(s30.revenue.get(swId) ?? 0), u90, money(s90.revenue.get(swId) ?? 0), now);
+      sold++;
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  return { products: all.length, updated, unknown, with_purchase: withPurchase, sold_90: sold };
+}

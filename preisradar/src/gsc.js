@@ -9,7 +9,7 @@ import { getSetting, setSetting } from './settings.js';
 const SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly';
 const API = () => (process.env.GSC_API_BASE || 'https://www.googleapis.com/webmasters/v3').replace(/\/+$/, '');
 const b64u = (b) => Buffer.from(b).toString('base64url');
-let token = null; // { value, exp, email }
+const tokens = new Map(); // scope|email -> { value, exp }
 
 export function gscConfig(db) {
   let key = null;
@@ -24,17 +24,20 @@ export function saveServiceAccount(db, text) {
   try { k = JSON.parse(text); } catch { throw Object.assign(new Error('Das ist keine gültige JSON-Datei eines Dienstkontos'), { status: 400 }); }
   if (k.type !== 'service_account' || !k.client_email || !k.private_key) throw Object.assign(new Error('JSON-Schlüssel eines Dienstkontos erwartet (type „service_account“ mit client_email und private_key)'), { status: 400 });
   setSetting(db, 'gsc_service_account', JSON.stringify({ type: k.type, client_email: k.client_email, private_key: k.private_key, token_uri: k.token_uri || 'https://oauth2.googleapis.com/token' }), { secret: true });
-  token = null;
+  tokens.clear();
   return k.client_email;
 }
 
-async function accessToken(cfg) {
-  if (token && token.email === cfg.key.client_email && token.exp > Date.now() + 60000) return token.value;
+/** Zugriffstoken für ein Dienstkonto (JWT, RS256), je Berechtigungsbereich zwischengespeichert. */
+export async function googleToken(key, scope) {
+  const id = `${scope}|${key.client_email}`;
+  const hit = tokens.get(id);
+  if (hit && hit.exp > Date.now() + 60000) return hit.value;
   const now = Math.floor(Date.now() / 1000);
-  const aud = process.env.GSC_TOKEN_URL || cfg.key.token_uri || 'https://oauth2.googleapis.com/token';
+  const aud = process.env.GSC_TOKEN_URL || key.token_uri || 'https://oauth2.googleapis.com/token';
   const head = b64u(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const claim = b64u(JSON.stringify({ iss: cfg.key.client_email, scope: SCOPE, aud, iat: now, exp: now + 3600 }));
-  const sig = crypto.createSign('RSA-SHA256').update(`${head}.${claim}`).sign(cfg.key.private_key).toString('base64url');
+  const claim = b64u(JSON.stringify({ iss: key.client_email, scope, aud, iat: now, exp: now + 3600 }));
+  const sig = crypto.createSign('RSA-SHA256').update(`${head}.${claim}`).sign(key.private_key).toString('base64url');
   const res = await fetch(aud, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -43,9 +46,10 @@ async function accessToken(cfg) {
   });
   const j = await res.json().catch(() => ({}));
   if (!res.ok || !j.access_token) throw new Error(`Google-Anmeldung fehlgeschlagen: ${j.error_description || j.error || res.status}`);
-  token = { value: j.access_token, exp: Date.now() + (j.expires_in ?? 3600) * 1000, email: cfg.key.client_email };
-  return token.value;
+  tokens.set(id, { value: j.access_token, exp: Date.now() + (j.expires_in ?? 3600) * 1000 });
+  return j.access_token;
 }
+const accessToken = (cfg) => googleToken(cfg.key, SCOPE);
 
 async function call(cfg, path, body) {
   const res = await fetch(`${API()}${path}`, {

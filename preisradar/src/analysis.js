@@ -33,6 +33,19 @@ const BUCKETS = [
 ];
 
 const pageKeyOf = (u) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/+$/, '')).toLowerCase(); } catch { return null; } };
+/** Einkaufspreis, aktuelle Marge und Preis-Untergrenze (Mindestmarge) sowie Verkäufe eines Artikels. */
+function economics(p, s, minMargin) {
+  const tax = 1 + (p.tax_rate ?? 19) / 100;
+  const ek = p.purchase_price > 0 ? p.purchase_price : null;
+  const net = p.price != null ? p.price / tax : null;
+  return {
+    purchase_price: ek,
+    margin_percent: ek && net ? Math.round(((net - ek) / net) * 1000) / 10 : null,
+    floor_price: ek ? Math.ceil((ek / (1 - minMargin / 100)) * tax * 100) / 100 : null,
+    stock: p.stock ?? null,
+    units_30: s?.units_30 ?? null, revenue_30: s?.revenue_30 ?? null, units_90: s?.units_90 ?? null, revenue_90: s?.revenue_90 ?? null,
+  };
+}
 function demand(seo, url) {
   const r = url ? seo.get(pageKeyOf(url)) : null;
   return r ? { impressions: r.impressions, clicks: r.clicks, search_position: Math.round(r.position * 10) / 10 } : { impressions: null, clicks: null, search_position: null };
@@ -40,9 +53,13 @@ function demand(seo, url) {
 
 export function analyse(db, rules = RULES) {
   const now = Date.now();
-  const tracked = db.prepare('SELECT id, number, name, manufacturer, price, url FROM products WHERE active=1 AND tracked=1 AND offline_since IS NULL').all();
+  const tracked = db.prepare('SELECT id, number, name, manufacturer, price, url, purchase_price, tax_rate, stock FROM products WHERE active=1 AND tracked=1 AND offline_since IS NULL').all();
   // Nachfrage aus der Search Console (letzte 28 Tage) je Produktseite, falls angebunden
   const seo = new Map(db.prepare('SELECT page, clicks, impressions, position FROM seo_pages').all().map((r) => [r.page, r]));
+  // Verkäufe aus Shopware und Mindestmarge (Einkaufspreis netto, Marge auf den Nettoverkaufspreis)
+  const sales = new Map(db.prepare('SELECT product_id, units_30, revenue_30, units_90, revenue_90 FROM product_sales').all().map((r) => [r.product_id, r]));
+  const mm = Number(db.prepare("SELECT value FROM settings WHERE key='min_margin'").get()?.value ?? 10);
+  const minMargin = Number.isFinite(mm) && mm >= 0 && mm < 95 ? mm : 10;
   const comps = db.prepare('SELECT id, name FROM competitors WHERE enabled=1 ORDER BY position, id').all();
   const ms = db
     .prepare(
@@ -79,6 +96,7 @@ export function analyse(db, rules = RULES) {
     const base = {
       id: p.id, number: p.number, name: p.name, brand: p.manufacturer, own_price: p.price,
       ...demand(seo, p.url),
+      ...economics(p, sales.get(p.id), minMargin),
       cheapest: low.price, cheapest_competitor: low.competitor, gap_percent: gap, diff: r2(p.price - low.price), offers: ok.length,
       cheapest_unavailable: lowAny.price < low.price - 0.004 ? { competitor: lowAny.competitor, price: lowAny.price } : null,
       prices: ok.map((m) => ({ competitor: m.competitor, price: m.price, out_of_stock: m.availability === 'out_of_stock' })),
@@ -91,7 +109,13 @@ export function analyse(db, rules = RULES) {
     }
     if (gap > rules.tolerance) {
       stats.expensive++;
-      rows.push({ ...base, action: 'senken', suggested_price: r2(low.price), reason: `${low.competitor} ist mit ${eur(low.price)} um ${gap} % günstiger. Vor einer Senkung die Marge prüfen.${note}` });
+      if (base.floor_price != null && base.floor_price >= p.price - 0.004) {
+        rows.push({ ...base, action: 'halten', margin_blocked: true, suggested_price: null, reason: `${low.competitor} ist mit ${eur(low.price)} um ${gap} % günstiger, aber eine Senkung würde deine Mindestmarge von ${minMargin} % unterschreiten (Untergrenze ${eur(base.floor_price)}).${note}` });
+      } else if (base.floor_price != null && base.floor_price > low.price) {
+        rows.push({ ...base, action: 'senken', margin_limited: true, suggested_price: r2(base.floor_price), reason: `${low.competitor} ist mit ${eur(low.price)} um ${gap} % günstiger. Wegen deiner Mindestmarge von ${minMargin} % höchstens auf ${eur(base.floor_price)} senken.${note}` });
+      } else {
+        rows.push({ ...base, action: 'senken', suggested_price: r2(low.price), reason: `${low.competitor} ist mit ${eur(low.price)} um ${gap} % günstiger.${base.margin_percent != null ? ` Marge danach ${Math.round(((low.price / (1 + (p.tax_rate ?? 19) / 100) - base.purchase_price) / (low.price / (1 + (p.tax_rate ?? 19) / 100))) * 1000) / 10} %.` : ' Vor einer Senkung die Marge prüfen.'}${note}` });
+      }
     } else if (gap < -rules.raiseAbove) {
       stats.cheapest++;
       const target = r2(low.price - 0.1);
@@ -215,5 +239,6 @@ export function analyse(db, rules = RULES) {
   const summary = stats.compared
     ? `${stats.compared} von ${stats.total} beobachteten Artikeln haben bestätigte Vergleichspreise. ${n('senken')} sind mehr als ${rules.tolerance} % teurer als der günstigste lieferbare Mitbewerber, ${n('erhöhen')} liegen deutlich darunter, ${n('prüfen')} weichen auffällig ab.${stats.unconfirmedOnly ? ` Bei ${stats.unconfirmedOnly} Artikeln gibt es nur unbestätigte Treffer („zu prüfen“).` : ''}`
     : tracked.length ? 'Noch keine bestätigten Mitbewerberpreise. Lege Mitbewerber an und starte einen Abruf.' : 'Es sind noch keine Artikel zur Beobachtung ausgewählt (Tab Preise).';
+  rules = { ...rules, minMargin };
   return { rules, stats, kpi, histogram, competitors, brands, moves: moves.slice(0, 25), hints, summary, rows };
 }

@@ -102,6 +102,7 @@ const TOOLS = [
   { name: 'reject_match', description: 'Einen Treffer verwerfen (falsches Produkt).', inputSchema: obj({ match_id: { type: 'integer' } }, ['match_id']) },
   { name: 'set_match_url', description: 'Produktlink eines Mitbewerbers für einen Artikel setzen (leer = Zuordnung zurücksetzen) und direkt abrufen.', inputSchema: obj({ product_id: { type: 'integer' }, competitor_id: { type: 'integer' }, url: { type: 'string' } }, ['product_id', 'competitor_id']) },
   { name: 'seo_overview', description: 'Google Search Console (letzte 28 Tage): Klicks, Impressionen, Klickrate, Ø Position, wichtigste Produktseiten und Suchanfragen sowie Chancen aus Preis und Suche.', inputSchema: obj() },
+  { name: 'merchant_overview', description: 'Google Merchant Center: Artikel über dem Google-Vergleichspreis, Googles Preisvorschläge und weitere Mitbewerber-Shops aus der Wettbewerbsübersicht.', inputSchema: obj() },
   { name: 'check_product_now', description: 'Einen Artikel sofort bei allen Mitbewerbern prüfen (aktuellster Preis), unabhängig vom laufenden Abruf.', inputSchema: obj({ id: { type: 'integer' }, number: { type: 'string' } }) },
   { name: 'competitor_categories', description: 'Kategorien aus der Sitemap eines Mitbewerbers mit Anzahl URLs und aktueller Auswahl.', inputSchema: obj({ id: { type: 'integer' } }, ['id']) },
   { name: 'set_competitor_categories', description: 'Kategorien eines Mitbewerbers festlegen, in denen nach Treffern gesucht wird (leere Liste = alle). Pfade wie aus competitor_categories, "" = ohne Kategorie.', inputSchema: obj({ id: { type: 'integer' }, categories: { type: 'array', items: { type: 'string' } } }, ['id', 'categories']) },
@@ -119,6 +120,7 @@ function handlers(db, ownName, schedule, call) {
   };
   const slim = (p, by) => ({ id: p.id, number: p.number, name: p.name, brand: p.manufacturer, ean: p.ean, price: p.price, tracked: Boolean(p.tracked), offline_seit: p.offline_since ?? null, competitors: by.get(p.id) ?? [] });
   return {
+    merchant_overview: () => call('GET', '/api/merchant'),
     seo_overview: async () => {
       const o = await call('GET', '/api/seo');
       return { status: o.status, kpi: o.kpi, chancen: o.opportunities.groups.map((g) => ({ titel: g.title, artikel: g.items.slice(0, 10) })), seiten: o.pages.slice(0, 30), suchanfragen: o.queries.slice(0, 30) };

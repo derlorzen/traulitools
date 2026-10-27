@@ -19,14 +19,19 @@ function build(db, scope) {
     byProduct.get(m.product_id)[m.competitor_id] = matchView(m, prev.get(m.id));
   }
   const seo = seoMap(db);
+  const sales = salesMap(db);
+  const mc = mcMap(db);
   return products.map((p) => {
     const matches = byProduct.get(p.id) ?? {};
-    return { ...p, matches, seo: seoOf(seo, p.url), a: evaluate(p, comps, matches) };
+    return { ...p, matches, seo: seoOf(seo, p.url), sales: sales.get(p.id) ?? null, google: mc.get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches) };
   });
 }
 
 // Suchdaten (Search Console, letzte 28 Tage) je Produktseite
 const keyOf = (u) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/+$/, '')).toLowerCase(); } catch { return null; } };
+const mcKey = (s) => String(s ?? '').trim().toLowerCase();
+const mcMap = (db) => new Map(db.prepare('SELECT offer_id, benchmark, suggested, clicks_change, conversions_change FROM mc_products').all().map((r) => [mcKey(r.offer_id).replace(/^online:[a-z]{2}:[a-z]{2}:/, ''), r]));
+const salesMap = (db) => new Map(db.prepare('SELECT product_id, units_30, revenue_30, units_90, revenue_90 FROM product_sales').all().map((r) => [r.product_id, r]));
 const seoMap = (db) => new Map(db.prepare('SELECT page, clicks, impressions, position FROM seo_pages').all().map((r) => [r.page, r]));
 const seoOf = (m, url) => { const r = url ? m.get(keyOf(url)) : null; return r ? { clicks: r.clicks, impressions: r.impressions, position: Math.round(r.position * 10) / 10 } : null; };
 
@@ -107,6 +112,10 @@ function sorter(key, dir) {
   if (key === 'gappct') return nullsLast((r) => r.a.gapPct);
   if (key === 'cheapest') return nullsLast((r) => r.a.min);
   if (key === 'updated') return nullsLast((r) => r.updated_at);
+  if (key === 'units') return nullsLast((r) => r.sales?.units_30 ?? null);
+  if (key === 'revenue') return nullsLast((r) => r.sales?.revenue_90 ?? null);
+  if (key === 'margin') return nullsLast((r) => (r.purchase_price > 0 && r.price ? (r.price / (1 + (r.tax_rate ?? 19) / 100) - r.purchase_price) / (r.price / (1 + (r.tax_rate ?? 19) / 100)) : null));
+  if (key === 'benchmark') return nullsLast((r) => (r.google?.benchmark && r.price ? (r.price - r.google.benchmark) / r.google.benchmark : null));
   if (key === 'impressions') return nullsLast((r) => r.seo?.impressions ?? null);
   if (key === 'clicks') return nullsLast((r) => r.seo?.clicks ?? null);
   const m = /^comp:(\d+)$/.exec(key ?? '');
@@ -119,7 +128,7 @@ export function listProducts(db, q = {}) {
   const scope = q.scope === 'all' || (q.scope !== 'tracked' && !counts.tracked) ? 'all' : 'tracked';
   // Datenstand: ändert sich bei jedem Abruf, Import oder jeder Zuordnung
   const v = db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(last_checked),'') || ':' || COALESCE(SUM(LENGTH(COALESCE(url,'')) + LENGTH(status)),0) FROM matches) || '|' ||
-    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) AS v`).get().v;
+    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) AS v`).get().v;
   const key = `${scope}#${v}`;
   if (!cache || cache.key !== key || Date.now() - cache.at > TTL) cache = { key, at: Date.now(), rows: build(db, scope) };
   const all = cache.rows;
@@ -142,5 +151,5 @@ export function getProduct(db, id) {
     const prev = db.prepare('SELECT price FROM price_history WHERE match_id=? ORDER BY at DESC LIMIT 1 OFFSET 1').get(m.id);
     matches[m.competitor_id] = matchView(m, prev?.price);
   }
-  return { ...p, matches, seo: seoOf(seoMap(db), p.url), a: evaluate(p, comps, matches) };
+  return { ...p, matches, seo: seoOf(seoMap(db), p.url), sales: salesMap(db).get(p.id) ?? null, google: mcMap(db).get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches) };
 }

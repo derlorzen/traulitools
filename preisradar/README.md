@@ -75,3 +75,15 @@ Claude Code: `claude mcp add --transport http preisradar https://<host>/mcp --he
 ## Google Search Console
 
 Einstellungen → „Google Search Console“: Property (`sc-domain:belkai.de` oder `https://www.belkai.de/`) und JSON-Schlüssel eines Dienstkontos (Search Console API aktiviert, Dienstkonto-E-Mail in der Search Console als Nutzer „Eingeschränkt“ eingetragen). Abgleich täglich (Seiten, Suchanfragen je Seite, 90 Tage Tagesverlauf; letzte 28 Tage, Daten 2–3 Tage verzögert). Bereich „Sichtbarkeit“: Kennzahlen, Verlauf, Chancen aus Preis und Suche, Produktseiten, Suchanfragen. Preisliste sortierbar nach Impressionen/Klicks, Empfehlungen nach „Nachfrage × Abstand“. Testumgebung: `GSC_API_BASE`, `GSC_TOKEN_URL`.
+
+## Shopware-Abgleich, Mindestmarge
+
+Täglich (oder „Jetzt abgleichen“): Preis, Einkaufspreis (`purchasePrices`), Steuersatz, Bestand und verkaufte Stück/Umsatz 30/90 Tage (Bestellpositionen ohne stornierte Bestellungen) der bekannten Artikel, nur lesend. Einkaufspreise alternativ per CSV (`Artikelnummer;Einkaufspreis`, z. B. aus JTL-Wawi). Mindestmarge (Einstellungen, Standard 10 % auf den Nettoverkaufspreis) begrenzt Senkungsvorschläge.
+
+## Tägliche E-Mail
+
+SMTP unter Einstellungen; Versand einmal täglich zur eingestellten Stunde (Europe/Berlin). Vorschau: `GET /api/digest/preview`.
+
+## Google Merchant Center
+
+Merchant API (Berichte) mit dem Dienstkonto der Search Console (Scope `content`): Vergleichspreise (`price_competitiveness_product_view`), Preisvorschläge (`price_insights_product_view`), Wettbewerber je Kategorie (`competitive_visibility_competitor_view`). Zuordnung über Angebots-ID = Artikelnummer. Mitbewerber aus Domain anlegen: `POST /api/competitors/from-domain`. Testumgebung: `MERCHANT_API_BASE`.

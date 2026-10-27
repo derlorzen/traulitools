@@ -6,7 +6,7 @@ import { openDb, upsertProducts, tx } from './db.js';
 import { parseCsv, pick, parsePrice, csvEscape } from './util.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { fetchText, robotsAllows } from './fetcher.js';
-import { fetchShopwareProducts, shopwareConfig, testShopware } from './shopware.js';
+import { fetchShopwareProducts, shopwareConfig, testShopware, syncShopware } from './shopware.js';
 import { aiConfig, testAi, DEFAULT_MODEL } from './ai.js';
 import { analyse, RULES } from './analysis.js';
 import { autoSetup, detectSearchLink } from './autosetup.js';
@@ -21,6 +21,8 @@ import { listProducts, getProduct, invalidatePriceList } from './pricelist.js';
 import { loadTemplates, removeTemplate } from './templates.js';
 import { gscSites, syncGsc, saveServiceAccount, gscConfig } from './gsc.js';
 import { seoOverview, seoStatus, productSeo } from './seo.js';
+import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from './digest.js';
+import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -87,6 +89,8 @@ export function createApp(db, { dataDir = null } = {}) {
   // Ab hier nur mit Anmeldung
   app.use('/api', (req, _res, next) => { if (req.method !== 'GET') invalidatePriceList(); next(); });
   app.use('/api', (req, res, next) => (req.headers['x-internal-mcp'] === internalKey || currentUser(db, req) ? next() : res.status(401).json({ error: 'Nicht angemeldet' })));
+  // Adresse der App für Links in der E-Mail (vom ersten angemeldeten Aufruf übernommen)
+  app.use('/api/overview', (req, _res, next) => { if (!getSetting(db, 'app_url') && !/^(localhost|127\.)/.test(req.hostname)) setSetting(db, 'app_url', `${req.protocol}://${req.get('host')}`); next(); });
 
   const wrap = (fn) => (req, res) => (async () => fn(req, res))().catch((e) => res.status(e.status || 500).json({ error: e.message })); // auch synchrone Fehler als JSON
   const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
@@ -106,7 +110,7 @@ export function createApp(db, { dataDir = null } = {}) {
       offline: db.prepare('SELECT COUNT(*) AS n FROM products WHERE active=1 AND offline_since IS NOT NULL').get().n,
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -124,6 +128,35 @@ export function createApp(db, { dataDir = null } = {}) {
     const results = await checkProductNow(db, id);
     invalidatePriceList();
     res.json({ results, product: getProduct(db, id) });
+  }));
+
+  // --- Google Merchant Center ---
+  app.get('/api/merchant', wrap((_req, res) => res.json({ ...merchantSummary(db), job: { ...mcJob } })));
+  app.post('/api/merchant/test', wrap(async (_req, res) => res.json(await merchantTest(db))));
+  app.post('/api/merchant/sync', wrap((_req, res) => {
+    if (!startMerchantJob(db)) throw bad('Es läuft bereits ein Abgleich', 409);
+    res.json({ ok: true, job: { ...mcJob } });
+  }));
+  // Mitbewerber aus einer Domain anlegen (z. B. aus der Google-Wettbewerbsübersicht): Sitemaps und Suchlink werden gesucht
+  app.post('/api/competitors/from-domain', wrap(async (req, res) => {
+    let base;
+    try { base = new URL(/^https?:/.test(String(req.body?.domain)) ? req.body.domain : `https://${req.body?.domain}`).origin; } catch { throw bad('Domain ungültig'); }
+    const host = new URL(base).hostname.replace(/^www\./, '');
+    if (db.prepare('SELECT base_url FROM competitors').all().some((c) => { try { return new URL(c.base_url).hostname.replace(/^www\./, '') === host; } catch { return false; } })) throw bad('Dieser Mitbewerber ist schon angelegt', 409);
+    const sitemaps = (await discoverSitemaps(base).catch(() => [])).filter((x) => { try { return new URL(x.url).hostname.replace(/^www\./, '') === host && !/(magazin|blog|document|news|ratgeber)/i.test(x.url); } catch { return false; } });
+    const pick = sitemaps.filter((x) => x.kind === 'index').slice(0, 1).concat(sitemaps.filter((x) => x.kind === 'urlset')).slice(0, 3).map((x) => x.url);
+    const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
+    const ins = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(...compFields({ name: host, base_url: base, delay_ms: 3000, ai_mode: 'fallback', sitemap_url: pick.join('\n') }), pos);
+    const link = await detectSearchLink(base).catch(() => null);
+    if (link) db.prepare('UPDATE competitors SET manual_search_url=? WHERE id=?').run(link, Number(ins.lastInsertRowid));
+    res.json({ id: Number(ins.lastInsertRowid), name: host, sitemaps: pick, search_link: link });
+  }));
+
+  // --- Tägliche Zusammenfassung per E-Mail ---
+  app.get('/api/digest/preview', wrap((req, res) => { res.type('html').send(digestHtml(digestData(db), getSetting(db, 'app_url') || '')); }));
+  app.post('/api/digest/test', wrap(async (req, res) => {
+    const to = typeof req.body?.to === 'string' && /@/.test(req.body.to) ? [req.body.to.trim()] : null;
+    res.json(await sendDigest(db, { to }));
   }));
 
   app.get('/api/products/:id/seo', wrap((req, res) => res.json(productSeo(db, Number(req.params.id)))));
@@ -311,8 +344,20 @@ export function createApp(db, { dataDir = null } = {}) {
     const rows = await fetchShopwareProducts(shopwareConfig(db));
     res.json({ total: rows.length, ...upsertProducts(db, rows, 'shopware') });
   }));
+  // Shopware-Abgleich (Preise, Einkaufspreise, Bestand, Verkäufe) im Hintergrund
+  app.post('/api/shopware/sync', wrap((_req, res) => {
+    if (!startShopwareJob(db)) throw bad('Es läuft bereits ein Shopware-Abgleich', 409);
+    res.json({ ok: true, job: { ...swJob } });
+  }));
+  app.get('/api/shopware/status', wrap((_req, res) => res.json({ job: { ...swJob }, synced_at: getSetting(db, 'sw_synced_at'), last: JSON.parse(getSetting(db, 'sw_last') || 'null') })));
   app.post('/api/import/csv', wrap((req, res) => {
-    const rows = parseCsv(req.body?.text).map((r) => ({
+    const parsed = parseCsv(req.body?.text);
+    // Einkaufspreise (netto) dürfen auch allein kommen: Artikelnummer;Einkaufspreis
+    const ek = parsed.map((r) => ({ number: pick(r, ['Artikelnummer', 'productNumber', 'sku', 'Nummer', 'number']), ek: parsePrice(pick(r, ['Einkaufspreis', 'EK', 'EK netto', 'Einkaufspreis netto', 'purchase_price', 'purchasePrice'])) })).filter((r) => r.number && r.ek > 0);
+    const setEk = db.prepare('UPDATE products SET purchase_price=? WHERE number=?');
+    let ekSet = 0;
+    const applyEk = () => tx(db, () => { for (const r of ek) ekSet += setEk.run(r.ek, r.number).changes; });
+    const rows = parsed.map((r) => ({
       number: pick(r, ['Artikelnummer', 'productNumber', 'sku', 'Nummer', 'number']),
       ean: pick(r, ['EAN', 'GTIN', 'ean']),
       mpn: pick(r, ['Herstellernummer', 'manufacturerNumber', 'mpn', 'HAN']),
@@ -321,8 +366,11 @@ export function createApp(db, { dataDir = null } = {}) {
       url: pick(r, ['URL', 'Link', 'url']),
       price: parsePrice(pick(r, ['Preis', 'Bruttopreis', 'price', 'gross'])),
     })).filter((r) => r.number && r.name);
-    if (!rows.length) throw bad('Keine gültigen Zeilen gefunden. Benötigt: Artikelnummer und Name (optional EAN, Herstellernummer, Hersteller, Preis, URL).');
-    res.json({ total: rows.length, ...upsertProducts(db, rows, 'csv') });
+    if (!rows.length && ek.length) { applyEk(); return res.json({ total: 0, created: 0, updated: 0, purchase_prices: ekSet }); }
+    if (!rows.length) throw bad('Keine gültigen Zeilen gefunden. Benötigt: Artikelnummer und Name (optional EAN, Herstellernummer, Hersteller, Preis, Einkaufspreis, URL). Nur Einkaufspreise: Artikelnummer und Einkaufspreis.');
+    const r = upsertProducts(db, rows, 'csv');
+    applyEk();
+    res.json({ total: rows.length, ...r, purchase_prices: ekSet });
   }));
   // CSV mit bekannten Mitbewerber-URLs: Artikelnummer; Mitbewerber; URL
   app.post('/api/import/urls', wrap((req, res) => {
@@ -383,6 +431,10 @@ export function createApp(db, { dataDir = null } = {}) {
       shopware_from_env: !hasSetting(db, 'shopware_url') && Boolean(process.env.SHOPWARE_URL),
       mcp_enabled: mcpEnabled(db),
       seo: seoStatus(db),
+      merchant: (() => { const m = merchantConfig(db); return { account: m.account, country: m.country, categories: m.categories.join(', '), configured: m.configured, synced_at: getSetting(db, 'mc_synced_at') }; })(),
+      mail: (() => { const m = mailConfig(db); return { enabled: m.enabled, host: m.host, port: m.port, secure: m.secure, user: m.user, pass_set: Boolean(m.pass), from: m.from, to: m.to.join(', '), hour: m.hour, last_sent: getSetting(db, 'mail_last_sent') }; })(),
+      min_margin: Number(getSetting(db, 'min_margin') ?? 10),
+      sw_synced_at: getSetting(db, 'sw_synced_at'),
       openai_key_set: Boolean(aiConfig(db).key),
       openai_from_env: !hasSetting(db, 'openai_api_key') && Boolean(process.env.OPENAI_API_KEY),
       openai_model: aiConfig(db).model,
@@ -413,6 +465,22 @@ export function createApp(db, { dataDir = null } = {}) {
     if (b.openai_api_key) setSetting(db, 'openai_api_key', String(b.openai_api_key).trim(), { secret: true });
     if (typeof b.openai_model === 'string') setSetting(db, 'openai_model', b.openai_model.trim());
     if (b.openai_remove_key) setSetting(db, 'openai_api_key', '');
+    if (b.min_margin !== undefined && b.min_margin !== '') {
+      const n = Number(String(b.min_margin).replace(',', '.'));
+      if (!Number.isFinite(n) || n < 0 || n >= 95) throw bad('Mindestmarge: Zahl zwischen 0 und 94 (Prozent)');
+      setSetting(db, 'min_margin', String(n));
+    }
+    // E-Mail
+    for (const k of ['mail_host', 'mail_user', 'mail_from', 'mail_to']) if (typeof b[k] === 'string') setSetting(db, k, b[k].trim());
+    if (b.mail_pass) setSetting(db, 'mail_pass', String(b.mail_pass), { secret: true });
+    if (b.mail_port !== undefined && b.mail_port !== '') { const n = Number(b.mail_port); if (!Number.isInteger(n) || n < 1 || n > 65535) throw bad('SMTP-Port ungültig'); setSetting(db, 'mail_port', String(n)); }
+    if (b.mail_hour !== undefined && b.mail_hour !== '') { const n = Number(b.mail_hour); if (!Number.isInteger(n) || n < 0 || n > 23) throw bad('Uhrzeit: volle Stunde 0 bis 23'); setSetting(db, 'mail_hour', String(n)); }
+    if (b.mail_secure !== undefined) setSetting(db, 'mail_secure', b.mail_secure === true || b.mail_secure === 'on' || b.mail_secure === '1' ? '1' : '0');
+    if (b.mail_enabled !== undefined) setSetting(db, 'mail_enabled', b.mail_enabled === true || b.mail_enabled === 'on' || b.mail_enabled === '1' ? '1' : '0');
+    // Merchant Center
+    if (typeof b.mc_account === 'string') { const v = b.mc_account.replace(/\D/g, ''); if (b.mc_account.trim() && !v) throw bad('Merchant-Center-Konto-ID: nur Ziffern'); setSetting(db, 'mc_account', v); }
+    if (typeof b.mc_country === 'string' && /^[a-z]{2}$/i.test(b.mc_country.trim())) setSetting(db, 'mc_country', b.mc_country.trim().toUpperCase());
+    if (typeof b.mc_categories === 'string') setSetting(db, 'mc_categories', b.mc_categories.split(/[\s,;]+/).map((x) => x.replace(/\D/g, '')).filter(Boolean).slice(0, 10).join(','));
     // Search Console
     if (typeof b.gsc_site === 'string') {
       const site = b.gsc_site.trim();
@@ -527,6 +595,30 @@ export function scheduleConfig(db) {
   };
 }
 
+/** Merchant-Center-Abgleich im Hintergrund. */
+export const mcJob = { running: false, startedAt: null, finishedAt: null, result: null, error: null };
+export function startMerchantJob(db) {
+  if (mcJob.running) return false;
+  Object.assign(mcJob, { running: true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null });
+  syncMerchant(db)
+    .then((r) => { mcJob.result = r; invalidatePriceList(); })
+    .catch((e) => { mcJob.error = e.message; console.error('Merchant Center:', e.message); })
+    .finally(() => { mcJob.running = false; mcJob.finishedAt = new Date().toISOString(); });
+  return true;
+}
+
+/** Shopware-Abgleich im Hintergrund. */
+export const swJob = { running: false, startedAt: null, finishedAt: null, result: null, error: null };
+export function startShopwareJob(db) {
+  if (swJob.running) return false;
+  Object.assign(swJob, { running: true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null });
+  syncShopware(db)
+    .then((r) => { swJob.result = r; setSetting(db, 'sw_synced_at', new Date().toISOString()); setSetting(db, 'sw_last', JSON.stringify(r)); invalidatePriceList(); })
+    .catch((e) => { swJob.error = e.message; console.error('Shopware-Abgleich:', e.message); })
+    .finally(() => { swJob.running = false; swJob.finishedAt = new Date().toISOString(); });
+  return true;
+}
+
 /** Abgleich mit der Search Console im Hintergrund (dauert je nach Datenmenge bis zu einigen Minuten). */
 export const seoJob = { running: false, startedAt: null, finishedAt: null, result: null, error: null };
 export function startSeoJob(db) {
@@ -552,6 +644,18 @@ export function startScheduler(db) {
       if (!seoJob.running && gscConfig(db).configured && Date.now() - (Date.parse(getSetting(db, 'gsc_synced_at') || 0) || 0) > 24 * 3600 * 1000 && retryOk) {
         setSetting(db, 'gsc_tried_at', new Date().toISOString());
         startSeoJob(db);
+      }
+      // Merchant Center täglich
+      if (!mcJob.running && merchantConfig(db).configured && Date.now() - (Date.parse(getSetting(db, 'mc_synced_at') || 0) || 0) > 24 * 3600 * 1000 && Date.now() - (Date.parse(getSetting(db, 'mc_tried_at') || 0) || 0) > 6 * 3600 * 1000) {
+        setSetting(db, 'mc_tried_at', new Date().toISOString());
+        startMerchantJob(db);
+      }
+      // Tägliche Zusammenfassung per E-Mail
+      maybeSendDigest(db).then((r) => r && console.log(`Zusammenfassung an ${r.to.join(', ')} gesendet`)).catch((e) => console.error('E-Mail:', e.message));
+      // Shopware täglich (Verkäufe, Einkaufspreise, Bestand)
+      if (!swJob.running && shopwareConfig(db).configured && Date.now() - (Date.parse(getSetting(db, 'sw_synced_at') || 0) || 0) > 24 * 3600 * 1000 && Date.now() - (Date.parse(getSetting(db, 'sw_tried_at') || 0) || 0) > 6 * 3600 * 1000) {
+        setSetting(db, 'sw_tried_at', new Date().toISOString());
+        startShopwareJob(db);
       }
       // Eigene Sitemap täglich neu einlesen (erkennt offline gegangene Artikel)
       const ownUrls = sitemapList({ sitemap_url: getSetting(db, 'own_sitemap_url') });

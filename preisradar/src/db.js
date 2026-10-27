@@ -97,6 +97,9 @@ CREATE TABLE IF NOT EXISTS seo_pages (page TEXT PRIMARY KEY, url TEXT, clicks RE
 CREATE TABLE IF NOT EXISTS seo_queries (page TEXT NOT NULL, query TEXT NOT NULL, clicks REAL, impressions REAL, ctr REAL, position REAL);
 CREATE INDEX IF NOT EXISTS idx_seo_queries_page ON seo_queries(page);
 CREATE TABLE IF NOT EXISTS seo_daily (date TEXT PRIMARY KEY, clicks REAL, impressions REAL, ctr REAL, position REAL);
+CREATE TABLE IF NOT EXISTS product_sales (product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, units_30 REAL, revenue_30 REAL, units_90 REAL, revenue_90 REAL, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS mc_products (offer_id TEXT PRIMARY KEY, title TEXT, brand TEXT, price REAL, benchmark REAL, suggested REAL, clicks_change REAL, conversions_change REAL, effectiveness TEXT);
+CREATE TABLE IF NOT EXISTS mc_competitors (category TEXT NOT NULL, domain TEXT NOT NULL, own INTEGER, rank REAL, visibility REAL, overlap REAL, higher REAL, ads_ratio REAL, PRIMARY KEY (category, domain));
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT NOT NULL,
@@ -127,6 +130,7 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_tried_at')) db.exec('ALTER TABLE matches ADD COLUMN ai_tried_at TEXT');
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_note')) db.exec('ALTER TABLE matches ADD COLUMN ai_note TEXT');
   const prodCols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
+  for (const [c, t] of [['purchase_price', 'REAL'], ['tax_rate', 'REAL'], ['stock', 'INTEGER'], ['sw_id', 'TEXT']]) if (!prodCols.includes(c)) db.exec(`ALTER TABLE products ADD COLUMN ${c} ${t}`);
   if (!prodCols.includes('offline_since')) db.exec('ALTER TABLE products ADD COLUMN offline_since TEXT');
   const compCols2 = db.prepare('PRAGMA table_info(competitors)').all().map((c) => c.name);
   if (!compCols2.includes('sitemap_categories')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_categories TEXT');
