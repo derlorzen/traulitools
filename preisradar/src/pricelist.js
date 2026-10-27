@@ -21,11 +21,66 @@ function build(db, scope) {
   const seo = seoMap(db);
   const sales = salesMap(db);
   const mc = mcMap(db);
+  const qs = queriesMap(db);
   return products.map((p) => {
     const matches = byProduct.get(p.id) ?? {};
-    return { ...p, matches, seo: seoOf(seo, p.url), sales: sales.get(p.id) ?? null, google: mc.get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches) };
+    const page = p.url ? keyOf(p.url) : null;
+    const queries = page ? qs.get(page) ?? [] : [];
+    const r = { ...p, matches, seo: seoOf(seo, p.url), sales: sales.get(p.id) ?? null, google: mc.get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches) };
+    if (r.seo && queries.length) r.seo.top = { query: queries[0].query, position: Math.round(queries[0].position * 10) / 10 };
+    r.g = googleSignals(r);
+    Object.defineProperty(r, 'qtext', { value: queries.map((q) => q.query.toLowerCase()), enumerable: false });
+    return r;
   });
 }
+
+// Übliche Klickrate je Google-Position (Erfahrungswerte für organische Treffer im Onlinehandel, grob gerundet)
+const CTR_CURVE = [0.2, 0.12, 0.08, 0.06, 0.045, 0.035, 0.028, 0.022, 0.018, 0.015]; // vorsichtig, weil Shopping-Anzeigen Klicks abziehen
+export const expectedCtr = (pos) => (pos == null ? null : pos <= 10 ? CTR_CURVE[Math.max(0, Math.round(pos) - 1)] : pos <= 20 ? 0.01 : 0.003);
+export const G = { demand: 100, lowCtrImp: 200 };
+
+/**
+ * Google-Signale eines Artikels: Klickpotenzial und was zu tun ist.
+ * Klickpotenzial = zusätzliche Klicks in 28 Tagen, wenn die Seite unter die ersten drei käme (bzw. auf Platz 1–3
+ * so oft geklickt würde wie dort üblich).
+ */
+export function googleSignals(r) {
+  const s = r.seo, g = r.google, a = r.a;
+  const out = { potential: 0, expected: null, flags: [], advice: [] };
+  const bench = g?.benchmark && r.price ? Math.round(((r.price - g.benchmark) / g.benchmark) * 1000) / 10 : null;
+  out.bench = bench;
+  if (s) {
+    const exp = expectedCtr(s.position);
+    out.expected = exp;
+    const ctr = s.impressions ? s.clicks / s.impressions : 0;
+    const target = s.position > 3 ? expectedCtr(3) : exp;
+    out.potential = Math.max(0, Math.round(s.impressions * target - s.clicks));
+    if (s.impressions >= G.demand) out.flags.push('demand');
+    if (s.position > 3 && s.position <= 20 && s.impressions >= 50) out.flags.push('striking');
+    if (s.impressions >= G.lowCtrImp && ctr < exp * 0.5) out.flags.push('lowCtr');
+  } else if (r.url) out.flags.push('invisible');
+  if (bench != null && bench > 2) out.flags.push('aboveBench');
+  if (g?.suggested && r.price && Math.abs(g.suggested - r.price) >= 0.01) out.flags.push('suggest');
+  if (out.flags.includes('demand') && a.kind === 'undercut') out.flags.push('demandDear');
+  if (r.sales?.units_90 > 0 && (!s || s.impressions < 20)) out.flags.push('soldHidden');
+  // Hinweise in der Reihenfolge, in der sie am meisten bringen
+  const dearer = a.kind === 'undercut';
+  if (out.flags.includes('demand') && (dearer || (bench != null && bench > 2))) out.advice.push({ kind: 'price', text: dearer ? `Preis prüfen: gefragt, aber ${a.gapPct != null ? `${String(a.gapPct).replace('.', ',')} %` : ''} teurer als der günstigste Mitbewerber` : `Preis prüfen: gefragt, aber ${String(bench).replace('.', ',')} % über dem Google-Vergleichspreis` });
+  else if (bench != null && bench > 2) out.advice.push({ kind: 'price', text: `${String(bench).replace('.', ',')} % über dem Google-Vergleichspreis` });
+  if (out.flags.includes('lowCtr')) out.advice.push({ kind: 'snippet', text: `Wenig geklickt für Platz ${String(Math.round(s.position * 10) / 10).replace('.', ',')}: Titel, Beschreibung und Preisanzeige bei Google prüfen` });
+  if (out.flags.includes('striking')) out.advice.push({ kind: 'content', text: s.position <= 10 ? `Platz ${String(Math.round(s.position * 10) / 10).replace('.', ',')}: mit besserer Produktseite in die Top 3` : `Platz ${String(Math.round(s.position * 10) / 10).replace('.', ',')}: knapp hinter Seite 1, Seite stärken` });
+  if (out.flags.includes('soldHidden')) out.advice.push({ kind: 'content', text: 'Verkauft sich, wird bei Google aber kaum gefunden' });
+  if (out.flags.includes('suggest')) out.advice.push({ kind: 'price', text: `Google schlägt ${g.suggested.toFixed(2).replace('.', ',')} € vor` });
+  return out;
+}
+const queriesMap = (db) => {
+  const m = new Map();
+  for (const q of db.prepare('SELECT page, query, clicks, impressions, position FROM seo_queries ORDER BY clicks DESC, impressions DESC').all()) {
+    if (!m.has(q.page)) m.set(q.page, []);
+    m.get(q.page).push(q);
+  }
+  return m;
+};
 
 // Suchdaten (Search Console, letzte 28 Tage) je Produktseite
 const keyOf = (u) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/+$/, '')).toLowerCase(); } catch { return null; } };
@@ -33,7 +88,7 @@ const mcKey = (s) => String(s ?? '').trim().toLowerCase();
 const mcMap = (db) => new Map(db.prepare('SELECT offer_id, benchmark, suggested, clicks_change, conversions_change FROM mc_products').all().map((r) => [mcKey(r.offer_id).replace(/^online:[a-z]{2}:[a-z]{2}:/, ''), r]));
 const salesMap = (db) => new Map(db.prepare('SELECT product_id, units_30, revenue_30, units_90, revenue_90 FROM product_sales').all().map((r) => [r.product_id, r]));
 const seoMap = (db) => new Map(db.prepare('SELECT page, clicks, impressions, position FROM seo_pages').all().map((r) => [r.page, r]));
-const seoOf = (m, url) => { const r = url ? m.get(keyOf(url)) : null; return r ? { clicks: r.clicks, impressions: r.impressions, position: Math.round(r.position * 10) / 10 } : null; };
+const seoOf = (m, url) => { const r = url ? m.get(keyOf(url)) : null; return r ? { clicks: r.clicks, impressions: r.impressions, ctr: r.impressions ? r.clicks / r.impressions : 0, position: Math.round(r.position * 10) / 10 } : null; };
 
 export function matchView(m, previous = null) {
   return {
@@ -75,6 +130,16 @@ const CHIPS = {
   oos: (r) => r.a.oos,
   offline: (r) => r.a.offline,
   tierA: (r) => r.tier === 'A',
+  // Google (Search Console und Merchant Center)
+  gDemand: (r) => r.g.flags.includes('demand'),
+  gDemandDear: (r) => r.g.flags.includes('demandDear'),
+  gStriking: (r) => r.g.flags.includes('striking'),
+  gLowCtr: (r) => r.g.flags.includes('lowCtr'),
+  gAboveBench: (r) => r.g.flags.includes('aboveBench'),
+  gSuggest: (r) => r.g.flags.includes('suggest'),
+  gSoldHidden: (r) => r.g.flags.includes('soldHidden'),
+  gInvisible: (r) => r.g.flags.includes('invisible'),
+  gAdvice: (r) => r.g.advice.length > 0,
 };
 
 const num = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -83,10 +148,17 @@ const num = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null 
 function baseFilter(q) {
   const text = String(q.q ?? '').trim().toLowerCase();
   const comp = q.comp ? String(q.comp) : '';
-  const minP = num(q.minP), maxP = num(q.maxP), gapMin = num(q.gapMin);
+  const minP = num(q.minP), maxP = num(q.maxP), gapMin = num(q.gapMin), impMin = num(q.impMin), posMax = num(q.posMax);
+  const words = text.split(/\s+/).filter(Boolean);
   return (r) => {
     if (q.brand && r.manufacturer !== q.brand) return false;
-    if (text && ![r.name, r.number, r.ean, r.mpn, r.manufacturer].some((v) => String(v ?? '').toLowerCase().includes(text))) return false;
+    if (text && ![r.name, r.number, r.ean, r.mpn, r.manufacturer].some((v) => String(v ?? '').toLowerCase().includes(text))) {
+      // auch über Google-Suchanfragen finden, mit denen die Produktseite gefunden wird (alle Wörter müssen vorkommen)
+      const hit = words.length && r.qtext.find((x) => words.every((w) => x.includes(w)));
+      if (!hit) return false;
+    }
+    if (impMin != null && !((r.seo?.impressions ?? 0) >= impMin)) return false;
+    if (posMax != null && !(r.seo && r.seo.position <= posMax)) return false;
     if (comp) { const m = r.matches[comp]; if (!(m && m.status === 'ok' && m.price != null && r.price != null && m.price < r.price)) return false; }
     if (q.status && !Object.values(r.matches).some((m) => m.status === q.status)) return false;
     if (minP != null && !(r.price >= minP)) return false;
@@ -119,6 +191,10 @@ function sorter(key, dir) {
   if (key === 'benchmark') return nullsLast((r) => (r.google?.benchmark && r.price ? (r.price - r.google.benchmark) / r.google.benchmark : null));
   if (key === 'impressions') return nullsLast((r) => r.seo?.impressions ?? null);
   if (key === 'clicks') return nullsLast((r) => r.seo?.clicks ?? null);
+  if (key === 'potential') return nullsLast((r) => (r.seo ? r.g.potential : null));
+  if (key === 'position') return nullsLast((r) => r.seo?.position ?? null);
+  if (key === 'ctr') return nullsLast((r) => r.seo?.ctr ?? null);
+  if (key === 'query') return nullsLast((r) => r.seo?.top?.query ?? null);
   const m = /^comp:(\d+)$/.exec(key ?? '');
   if (m) return nullsLast((r) => { const x = r.matches[m[1]]; return x && (x.status === 'ok' || x.status === 'review') ? x.price : null; });
   return byName;
@@ -140,7 +216,13 @@ export function listProducts(db, q = {}) {
   const offset = Math.max(0, Math.floor(num(q.offset) ?? 0));
   const limit = Math.min(500, Math.max(1, Math.floor(num(q.limit) ?? 100)));
   const brands = [...new Set(all.map((r) => r.manufacturer).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'de'));
-  return { scope, counts, total: rows.length, inScope: all.length, chips, brands, offset, rows: rows.slice(offset, offset + limit), ids: q.ids ? rows.map((r) => r.id) : undefined };
+  const text = String(q.q ?? '').trim().toLowerCase();
+  const words = text.split(/\s+/).filter(Boolean);
+  const out = rows.slice(offset, offset + limit).map((r) => {
+    if (!text || [r.name, r.number, r.ean, r.mpn, r.manufacturer].some((v) => String(v ?? '').toLowerCase().includes(text))) return r;
+    return { ...r, hit: r.qtext.find((x) => words.every((w) => x.includes(w))) ?? null };
+  });
+  return { scope, counts, total: rows.length, inScope: all.length, chips, brands, offset, rows: out, ids: q.ids ? rows.map((r) => r.id) : undefined };
 }
 
 export function getProduct(db, id) {
@@ -152,5 +234,9 @@ export function getProduct(db, id) {
     const prev = db.prepare('SELECT price FROM price_history WHERE match_id=? ORDER BY at DESC LIMIT 1 OFFSET 1').get(m.id);
     matches[m.competitor_id] = matchView(m, prev?.price);
   }
-  return { ...p, matches, seo: seoOf(seoMap(db), p.url), sales: salesMap(db).get(p.id) ?? null, google: mcMap(db).get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches) };
+  const r = { ...p, matches, seo: seoOf(seoMap(db), p.url), sales: salesMap(db).get(p.id) ?? null, google: mcMap(db).get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches) };
+  const q = r.seo ? db.prepare('SELECT query, position FROM seo_queries WHERE page=? ORDER BY clicks DESC, impressions DESC LIMIT 1').get(keyOf(p.url)) : null;
+  if (q) r.seo.top = { query: q.query, position: Math.round(q.position * 10) / 10 };
+  r.g = googleSignals(r);
+  return r;
 }

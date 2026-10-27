@@ -622,3 +622,49 @@ tr.nolink { cursor: default; }
 .btn.pin.on { color: var(--petrol); border-color: var(--petrol); }
 .tierline { margin: 6px 0 0; }
 @media (max-width: 760px) { #tablewrap .prices td.actcell .acts .btn { width: auto; flex: 1; } }
+
+/* Google-Sichtbarkeit: Filter und eigene Ansicht */
+.viewseg { margin-right: 8px; }
+.gchips { align-items: center; }
+.seglabel { font-size: 12px; font-weight: 600; color: var(--muted); margin-right: 2px; }
+.gexplain { margin: 2px 0 10px; max-width: 80ch; }
+.hitline, .topq { font-size: 12px; color: var(--petrol); margin-top: 2px; }
+.topq { color: var(--muted); }
+.topq b, .hitline b { font-weight: 600; color: var(--ink); }
+table.prices.gview { min-width: 1180px; }
+.gview td.prod { width: 300px; max-width: 300px; }
+.gposbox { display: inline-grid; grid-template-columns: auto 64px; align-items: center; gap: 8px; }
+.gpill { display: inline-block; min-width: 42px; text-align: center; padding: 3px 8px; border-radius: 999px; font-weight: 700; font-family: var(--display); background: var(--sunk); }
+.gpill.good { background: var(--good-bg); color: var(--good); }
+.gpill.cool { background: var(--cool-bg); color: var(--cool); }
+.gpill.warn { background: var(--warn-bg); color: var(--warn); }
+.gpill.bad { background: var(--bad-bg); color: var(--bad); }
+.gscale { position: relative; height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--good-bg) 0 7%, var(--cool-bg) 7% 31%, var(--warn-bg) 31% 66%, var(--bad-bg) 66%); }
+.gscale i { position: absolute; top: -3px; width: 4px; height: 12px; margin-left: -2px; border-radius: 2px; background: var(--ink); }
+.gscale i.good { background: var(--good); } .gscale i.cool { background: var(--cool); } .gscale i.warn { background: var(--warn); } .gscale i.bad { background: var(--bad); }
+.gexp { display: block; font-size: 11px; }
+.potbox { display: inline-grid; grid-template-columns: auto 70px; align-items: center; gap: 8px; }
+.potbox b { font-family: var(--display); color: var(--petrol); }
+.potbar { height: 8px; border-radius: 4px; background: var(--sunk); overflow: hidden; }
+.potbar i { display: block; height: 100%; border-radius: 4px; background: var(--petrol); }
+.gview td.own small.gbench { display: block; font-size: 11px; font-weight: 500; font-family: inherit; }
+.gview td.gtodo { text-align: left; white-space: normal; min-width: 240px; max-width: 320px; }
+ul.todo { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font-size: 12.5px; line-height: 1.35; }
+ul.todo li { padding-left: 14px; position: relative; }
+ul.todo li::before { content: ''; position: absolute; left: 0; top: .45em; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+ul.todo li.price::before { background: var(--warm); }
+ul.todo li.snippet::before { background: var(--brass); }
+ul.todo li.content::before { background: var(--cool); }
+.gnote ul.todo { margin-top: 4px; }
+@media (max-width: 760px) {
+  .viewseg { order: 5; width: 100%; margin: 6px 0 0; }
+  #tablewrap .prices.gview td.prod { min-width: 0; overflow-wrap: anywhere; }
+  #tablewrap .prices.gview td.gtodo { max-width: none; min-width: 0; text-align: left; display: block; }
+  #tablewrap .prices.gview td.gtodo::before { display: block; margin-bottom: 4px; }
+  #tablewrap .prices.gview td.own small.gbench { font-size: 11px; }
+}
+.gprank b { display: block; font-weight: 600; }
+.gprank small { display: block; font-size: 11px; color: var(--muted); }
+.gprank.warm b { color: var(--warm); } .gprank.cool b { color: var(--cool); }
+.gview td.own { min-width: 0; }
+@media (max-width: 760px) { .gprank b, .gprank small { display: inline; margin-left: 6px; } }

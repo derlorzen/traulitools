@@ -3,6 +3,7 @@ import { analyse } from './analysis.js';
 import { startScrape, scrapeState } from './scraper.js';
 import { getSetting, setSetting } from './settings.js';
 import { tx } from './db.js';
+import { listProducts } from './pricelist.js';
 
 /**
  * MCP-Endpunkt (Streamable HTTP, JSON-RPC) – damit Claude Preisradar lesen und bedienen kann.
@@ -102,6 +103,11 @@ const TOOLS = [
   { name: 'reject_match', description: 'Einen Treffer verwerfen (falsches Produkt).', inputSchema: obj({ match_id: { type: 'integer' } }, ['match_id']) },
   { name: 'set_match_url', description: 'Produktlink eines Mitbewerbers für einen Artikel setzen (leer = Zuordnung zurücksetzen) und direkt abrufen.', inputSchema: obj({ product_id: { type: 'integer' }, competitor_id: { type: 'integer' }, url: { type: 'string' } }, ['product_id', 'competitor_id']) },
   { name: 'seo_overview', description: 'Google Search Console (letzte 28 Tage): Klicks, Impressionen, Klickrate, Ø Position, wichtigste Produktseiten und Suchanfragen sowie Chancen aus Preis und Suche.', inputSchema: obj() },
+  {
+    name: 'google_opportunities',
+    description: 'Artikel nach Google-Sichtbarkeit (Search Console, Merchant Center): Position, Impressionen, Klicks, Klickpotenzial und Hinweise. Filter: demandDear (gefragt, aber teurer), aboveBench (über Google-Vergleichspreis), striking (Platz 4–20), lowCtr (wenig geklickt), demand, suggest, soldHidden, invisible, advice (mit Handlungsbedarf). query sucht auch in Google-Suchanfragen.',
+    inputSchema: obj({ filter: { type: 'string', enum: ['advice', 'demandDear', 'aboveBench', 'striking', 'lowCtr', 'demand', 'suggest', 'soldHidden', 'invisible'] }, query: { type: 'string' }, sort: { type: 'string', enum: ['potential', 'impressions', 'clicks', 'position', 'benchmark'] }, limit: { type: 'integer', minimum: 1, maximum: 100 } }),
+  },
   { name: 'merchant_overview', description: 'Google Merchant Center: Artikel über dem Google-Vergleichspreis, Googles Preisvorschläge und weitere Mitbewerber-Shops aus der Wettbewerbsübersicht.', inputSchema: obj() },
   { name: 'check_product_now', description: 'Einen Artikel sofort bei allen Mitbewerbern prüfen (aktuellster Preis), unabhängig vom laufenden Abruf.', inputSchema: obj({ id: { type: 'integer' }, number: { type: 'string' } }) },
   { name: 'competitor_categories', description: 'Kategorien aus der Sitemap eines Mitbewerbers mit Anzahl URLs und aktueller Auswahl.', inputSchema: obj({ id: { type: 'integer' } }, ['id']) },
@@ -121,6 +127,14 @@ function handlers(db, ownName, schedule, call) {
   const slim = (p, by) => ({ id: p.id, number: p.number, name: p.name, brand: p.manufacturer, ean: p.ean, price: p.price, tracked: Boolean(p.tracked), offline_seit: p.offline_since ?? null, competitors: by.get(p.id) ?? [] });
   return {
     merchant_overview: () => call('GET', '/api/merchant'),
+    google_opportunities: ({ filter = 'advice', query = '', sort = 'potential', limit = 25 } = {}) => {
+      const key = `g${filter.charAt(0).toUpperCase()}${filter.slice(1)}`;
+      const r = listProducts(db, { scope: 'tracked', filter: key, q: query, sort, dir: ['position'].includes(sort) ? 'asc' : 'desc', limit: Math.min(100, Number(limit) || 25) });
+      return {
+        treffer: r.total, filter_anzahl: Object.fromEntries(Object.entries(r.chips).filter(([k]) => k.startsWith('g'))),
+        artikel: r.rows.map((p) => ({ id: p.id, number: p.number, name: p.name, price: p.price, google_position: p.seo?.position ?? null, impressionen: p.seo?.impressions ?? null, klicks: p.seo?.clicks ?? null, klickrate: p.seo ? Math.round(p.seo.ctr * 1000) / 10 : null, klickpotenzial: p.g.potential, top_suchanfrage: p.seo?.top?.query ?? null, gefunden_ueber: p.hit ?? null, google_vergleichspreis: p.google?.benchmark ?? null, abstand_vergleichspreis_prozent: p.g.bench, guenstigster_mitbewerber: p.a.min, hinweise: p.g.advice.map((x) => x.text) })),
+      };
+    },
     seo_overview: async () => {
       const o = await call('GET', '/api/seo');
       return { status: o.status, kpi: o.kpi, chancen: o.opportunities.groups.map((g) => ({ titel: g.title, artikel: g.items.slice(0, 10) })), seiten: o.pages.slice(0, 30), suchanfragen: o.queries.slice(0, 30) };

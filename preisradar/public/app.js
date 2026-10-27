@@ -58,7 +58,7 @@ function toast(msg, err = false) {
 }
 const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof AuthError)) toast(e.message, true); } };
 
-const state = { data: null, scope: null, tab: 'start', q: '', brand: '', filter: 'all', sort: 'name', dir: 'asc', comp: '', status: '', minP: '', maxP: '', gapMin: '', selected: null, runs: [], more: false };
+const state = { data: null, scope: null, tab: 'start', q: '', brand: '', filter: 'all', sort: 'name', dir: 'asc', comp: '', status: '', minP: '', maxP: '', gapMin: '', selected: null, runs: [], more: false, impMin: '', posMax: '', view: (() => { try { return localStorage.getItem('pr_view') === 'google' ? 'google' : 'preise'; } catch { return 'preise'; } })() };
 
 // ---------- Auswertung pro Produkt ----------
 function analyse(p, comps) {
@@ -132,7 +132,7 @@ function matchCell(p, a, { c, m }) {
 // Preisliste: wird seitenweise vom Server geladen (Filter und Sortierung dort), weitere Seiten beim Scrollen
 const PAGE = 100;
 const list = { rows: [], total: 0, inScope: 0, chips: {}, brands: [], loading: false, seq: 0, observer: null };
-const FILTER_KEYS = ['q', 'brand', 'filter', 'comp', 'status', 'minP', 'maxP', 'gapMin', 'sort', 'dir'];
+const FILTER_KEYS = ['q', 'brand', 'filter', 'comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax', 'sort', 'dir'];
 function listQuery() {
   const q = { scope: state.scope ?? '' };
   for (const k of FILTER_KEYS) if (state[k] !== '' && state[k] != null) q[k] = state[k];
@@ -172,8 +172,19 @@ function renderPrices(root) {
   const reload = () => loadRows(true);
   let typingTimer;
   const typed = (key) => (e) => { state[key] = e.target.value; clearTimeout(typingTimer); typingTimer = setTimeout(reload, 250); };
-  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'tierA'].includes(state.filter) ? 1 : 0);
-  const reset = () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '' }); render(); };
+  const hasGoogle = Boolean(d.config.gsc || d.config.merchant);
+  const gview = hasGoogle && state.view === 'google';
+  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'tierA'].includes(state.filter) ? 1 : 0);
+  const reset = () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '', impMin: '', posMax: '' }); render(); };
+  const setView = (v) => {
+    state.view = v;
+    try { localStorage.setItem('pr_view', v); } catch { /* egal */ }
+    if (v === 'google' && ['name', 'number', 'gap', 'gappct', 'cheapest', 'price'].includes(state.sort)) Object.assign(state, { sort: 'potential', dir: 'desc' });
+    if (v === 'preise' && ['potential', 'position', 'ctr', 'query'].includes(state.sort)) Object.assign(state, { sort: 'name', dir: 'asc' });
+    render();
+  };
+  const sorts = [['name:asc', 'Name A–Z'], ['name:desc', 'Name Z–A'], ['number:asc', 'Artikelnummer'], ['gap:desc', 'Größter Rückstand in €'], ['gappct:desc', 'Größter Rückstand in %'], ['gap:asc', 'Größter Vorsprung'], ['price:desc', 'Preis absteigend'], ['price:asc', 'Preis aufsteigend'], ['cheapest:asc', 'Günstigster Mitbewerberpreis'], ['units:desc', 'Meistverkauft (30 Tage)'], ['revenue:desc', 'Meister Umsatz (90 Tage)'], ['margin:asc', 'Geringste Marge'], ['benchmark:desc', 'Am weitesten über Google-Vergleichspreis'], ['impressions:desc', 'Meiste Impressionen (Google)'], ['clicks:desc', 'Meiste Klicks (Google)'], ['potential:desc', 'Größtes Klickpotenzial (Google)'], ['position:asc', 'Beste Google-Position'], ['position:desc', 'Schlechteste Google-Position'], ['ctr:asc', 'Niedrigste Klickrate (Google)'], ['updated:desc', 'Zuletzt aktualisiert']];
+  if (gview) sorts.unshift(...sorts.splice(sorts.findIndex(([v]) => v === 'potential:desc'), 4), ...sorts.splice(sorts.findIndex(([v]) => v === 'benchmark:desc'), 1));
 
   root.append(
     h('div', { class: 'pagehead' }, h('h2', {}, 'Preise'),
@@ -181,17 +192,22 @@ function renderPrices(root) {
         h('button', { class: `chip${state.scope === 'tracked' ? ' on' : ''}`, onclick: () => { state.scope = 'tracked'; render(); } }, h('b', {}, String(d.counts.tracked)), 'beobachtet'),
         h('button', { class: `chip${state.scope === 'all' ? ' on' : ''}`, onclick: () => { state.scope = 'all'; render(); } }, h('b', {}, String(d.counts.all)), 'alle Artikel')),
       h('span', { class: 'spacer' }),
+      hasGoogle ? h('div', { class: 'seg viewseg', role: 'group', 'aria-label': 'Ansicht' },
+        h('button', { class: `chip${!gview ? ' on' : ''}`, 'aria-pressed': String(!gview), onclick: () => setView('preise') }, 'Preisvergleich'),
+        h('button', { class: `chip${gview ? ' on' : ''}`, 'aria-pressed': String(gview), onclick: () => setView('google') }, 'Google-Sichtbarkeit')) : null,
       h('a', { class: 'btn', href: '/api/export.csv' }, 'CSV-Export')),
     h('div', { class: 'toolbar' },
-      h('input', { type: 'search', placeholder: 'Name, Artikelnummer oder EAN', value: state.q, 'aria-label': 'Suche', oninput: typed('q') }),
+      h('input', { type: 'search', placeholder: hasGoogle ? 'Name, Nummer, EAN, Suchbegriff' : 'Name, Artikelnummer oder EAN', title: hasGoogle ? 'Findet auch Artikel, deren Seite bei Google über diesen Suchbegriff gefunden wird' : null, value: state.q, 'aria-label': 'Suche', oninput: typed('q') }),
       h('select', { id: 'brandsel', 'aria-label': 'Hersteller', onchange: (e) => { state.brand = e.target.value; reload(); } },
         h('option', { value: '' }, 'Alle Hersteller'), list.brands.map((b) => h('option', { value: b, selected: b === state.brand }, b))),
       h('select', { 'aria-label': 'Sortierung', onchange: (e) => { const [s, dir] = e.target.value.split(':'); state.sort = s; state.dir = dir; render(); } },
-        [['name:asc', 'Name A–Z'], ['name:desc', 'Name Z–A'], ['number:asc', 'Artikelnummer'], ['gap:desc', 'Größter Rückstand in €'], ['gappct:desc', 'Größter Rückstand in %'], ['gap:asc', 'Größter Vorsprung'], ['price:desc', 'Preis absteigend'], ['price:asc', 'Preis aufsteigend'], ['cheapest:asc', 'Günstigster Mitbewerberpreis'], ['units:desc', 'Meistverkauft (30 Tage)'], ['revenue:desc', 'Meister Umsatz (90 Tage)'], ['margin:asc', 'Geringste Marge'], ['benchmark:desc', 'Am weitesten über Google-Vergleichspreis'], ['impressions:desc', 'Meiste Impressionen (Google)'], ['clicks:desc', 'Meiste Klicks (Google)'], ['updated:desc', 'Zuletzt aktualisiert']]
-          .map(([v, l]) => h('option', { value: v, selected: v === `${state.sort}:${state.dir}` }, l))),
+        sorts.map(([v, l]) => h('option', { value: v, selected: v === `${state.sort}:${state.dir}` }, l))),
       noComps ? null : h('button', { class: `btn${state.more ? ' on' : ''}`, 'aria-expanded': state.more ? 'true' : 'false', onclick: () => { state.more = !state.more; render(); } }, extra ? `Weitere Filter (${extra})` : 'Weitere Filter'),
       state.q || state.brand || state.filter !== 'all' || extra ? h('button', { class: 'linkbtn', onclick: reset }, 'Zurücksetzen') : null),
+    gview ? h('div', { class: 'toolbar gchips' }, h('div', { class: 'seg', id: 'chips-google' })) : null,
     noComps ? null : h('div', { class: 'toolbar' }, h('div', { class: 'seg', id: 'chips-main' })),
+    hasGoogle && !gview ? h('div', { class: 'toolbar gchips' }, h('span', { class: 'seglabel' }, 'Google'), h('div', { class: 'seg', id: 'chips-google' })) : null,
+    gview ? h('p', { class: 'pmeta gexplain' }, d.config.gsc ? 'Klickpotenzial: so viele Klicks mehr in 28 Tagen, wenn die Seite unter die ersten drei bei Google käme (oder dort so oft geklickt würde wie üblich). Daten der Search Console, 2–3 Tage verzögert.' : 'Search Console noch nicht verbunden: Positionen, Klicks und Klickpotenzial fehlen, Vergleichspreise kommen aus dem Merchant Center.') : null,
     noComps || !state.more ? null : h('div', { class: 'morebox' },
       h('div', { class: 'seg', id: 'chips-more' }),
       h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
@@ -202,7 +218,9 @@ function renderPrices(root) {
             .map(([v, l]) => h('option', { value: v, selected: v === state.status }, l))),
         h('input', { type: 'number', min: 0, step: 'any', placeholder: 'Preis ab €', value: state.minP, 'aria-label': 'Preis ab', class: 'numin', oninput: typed('minP') }),
         h('input', { type: 'number', min: 0, step: 'any', placeholder: 'Preis bis €', value: state.maxP, 'aria-label': 'Preis bis', class: 'numin', oninput: typed('maxP') }),
-        h('input', { type: 'number', step: 'any', placeholder: 'Abstand ab %', value: state.gapMin, 'aria-label': 'Mindestabstand in Prozent', class: 'numin', title: 'Nur Artikel, bei denen du mindestens so viel Prozent teurer bist', oninput: typed('gapMin') })),
+        h('input', { type: 'number', step: 'any', placeholder: 'Abstand ab %', value: state.gapMin, 'aria-label': 'Mindestabstand in Prozent', class: 'numin', title: 'Nur Artikel, bei denen du mindestens so viel Prozent teurer bist', oninput: typed('gapMin') }),
+        d.config.gsc ? h('input', { type: 'number', min: 0, step: 1, placeholder: 'Impressionen ab', value: state.impMin, 'aria-label': 'Google-Impressionen ab', class: 'numin', title: 'Nur Artikel, deren Seite in den letzten 28 Tagen mindestens so oft bei Google angezeigt wurde', oninput: typed('impMin') }) : null,
+        d.config.gsc ? h('input', { type: 'number', min: 1, step: 'any', placeholder: 'Google-Platz bis', value: state.posMax, 'aria-label': 'Google-Position bis', class: 'numin', title: 'Nur Artikel, deren Seite bei Google im Schnitt mindestens so weit oben steht', oninput: typed('posMax') }) : null),
       h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
         h('span', { class: 'pmeta' }, 'Nur beobachtete Artikel werden bei Mitbewerbern abgeglichen.'),
         h('button', { class: 'btn small', onclick: guard(() => track(null, true)) }, 'Gefilterte beobachten'),
@@ -225,6 +243,18 @@ function renderChips() {
   document.getElementById('chips-more')?.replaceChildren(
     chip('equal', 'gleichauf'), chip('moved', 'Preis geändert'), chip('problem', 'Fehler oder gesperrt', 'bad'),
     chip('notFound', 'nicht gefunden'), chip('oos', 'Mitbewerber ausverkauft'), chip('offline', 'bei mir offline', 'warn'), chip('tierA', 'täglich geprüft'));
+  const gc = state.data.config;
+  const gchip = (key, label, cls, title) => { const b = chip(key, label, cls); b.title = title; return b; };
+  document.getElementById('chips-google')?.replaceChildren(
+    gchip('gAdvice', 'mit Handlungsbedarf', 'warn', 'Artikel mit mindestens einem Hinweis (Preis, Klickrate, Position, Sichtbarkeit)'),
+    gc.gsc ? gchip('gDemandDear', 'gefragt, aber teurer', 'bad', `Mindestens 100 Impressionen bei Google und teurer als ein Mitbewerber`) : null,
+    gc.merchant ? gchip('gAboveBench', 'über Google-Vergleichspreis', 'bad', 'Mehr als 2 % teurer als der Preis, zu dem andere Händler das Produkt bei Google anbieten') : null,
+    gc.gsc ? gchip('gStriking', 'Platz 4–20', '', 'Seite steht bei Google knapp unter den Top 3 oder auf Seite 2 und hat Impressionen: hier bringt eine Verbesserung am meisten') : null,
+    gc.gsc ? gchip('gLowCtr', 'wenig geklickt', 'warn', 'Viel gesehen, aber weniger als halb so oft geklickt wie für diese Position üblich') : null,
+    gc.gsc ? gchip('gDemand', 'gefragt bei Google', 'good', 'Mindestens 100 Impressionen in den letzten 28 Tagen') : null,
+    gc.merchant ? gchip('gSuggest', 'Google-Preisvorschlag', '', 'Google empfiehlt einen anderen Preis (Merchant Center)') : null,
+    gc.gsc ? gchip('gSoldHidden', 'verkauft, kaum sichtbar', '', 'In den letzten 90 Tagen verkauft, aber unter 20 Impressionen bei Google') : null,
+    gc.gsc ? gchip('gInvisible', 'nicht bei Google', '', 'Keine Impressionen in den letzten 28 Tagen') : null);
   const sel = document.getElementById('brandsel');
   if (sel && sel.options.length <= 1 && list.brands.length) sel.append(...list.brands.map((b) => h('option', { value: b, selected: b === state.brand }, b)));
 }
@@ -252,7 +282,17 @@ function buildTable() {
   const wrap = document.getElementById('tablewrap');
   if (!wrap) return;
   const has = d.competitors.length > 0;
-  const table = h('table', { class: 'prices' },
+  const gview = state.view === 'google' && Boolean(d.config.gsc || d.config.merchant);
+  const table = gview ? h('table', { class: 'prices gview' },
+    h('thead', {}, h('tr', {},
+      h('th', { title: 'Beobachten: wird bei Mitbewerbern abgeglichen' }, '👁'),
+      sortHead(h('span', { id: 'prodcount' }, 'Produkt'), 'name', 'prod'),
+      d.config.gsc ? [sortHead('Google-Position', 'position', 'gposh'), sortHead('Impressionen', 'impressions', '', 'desc'), sortHead('Klicks', 'clicks', '', 'desc'), sortHead('Klickrate', 'ctr'), sortHead('Klickpotenzial', 'potential', '', 'desc')] : null,
+      h('th', { class: 'gtodo' }, 'Was tun'),
+      sortHead(d.own.name, 'price', 'own', 'desc'),
+      has ? sortHead('Preis-Platz', 'gappct', '', 'desc') : null,
+      h('th', {}, ''))),
+    h('tbody', { id: 'rows' })) : h('table', { class: 'prices' },
     h('thead', {}, h('tr', {},
       h('th', { title: 'Beobachten: wird bei Mitbewerbern abgeglichen' }, '👁'),
       sortHead(h('span', { id: 'prodcount' }, 'Produkt'), 'name', 'prod'),
@@ -282,7 +322,7 @@ async function loadRows(reset, { keep = false } = {}) {
     if (r.scope !== state.scope) state.scope = r.scope;
     const tbody = document.getElementById('rows');
     if (!tbody) return;
-    const els = r.rows.map(rowEl);
+    const els = r.rows.map((p) => (state.view === 'google' && (state.data.config.gsc || state.data.config.merchant) ? googleRowEl(p) : rowEl(p)));
     tbody.classList.toggle('still', Boolean(keep)); // beim Aktualisieren nicht erneut animieren
     if (reset) { list.rows = r.rows; tbody.replaceChildren(...els); if (!keep) document.getElementById('tablewrap').scrollTop = 0; }
     else { list.rows.push(...r.rows); tbody.append(...els); }
@@ -308,6 +348,7 @@ function rowEl(p) {
     h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name),
       h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.mpn && p.mpn !== p.number ? `HAN ${p.mpn}` : null].filter(Boolean).join(' · ')),
       econLine(p),
+      hitLine(p),
       p.seo ? h('div', { class: 'seoline', title: `Google, letzte 28 Tage: ${p.seo.clicks} Klicks, ${p.seo.impressions} Impressionen, Ø Position ${p.seo.position}` }, `${nf.format(p.seo.impressions)} Impr. · ${nf.format(p.seo.clicks)} Klicks · Pos. ${nf1.format(p.seo.position)}`) : null,
       tierTag(p),
       p.offline_since ? h('span', { class: 'tag warn', title: `Seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar` }, 'bei dir offline') : null),
@@ -319,6 +360,53 @@ function rowEl(p) {
         : a.kind === 'cheapest' ? ['günstigster', h('small', {}, a.min - p.price > 0.004 ? `${eur.format(a.min - p.price)} Vorsprung` : 'gleichauf')]
           : h('span', { class: 'tag mute' }, '–')) : null,
     d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, checkButton(p.id), pinButton(p))) : null);
+  return tr;
+}
+
+/** Treffer über einen Google-Suchbegriff (die Produktseite wird mit dieser Suchanfrage gefunden). */
+function hitLine(p) {
+  return p.hit ? h('div', { class: 'hitline', title: 'Gefunden, weil die Produktseite bei Google über diese Suchanfrage angezeigt wird' }, 'Google-Suche: „', h('b', {}, p.hit), '“') : null;
+}
+
+/** Ton einer Google-Position: Top 3, Seite 1, Seite 2, dahinter. */
+const gTone = (pos) => (pos == null ? '' : pos <= 3 ? 'good' : pos <= 10 ? 'cool' : pos <= 20 ? 'warn' : 'bad');
+
+/** Zeile der Ansicht „Google-Sichtbarkeit“. */
+function googleRowEl(p) {
+  const d = state.data;
+  const a = analyse(p, d.competitors);
+  const g = p.g ?? { potential: 0, advice: [], flags: [] };
+  const sx = p.seo;
+  const pos = d.competitors.length ? position(p, a) : null;
+  const maxPot = Math.max(50, ...list.rows.map((r) => r.g?.potential ?? 0));
+  const tr = h('tr', { tabindex: 0, 'data-id': p.id, class: p.offline_since ? 'offline' : null, onclick: () => openDrawer(p.id), onkeydown: (e) => e.key === 'Enter' && e.target === tr && openDrawer(p.id) },
+    h('td', { class: 'trackcell', onclick: (e) => e.stopPropagation() }, h('input', { type: 'checkbox', checked: Boolean(p.tracked), 'aria-label': `${p.name} beobachten`, onchange: guard((e) => track([p.id], e.target.checked)) })),
+    h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name),
+      h('div', { class: 'pmeta' }, [p.manufacturer, p.number].filter(Boolean).join(' · ')),
+      hitLine(p),
+      sx?.top ? h('div', { class: 'topq', title: 'Suchanfrage mit den meisten Klicks auf diese Seite' }, 'Top-Suche „', h('b', {}, sx.top.query), `“ · Platz ${nf1.format(sx.top.position)}`) : null,
+      p.sales?.units_90 ? h('div', { class: 'pmeta' }, `${nf.format(p.sales.units_90)} verkauft (90 T)`) : null,
+      tierTag(p)),
+    d.config.gsc ? [
+      h('td', { class: 'mcell gpos', 'data-label': 'Google-Position' }, sx ? h('div', { class: 'gposbox', title: `Ø Position ${nf1.format(sx.position)} in den letzten 28 Tagen` },
+        h('span', { class: `gpill ${gTone(sx.position)}` }, nf1.format(sx.position)),
+        h('span', { class: 'gscale', 'aria-hidden': 'true' }, h('i', { class: gTone(sx.position), style: `left:${Math.min(100, ((Math.min(sx.position, 30) - 1) / 29) * 100)}%` }))) : h('span', { class: 'tag mute' }, 'nicht gefunden')),
+      h('td', { class: 'mcell', 'data-label': 'Impressionen' }, sx ? nf.format(sx.impressions) : '–'),
+      h('td', { class: 'mcell', 'data-label': 'Klicks' }, sx ? nf.format(sx.clicks) : '–'),
+      h('td', { class: `mcell ${g.flags.includes('lowCtr') ? 'warmtxt' : ''}`, 'data-label': 'Klickrate' }, sx ? [`${nf1.format(sx.ctr * 100)} %`, g.expected != null ? h('small', { class: 'pmeta gexp' }, `üblich ${nf1.format(g.expected * 100)} %`) : null] : '–'),
+      h('td', { class: 'mcell gpot', 'data-label': 'Klickpotenzial' }, sx && g.potential > 0 ? h('div', { class: 'potbox', title: `Etwa ${g.potential} Klicks mehr in 28 Tagen möglich` },
+        h('b', {}, `+${nf.format(g.potential)}`), h('span', { class: 'potbar' }, h('i', { style: `width:${Math.max(3, Math.min(100, (g.potential / maxPot) * 100))}%` }))) : h('span', { class: 'tag mute' }, '–')),
+    ] : null,
+    h('td', { class: 'gapcell gtodo', 'data-label': 'Was tun' }, g.advice.length
+      ? h('ul', { class: 'todo' }, g.advice.slice(0, 2).map((x) => h('li', { class: x.kind }, x.text)))
+      : h('span', { class: 'tag mute' }, sx || p.google ? 'nichts Dringendes' : '–')),
+    h('td', { class: 'own', 'data-label': d.own.name },
+      p.price != null ? eur.format(p.price) : '–',
+      g.bench != null ? h('small', { class: `gbench ${g.bench > 2 ? 'warmtxt' : g.bench < -2 ? 'cooltxt' : ''}`, title: `Google-Vergleichspreis ${eur.format(p.google.benchmark)}` }, `Google ${eur.format(p.google.benchmark)} (${g.bench > 0 ? '+' : ''}${nf1.format(g.bench)} %)`) : null),
+    d.competitors.length ? h('td', { class: 'mcell', 'data-label': 'Preis-Position' }, pos
+      ? h('span', { class: `gprank ${pos.tone}`, title: `Platz ${pos.rank} von ${pos.n} Anbietern` }, h('b', {}, `${pos.rank} von ${pos.n}`), h('small', {}, pos.rank > 1 ? `${pct.format(pos.pct)} % teurer` : 'günstigster'))
+      : h('span', { class: 'tag mute' }, 'kein Vergleich')) : null,
+    h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, d.competitors.length ? checkButton(p.id) : null, pinButton(p))));
   return tr;
 }
 
@@ -399,7 +487,7 @@ async function pinFiltered(pin) {
 function replaceRow(p) {
   const i = list.rows.findIndex((x) => x.id === p.id);
   if (i >= 0) list.rows[i] = p;
-  const nr = rowEl(p);
+  const nr = state.view === 'google' && (state.data.config.gsc || state.data.config.merchant) ? googleRowEl(p) : rowEl(p);
   nr.classList.add('flash');
   document.querySelector(`#rows tr[data-id="${p.id}"]`)?.replaceWith(nr);
 }
@@ -475,6 +563,7 @@ async function openDrawer(id, given = null) {
     p.tracked && !p.offline_since && p.tier ? h('p', { class: 'pmeta tierline' }, p.tier === 'A'
       ? `Abfrage bei Mitbewerbern: täglich, weil ${p.tier_reason || 'von Hand gesetzt'}.`
       : `Abfrage bei Mitbewerbern: alle ${state.data.tiers?.bDays ?? 4} Tage (keine Verkäufe, Preisbewegung oder Google-Nachfrage erfasst).`) : null,
+    p.g?.advice.length ? h('div', { class: 'note gnote' }, h('strong', {}, 'Bei Google: '), h('ul', { class: 'todo' }, p.g.advice.map((x) => h('li', { class: x.kind }, x.text)))) : null,
     p.google?.suggested && Math.abs(p.google.suggested - p.price) >= 0.01 ? h('p', { class: 'note' }, `Google-Preisvorschlag: ${eur.format(p.google.suggested)}${p.google.conversions_change != null ? `, erwartet ${p.google.conversions_change > 0 ? '+' : ''}${Math.round(p.google.conversions_change * 100)} % Verkäufe in Shopping` : ''}.`) : null,
     h('h3', { style: 'margin-top:18px' }, 'Preisverlauf'), histBox,
     h('h3', { style: 'margin-top:22px' }, 'Bei Google (letzte 28 Tage)'), seoDrawerBox(p.id),
@@ -998,6 +1087,10 @@ async function renderSeo(root) {
   root.append(h('div', { class: 'pagehead' }, h('h2', {}, 'Sichtbarkeit')),
     h('p', { class: 'sub' }, 'Wie gut deine Artikel bei Google gefunden werden und wie deine Preise im Google-Shopping-Vergleich stehen.'));
   if (!o.status.gsc.configured && !mc.configured) { root.append(seoSetupHint()); return; }
+  root.append(h('div', { class: 'panel head' },
+    h('div', {}, h('strong', {}, 'Je Artikel ansehen: '), 'Die Preisliste hat eine eigene Ansicht mit Google-Platz, Klickpotenzial und Hinweisen, was zu tun ist.'),
+    h('span', { class: 'spacer' }),
+    h('button', { class: 'btn primary', onclick: () => { state.view = 'google'; try { localStorage.setItem('pr_view', 'google'); } catch { /* egal */ } Object.assign(state, { sort: 'potential', dir: 'desc', filter: 'gAdvice' }); setTab('preise'); } }, 'Artikel mit Handlungsbedarf')));
   if (o.status.gsc.configured) renderGsc(root, o);
   if (mc.configured) renderMerchant(root, mc);
 }
@@ -1181,6 +1274,8 @@ function renderHelp(root) {
         h('li', {}, h('b', {}, 'Günstigster, aber kaum gefunden: '), 'Du hast den besten Preis, aber die Seite steht weit hinten. Hier hilft Arbeit an Titel, Beschreibung und internen Links mehr als der Preis.'),
         h('li', {}, h('b', {}, 'Knapp vor Seite 1: '), 'Seiten auf Platz 8 bis 15. Schon wenige Plätze mehr bringen deutlich mehr Besucher.'),
         h('li', {}, h('b', {}, 'Gut platziert, wenig Klicks: '), 'Weit oben, aber selten angeklickt. Oft helfen ein besserer Seitentitel oder sichtbare Vorteile wie Versand oder Preis im Suchergebnis.')),
+      p(h('b', {}, 'Ansicht „Google-Sichtbarkeit“: '), 'In der Preisliste schaltest du oben rechts von „Preisvergleich“ auf „Google-Sichtbarkeit“ um. Dann stehen je Artikel Google-Platz, Impressionen, Klicks, Klickrate und das Klickpotenzial im Vordergrund, dazu ein kurzer Hinweis, was zu tun ist (Preis prüfen, Titel und Beschreibung verbessern, Seite stärken). Das Klickpotenzial schätzt, wie viele Klicks in 28 Tagen dazukämen, wenn die Seite unter den ersten drei stünde; vorsichtig gerechnet, weil Shopping-Anzeigen über den normalen Treffern Klicks abziehen. Die Google-Filter (gefragt, aber teurer; über Google-Vergleichspreis; Platz 4–20; wenig geklickt; verkauft, aber kaum sichtbar und weitere) gibt es in beiden Ansichten.'),
+      p(h('b', {}, 'Suche über Google-Suchbegriffe: '), 'Das Suchfeld findet auch Artikel, deren Seite bei Google über einen Begriff angezeigt wird, etwa „unterschrank weiß“, selbst wenn das Wort nicht im Artikelnamen steht. Unter dem Artikel steht dann, über welche Suchanfrage er gefunden wurde.'),
       p('In der Preisliste kannst du nach Impressionen oder Klicks sortieren, und in der Analyse die Empfehlungen nach „Nachfrage × Abstand“: Zuerst kommen die Artikel, bei denen ein besserer Preis die meisten Interessenten erreicht.'),
       p(h('b', {}, 'Merchant Center: '), 'Google kennt für viele Produkte den Preis, zu dem andere Händler sie in Shopping anbieten (Vergleichspreis), auch Händler, die du noch nicht beobachtest. Dazu kommen Googles Preisvorschläge mit geschätzter Wirkung auf Klicks und Verkäufe. Unter Mitbewerber zeigt Preisradar außerdem Shops, die in deinen Kategorien bei Google sichtbar sind, und legt sie auf Klick an.'),
       p(h('b', {}, 'Tägliche E-Mail: '), 'Auf Wunsch kommt jeden Morgen eine Zusammenfassung: wer seit gestern seine Preise geändert hat und wer jetzt unter deinem Preis liegt, die wichtigsten Preissenkungs-Kandidaten nach Umsatz und Nachfrage, neu offline gegangene Artikel und die Google-Zahlen. Einrichten unter ', go('einstellungen', 'Einstellungen'), '.')),
