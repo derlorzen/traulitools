@@ -100,3 +100,12 @@ In der Preisliste setzt „täglich“ (Zeile und Detailansicht) einen Artikel v
 - **Suche** findet auch Artikel über die Google-Suchanfragen ihrer Seite (alle Wörter müssen vorkommen); der Treffer zeigt die Suchanfrage.
 - **Ansicht „Google-Sichtbarkeit“** (Umschalter oben rechts in der Preisliste): Google-Platz, Impressionen, Klicks, Klickrate gegen den üblichen Wert, Klickpotenzial (zusätzliche Klicks in 28 Tagen bei Platz 1–3, vorsichtige Klickraten-Kurve), Hinweise „Was tun“, eigener Preis gegen Google-Vergleichspreis und Preis-Platz. Standard-Sortierung: Klickpotenzial.
 - MCP: `google_opportunities` (Filter, Suchbegriff, Sortierung).
+
+## Keyword-Monitoring
+
+Bis zu 200 Keywords (`MAX_KEYWORDS`), geprüft werden die ersten 10–50 Google-Ergebnisse (Einstellung, Standard 50), Deutschland, Desktop oder Smartphone. Google selbst wird nicht abgerufen (robots.txt sperrt `/search`); die Ergebnisse kommen von **DataForSEO** (SERP API, Standard-Warteschlange: Aufträge werden ab der eingestellten Stunde abgegeben und jede Minute abgeholt). Kosten laut DataForSEO 0,0006 US-$ je 10 Ergebnisse: 200 Keywords × Top 50 täglich ≈ 18 US-$/Monat, wöchentlich ≈ 3 US-$. Suchvolumen (Google Ads) wird monatlich geholt.
+
+- Zugang: Einstellungen → Keyword-Monitoring (API-Login und API-Passwort, verschlüsselt gespeichert) oder `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`.
+- Ansicht „Keywords“: Platz, Veränderung seit der letzten Prüfung und über 7 Tage, bester Platz, Verlauf, Suchvolumen, Search-Console-Durchschnitt, Positionen der angelegten Mitbewerber, rankende Seite (mit Artikel). Detailansicht mit Verlaufsdiagramm und den Top-50-Ergebnissen.
+- Vorschläge: Search-Console-Suchanfragen, Bestseller (Shopware) und auf Knopfdruck DataForSEO Labs (Begriffe, für die der eigene Shop und die Mitbewerber in den Top 20 stehen; ca. 2 Cent je Domain). Ausgeblendete Vorschläge kommen nicht wieder.
+- MCP: `keywords_overview`, `keyword_suggestions`, `add_keywords`.

@@ -1469,6 +1469,7 @@ function renderHelp(root) {
     ['h-finden', 'Wie Preisradar deinen Artikel beim Mitbewerber findet'],
     ['h-status', 'Was die Angaben in der Preisliste bedeuten'],
     ['h-abruf', 'Wann und wie oft abgefragt wird'],
+    ['h-keywords', 'Keyword-Monitoring'],
     ['h-ki', 'Was die KI macht und was sie kostet'],
     ['h-google', 'Google-Daten und tägliche E-Mail'],
     ['h-analyse', 'Wie die Empfehlungen entstehen'],
@@ -1518,6 +1519,12 @@ function renderHelp(root) {
       p('Neue Artikel werden zuerst einmal bei allen Mitbewerbern gesucht, die täglich geprüften vorneweg. Den Fortschritt siehst du im Lagebild unter „Betrieb“. Der Preisverlauf speichert einen Preis nur, wenn er sich ändert, und sonst einmal pro Woche; so bleibt die Datenbank auch bei vielen Artikeln schlank.'),
       p('Artikel, die bei einem Mitbewerber nicht gefunden wurden, werden dort einmal pro Woche erneut gesucht, nach vier erfolglosen Versuchen nur noch monatlich. Mit „Prüfen“ in der Preisliste fragst du einen Artikel jederzeit sofort bei allen Mitbewerbern ab. Einstellbar unter ', go('einstellungen', 'Einstellungen → Abrufplan'), '.'),
       p('Preisradar gibt sich offen als „PreisradarBot“ zu erkennen und hält sich an die Regeln, die jeder Shop in seiner robots.txt festlegt. Seiten, die ein Shop für Programme sperrt, werden nicht abgerufen.')),
+
+    sec('h-keywords', 'Keyword-Monitoring',
+      p('Unter ', go('keywords', 'Keywords'), ' beobachtest du bis zu 200 Suchbegriffe. Preisradar prüft regelmäßig, auf welchem Platz deine Seite bei Google steht, bis Platz 50, und wo deine Mitbewerber stehen. Die Ergebnisse kommen von DataForSEO, einem Anbieter für Suchergebnis-Daten. Google selbst fragt Preisradar nicht ab, weil Google das für Programme sperrt.'),
+      p('Je Keyword siehst du den Platz, die Veränderung seit der letzten Prüfung und über eine Woche, den bisher besten Platz, den Verlauf, das monatliche Suchvolumen und den Durchschnittsplatz aus der Search Console. Der Search-Console-Wert ist ein Mittel über 28 Tage und alle Orte, Geräte und Varianten; der Platz aus dem Monitoring ist ein Blick auf eine einzelne Suche in Deutschland. Beide weichen deshalb oft etwas voneinander ab.'),
+      p(h('b', {}, 'Vorschläge: '), 'Preisradar schlägt Keywords aus deinen Search-Console-Suchanfragen und deinen Bestsellern vor. Auf Knopfdruck kommen Begriffe dazu, für die dein Shop oder deine Mitbewerber laut DataForSEO weit oben stehen, besonders solche, bei denen ein Mitbewerber vorne ist und du nicht.'),
+      p(h('b', {}, 'Kosten: '), 'DataForSEO rechnet nach Verbrauch ab: 200 Keywords mit 50 Ergebnissen kosten täglich geprüft etwa 18 € im Monat, wöchentlich etwa 3 €. Den Verbrauch des laufenden Monats zeigt die Keyword-Seite. Einrichten unter ', go('einstellungen', 'Einstellungen → Keyword-Monitoring'), '.')),
 
     sec('h-ki', 'Was die KI macht und was sie kostet',
       p('Die KI ist ein Sprachmodell von OpenAI (derzeit ', h('b', {}, d.config.aiModel ?? 'gpt-4.1-mini'), '). Sie kann eine Shopseite ähnlich lesen wie ein Mensch und ist dort hilfreich, wo starre Regeln scheitern, etwa bei ungewöhnlich aufgebauten Shops. Sie wird nur eingesetzt, wenn die Regeln nicht weiterkommen:'),
