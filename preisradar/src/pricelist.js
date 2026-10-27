@@ -18,11 +18,17 @@ function build(db, scope) {
     if (!byProduct.has(m.product_id)) byProduct.set(m.product_id, {});
     byProduct.get(m.product_id)[m.competitor_id] = matchView(m, prev.get(m.id));
   }
+  const seo = seoMap(db);
   return products.map((p) => {
     const matches = byProduct.get(p.id) ?? {};
-    return { ...p, matches, a: evaluate(p, comps, matches) };
+    return { ...p, matches, seo: seoOf(seo, p.url), a: evaluate(p, comps, matches) };
   });
 }
+
+// Suchdaten (Search Console, letzte 28 Tage) je Produktseite
+const keyOf = (u) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/+$/, '')).toLowerCase(); } catch { return null; } };
+const seoMap = (db) => new Map(db.prepare('SELECT page, clicks, impressions, position FROM seo_pages').all().map((r) => [r.page, r]));
+const seoOf = (m, url) => { const r = url ? m.get(keyOf(url)) : null; return r ? { clicks: r.clicks, impressions: r.impressions, position: Math.round(r.position * 10) / 10 } : null; };
 
 export function matchView(m, previous = null) {
   return {
@@ -101,6 +107,8 @@ function sorter(key, dir) {
   if (key === 'gappct') return nullsLast((r) => r.a.gapPct);
   if (key === 'cheapest') return nullsLast((r) => r.a.min);
   if (key === 'updated') return nullsLast((r) => r.updated_at);
+  if (key === 'impressions') return nullsLast((r) => r.seo?.impressions ?? null);
+  if (key === 'clicks') return nullsLast((r) => r.seo?.clicks ?? null);
   const m = /^comp:(\d+)$/.exec(key ?? '');
   if (m) return nullsLast((r) => { const x = r.matches[m[1]]; return x && (x.status === 'ok' || x.status === 'review') ? x.price : null; });
   return byName;
@@ -111,7 +119,7 @@ export function listProducts(db, q = {}) {
   const scope = q.scope === 'all' || (q.scope !== 'tracked' && !counts.tracked) ? 'all' : 'tracked';
   // Datenstand: ändert sich bei jedem Abruf, Import oder jeder Zuordnung
   const v = db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(last_checked),'') || ':' || COALESCE(SUM(LENGTH(COALESCE(url,'')) + LENGTH(status)),0) FROM matches) || '|' ||
-    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) AS v`).get().v;
+    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) AS v`).get().v;
   const key = `${scope}#${v}`;
   if (!cache || cache.key !== key || Date.now() - cache.at > TTL) cache = { key, at: Date.now(), rows: build(db, scope) };
   const all = cache.rows;
@@ -134,5 +142,5 @@ export function getProduct(db, id) {
     const prev = db.prepare('SELECT price FROM price_history WHERE match_id=? ORDER BY at DESC LIMIT 1 OFFSET 1').get(m.id);
     matches[m.competitor_id] = matchView(m, prev?.price);
   }
-  return { ...p, matches, a: evaluate(p, comps, matches) };
+  return { ...p, matches, seo: seoOf(seoMap(db), p.url), a: evaluate(p, comps, matches) };
 }

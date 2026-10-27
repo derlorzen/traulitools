@@ -187,7 +187,7 @@ function renderPrices(root) {
       h('select', { id: 'brandsel', 'aria-label': 'Hersteller', onchange: (e) => { state.brand = e.target.value; reload(); } },
         h('option', { value: '' }, 'Alle Hersteller'), list.brands.map((b) => h('option', { value: b, selected: b === state.brand }, b))),
       h('select', { 'aria-label': 'Sortierung', onchange: (e) => { const [s, dir] = e.target.value.split(':'); state.sort = s; state.dir = dir; render(); } },
-        [['name:asc', 'Name A–Z'], ['name:desc', 'Name Z–A'], ['number:asc', 'Artikelnummer'], ['gap:desc', 'Größter Rückstand in €'], ['gappct:desc', 'Größter Rückstand in %'], ['gap:asc', 'Größter Vorsprung'], ['price:desc', 'Preis absteigend'], ['price:asc', 'Preis aufsteigend'], ['cheapest:asc', 'Günstigster Mitbewerberpreis'], ['updated:desc', 'Zuletzt aktualisiert']]
+        [['name:asc', 'Name A–Z'], ['name:desc', 'Name Z–A'], ['number:asc', 'Artikelnummer'], ['gap:desc', 'Größter Rückstand in €'], ['gappct:desc', 'Größter Rückstand in %'], ['gap:asc', 'Größter Vorsprung'], ['price:desc', 'Preis absteigend'], ['price:asc', 'Preis aufsteigend'], ['cheapest:asc', 'Günstigster Mitbewerberpreis'], ['impressions:desc', 'Meiste Impressionen (Google)'], ['clicks:desc', 'Meiste Klicks (Google)'], ['updated:desc', 'Zuletzt aktualisiert']]
           .map(([v, l]) => h('option', { value: v, selected: v === `${state.sort}:${state.dir}` }, l))),
       noComps ? null : h('button', { class: `btn${state.more ? ' on' : ''}`, 'aria-expanded': state.more ? 'true' : 'false', onclick: () => { state.more = !state.more; render(); } }, extra ? `Weitere Filter (${extra})` : 'Weitere Filter'),
       state.q || state.brand || state.filter !== 'all' || extra ? h('button', { class: 'linkbtn', onclick: reset }, 'Zurücksetzen') : null),
@@ -303,6 +303,7 @@ function rowEl(p) {
     h('td', { class: 'trackcell', onclick: (e) => e.stopPropagation() }, h('input', { type: 'checkbox', checked: Boolean(p.tracked), 'aria-label': `${p.name} beobachten`, onchange: guard((e) => track([p.id], e.target.checked)) })),
     h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name),
       h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.mpn && p.mpn !== p.number ? `HAN ${p.mpn}` : null].filter(Boolean).join(' · ')),
+      p.seo ? h('div', { class: 'seoline', title: `Google, letzte 28 Tage: ${p.seo.clicks} Klicks, ${p.seo.impressions} Impressionen, Ø Position ${p.seo.position}` }, `${nf.format(p.seo.impressions)} Impr. · ${nf.format(p.seo.clicks)} Klicks · Pos. ${nf1.format(p.seo.position)}`) : null,
       p.offline_since ? h('span', { class: 'tag warn', title: `Seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar` }, 'bei dir offline') : null),
     h('td', { class: `own ${position(p, a)?.tone ?? ''}`, 'data-label': d.own.name }, p.price != null ? eur.format(p.price) : '–'),
     a.cells.map((cell) => matchCell(p, a, cell)),
@@ -404,6 +405,7 @@ async function openDrawer(id, given = null) {
       h('span', { class: 'spacer' }),
       checkButton(p.id, 'Jetzt alle Mitbewerber prüfen')),
     h('h3', { style: 'margin-top:18px' }, 'Preisverlauf'), histBox,
+    h('h3', { style: 'margin-top:22px' }, 'Bei Google (letzte 28 Tage)'), seoDrawerBox(p.id),
     h('h3', { style: 'margin-top:22px' }, 'Mitbewerber'),
     ...a.cells.map(({ c, m }) => {
       const input = h('input', { type: 'url', placeholder: 'https://… (Produktseite beim Mitbewerber)', value: m?.url ?? '', 'aria-label': `Produkt-URL bei ${c.name}` });
@@ -809,6 +811,7 @@ async function renderStart(root) {
       h('dt', {}, 'Aktualität'), h('dd', {}, `jeder Artikel höchstens alle ${sch.refresh} Stunden`),
       h('dt', {}, 'Artikel'), h('dd', {}, `${d.counts.all} gesamt, ${d.counts.tracked} beobachtet`),
       imp?.running ? [h('dt', {}, 'Import'), h('dd', {}, `läuft: ${imp.done} von ${imp.total}`)] : imp?.finishedAt ? [h('dt', {}, 'Letzter Import'), h('dd', {}, `${dt.format(new Date(imp.finishedAt))}, ${imp.created} neu, ${imp.updated} aktualisiert${imp.errors ? `, ${imp.errors} Fehler` : ''}`)] : null,
+      h('dt', {}, 'Google'), h('dd', {}, d.config.gsc ? h('button', { class: 'linkbtn', onclick: () => setTab('sichtbarkeit') }, 'Search Console verbunden, zur Sichtbarkeit') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'Search Console noch nicht verbunden')),
       h('dt', {}, 'KI'), h('dd', {}, d.config.ai
         ? [h('div', { class: 'aimeter', title: `${d.config.aiUsage.today} von ${d.config.aiUsage.limit} KI-Anfragen heute` }, h('div', { style: `width:${Math.min(100, (d.config.aiUsage.today / Math.max(1, d.config.aiUsage.limit)) * 100)}%` })),
           `${d.config.aiUsage.today.toLocaleString('de-DE')} von ${d.config.aiUsage.limit.toLocaleString('de-DE')} Anfragen heute${d.config.aiUsage.today >= d.config.aiUsage.limit ? ' (Grenze erreicht, weiter ohne KI)' : ''}`]
@@ -817,6 +820,144 @@ async function renderStart(root) {
   root.append(hero, gauge,
     a.hints.length ? h('ul', { class: 'hints' }, a.hints.slice(0, 4).map((x) => h('li', { class: x.level }, x.text))) : null,
     lists, h('div', { class: 'cols two' }, comps, ops));
+}
+
+// ---------- Sichtbarkeit (Google Search Console) ----------
+const nf = new Intl.NumberFormat('de-DE');
+const nf1 = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 });
+const dDay = new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit' });
+
+function delta(cur, prev, { lowerIsBetter = false, unit = '%' } = {}) {
+  if (cur == null || prev == null || !prev) return null;
+  const ch = unit === '%' ? ((cur - prev) / prev) * 100 : cur - prev;
+  if (Math.abs(ch) < 0.05) return h('span', { class: 'kpi-d' }, '± 0');
+  const good = lowerIsBetter ? ch < 0 : ch > 0;
+  return h('span', { class: `kpi-d ${good ? 'up' : 'down'}` }, `${ch > 0 ? '▲' : '▼'} ${nf1.format(Math.abs(ch))}${unit === '%' ? ' %' : ''} zur Vorperiode`);
+}
+
+/** Linien-Diagramm mit Achse, Raster und Tooltip je Punkt (eine Achse, mehrere Reihen). */
+function lineChart(series, { height = 220, fmtY = (v) => nf.format(Math.round(v)), fmtX = (t) => dDay.format(new Date(t)), area = false } = {}) {
+  const all = series.flatMap((s) => s.points);
+  if (!all.length) return h('p', { class: 'pmeta' }, 'Noch keine Daten.');
+  const W = 900, H = height, L = 52, R = 12, T = 12, B = 26;
+  const xs = all.map((p) => Date.parse(p.date)), ys = all.map((p) => p.value);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs) || x0 + 1;
+  let y0 = Math.min(0, ...ys), y1 = Math.max(...ys);
+  if (y1 === y0) y1 = y0 + 1;
+  y1 += (y1 - y0) * 0.08;
+  const X = (t) => L + ((t - x0) / Math.max(1, x1 - x0)) * (W - L - R);
+  const Y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', class: 'lchart', role: 'img', 'aria-label': series.map((x) => x.name).join(', ') });
+  for (let i = 0; i <= 3; i++) {
+    const v = y0 + ((y1 - y0) * i) / 3;
+    svg.append(s('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: 'var(--line)', 'stroke-dasharray': i ? '2 4' : '' }),
+      s('text', { x: L - 6, y: Y(v) + 4, 'text-anchor': 'end', 'font-size': 11, fill: 'var(--muted)' }, fmtY(v)));
+  }
+  const ticks = 5;
+  for (let i = 0; i < ticks; i++) {
+    const t = x0 + ((x1 - x0) * i) / (ticks - 1);
+    svg.append(s('text', { x: X(t), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === ticks - 1 ? 'end' : 'middle', 'font-size': 11, fill: 'var(--muted)' }, fmtX(t)));
+  }
+  for (const se of series) {
+    const pts = se.points.map((p) => [X(Date.parse(p.date)), Y(p.value)]);
+    const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+    if (area && pts.length > 1) svg.append(s('path', { d: `${d} L${pts[pts.length - 1][0]},${Y(y0)} L${pts[0][0]},${Y(y0)} Z`, fill: se.color, opacity: 0.12 }));
+    svg.append(s('path', { d, fill: 'none', stroke: se.color, 'stroke-width': se.width ?? 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', class: 'lpath' }));
+    se.points.forEach((p, i) => svg.append(s('circle', { cx: pts[i][0], cy: pts[i][1], r: 8, fill: 'transparent', class: 'hit' },
+      s('title', {}, `${se.name} · ${new Date(p.date).toLocaleDateString('de-DE')}: ${fmtY(p.value)}`))));
+    const [lx, ly] = pts[pts.length - 1];
+    svg.append(s('circle', { cx: lx, cy: ly, r: 3.5, fill: se.color, stroke: 'var(--surface-solid)', 'stroke-width': 1.5 }));
+  }
+  return h('div', {}, svg, series.length > 1 ? h('div', { class: 'legend' }, series.map((x) => h('span', {}, h('i', { style: `background:${x.color}` }), x.name))) : null);
+}
+
+function seoSetupHint() {
+  return h('div', { class: 'panel empty' },
+    h('h3', {}, 'Google Search Console verbinden'),
+    h('p', { style: 'max-width:62ch;margin:0 auto 12px' }, 'Dann siehst du, wie oft deine Produktseiten bei Google erscheinen und angeklickt werden, mit welchen Suchbegriffen sie gefunden werden und wo Preis und Auffindbarkeit nicht zusammenpassen.'),
+    h('div', { class: 'row', style: 'justify-content:center' }, h('button', { class: 'btn primary', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('seo-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'Zugang einrichten')));
+}
+
+function seoSyncBar(o) {
+  const st = o.status.gsc, job = o.job;
+  return h('div', { class: 'syncbar' },
+    h('div', {}, h('b', {}, 'Search Console '), h('span', { class: 'pmeta' }, st.synced_at ? `Stand ${dt.format(new Date(st.synced_at))}, Daten vom ${String(st.range || '').split('|').map((x) => x && new Date(x).toLocaleDateString('de-DE')).join(' bis ')} (${st.site})` : `${st.site}, noch nicht abgeglichen`),
+      h('button', { class: 'btn small', disabled: job.running, onclick: guard(async () => { await api('/api/seo/gsc/sync', { method: 'POST', body: {} }); toast('Abgleich gestartet, das dauert einen Moment'); render(); pollSeo(); }) }, job.running ? 'Abgleich läuft …' : 'Jetzt abgleichen')),
+    job.error ? h('div', { class: 'warmtxt' }, `Letzter Abgleich fehlgeschlagen: ${job.error}`) : null);
+}
+let seoPoll;
+function pollSeo() {
+  clearInterval(seoPoll);
+  seoPoll = setInterval(guard(async () => {
+    const o = await api('/api/seo');
+    if (!o.job.running) { clearInterval(seoPoll); if (state.tab === 'sichtbarkeit') render(); toast(o.job.error ? `Abgleich fehlgeschlagen: ${o.job.error}` : 'Abgleich fertig', Boolean(o.job.error)); }
+  }), 4000);
+}
+
+async function renderSeo(root) {
+  const o = await api('/api/seo');
+  root.append(h('div', { class: 'pagehead' }, h('h2', {}, 'Sichtbarkeit')),
+    h('p', { class: 'sub' }, 'Wie gut deine Artikel bei Google gefunden werden, im Zusammenspiel mit deinen Preisen. Quelle: Google Search Console, letzte 28 Tage.'));
+  if (!o.status.gsc.configured) { root.append(seoSetupHint()); return; }
+  root.append(seoSyncBar(o));
+  if (o.job.running && !o.daily.length) pollSeo();
+  if (!o.daily.length) { root.append(h('p', { class: 'pmeta' }, 'Noch keine Daten. Der erste Abgleich läuft automatisch nach dem Einrichten oder über „Jetzt abgleichen“.')); return; }
+  const k = o.kpi;
+  root.append(h('div', { class: 'kpis' },
+    kpiTile('Klicks', h('span', { 'data-count': Math.round(k.clicks) }, nf.format(k.clicks)), delta(k.clicks, k.clicks_prev), 'cool'),
+    kpiTile('Impressionen', h('span', { 'data-count': Math.round(k.impressions) }, nf.format(k.impressions)), delta(k.impressions, k.impressions_prev)),
+    kpiTile('Klickrate', k.ctr == null ? '–' : `${nf1.format(k.ctr)} %`, 'Klicks je Impression'),
+    kpiTile('Ø Position', k.position == null ? '–' : nf1.format(k.position), delta(k.position, k.position_prev, { lowerIsBetter: true, unit: '' })),
+    kpiTile('Produktseiten mit Daten', h('span', { 'data-count': o.coverage.with_data }, nf.format(o.coverage.with_data)), `von ${nf.format(o.coverage.product_pages)} Artikeln mit Shop-URL`)));
+  root.append(h('div', { class: 'panel' }, h('h3', {}, 'Klicks pro Tag'), h('p', { class: 'pmeta' }, 'Letzte 90 Tage (Google liefert die Daten mit 2 bis 3 Tagen Verzögerung)'),
+    lineChart([{ name: 'Klicks', color: 'var(--petrol)', points: o.daily.map((d) => ({ date: d.date, value: d.clicks })), width: 2.5 }], { area: true })));
+
+  // Chancen aus Preis und Suche
+  const op = o.opportunities;
+  if (op.available) {
+    root.append(h('h3', { class: 'sechead' }, 'Chancen aus Preis und Suche'),
+      h('div', { class: 'cols four' }, op.groups.map((g) => h('section', { class: `list opp ${g.tone}` },
+        h('div', { class: 'list-h' }, h('h3', {}, g.title), h('span', { class: 'pmeta' }, String(g.items.length))),
+        h('p', { class: 'pmeta' }, g.hint),
+        g.items.length ? h('ol', {}, g.items.slice(0, 8).map((r) => h('li', { tabindex: 0, onclick: () => { state.tab = 'preise'; render(); openDrawer(r.id); }, onkeydown: (e) => e.key === 'Enter' && e.currentTarget.click() },
+          h('div', { class: 'li-main' }, h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, r.why)),
+          h('div', { class: 'li-side' }, h('div', { class: `fig ${r.gap_percent > 2 ? 'warm' : r.gap_percent <= 0 ? 'cool' : ''}` }, fmtPct(r.gap_percent)), h('div', { class: 'pmeta' }, eur.format(r.own_price))))))
+          : h('p', { class: 'list-empty' }, 'Derzeit nichts.')))));
+  } else root.append(h('p', { class: 'pmeta' }, 'Chancen erscheinen, sobald Suchdaten zu beobachteten Artikeln mit Vergleichspreisen vorliegen. Dafür brauchen deine Artikel eine Shop-URL (eigene Sitemap unter Einstellungen).'));
+
+  const posBadge = (p) => h('span', { class: `posbadge ${p <= 3 ? 'cool' : p <= 10 ? 'near' : 'warm'}` }, nf1.format(p));
+  root.append(h('div', { class: 'grid2 eq' },
+    h('div', { class: 'panel flush' },
+      h('div', { class: 'panelhead' }, h('h3', {}, 'Produktseiten'), h('p', { class: 'pmeta' }, 'Nach Klicks. Klick öffnet den Artikel.')),
+      h('div', { class: 'tablewrap', style: 'max-height:560px' }, h('table', { class: 'prices', style: 'min-width:0' },
+        h('thead', {}, h('tr', {}, ['Artikel', 'Klicks', 'Impr.', 'CTR', 'Pos.'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
+        h('tbody', {}, o.pages.map((p) => h('tr', { onclick: () => { state.tab = 'preise'; render(); openDrawer(p.product.id); } },
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.product.name), h('div', { class: 'pmeta' }, [p.product.price != null ? eur.format(p.product.price) : null, p.product.offline ? 'bei dir offline' : null].filter(Boolean).join(' · '))),
+          h('td', {}, nf.format(p.clicks)), h('td', {}, nf.format(p.impressions)), h('td', {}, `${nf1.format(p.ctr * 100)} %`), h('td', {}, posBadge(p.position)))))))),
+    h('div', { class: 'panel flush' },
+      h('div', { class: 'panelhead' }, h('h3', {}, 'Suchanfragen'), h('p', { class: 'pmeta' }, 'Womit deine Produktseiten gefunden werden, nach Klicks.')),
+      h('div', { class: 'tablewrap', style: 'max-height:560px' }, h('table', { class: 'prices', style: 'min-width:0' },
+        h('thead', {}, h('tr', {}, ['Suchanfrage', 'Klicks', 'Impr.', 'Pos.'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
+        h('tbody', {}, o.queries.map((q) => h('tr', { class: 'nolink' },
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, q.query)),
+          h('td', {}, nf.format(q.clicks)), h('td', {}, nf.format(q.impressions)), h('td', {}, q.position != null ? posBadge(q.position) : '–')))))))));
+}
+
+/** Suchdaten in der Detailansicht eines Artikels. */
+function seoDrawerBox(id) {
+  const box = h('div', { class: 'seobox' }, h('p', { class: 'pmeta' }, 'Suchdaten werden geladen …'));
+  api(`/api/products/${id}/seo`).then((r) => {
+    if (!r.page) { box.replaceChildren(h('p', { class: 'pmeta' }, state.data.config.gsc ? 'Für diese Seite liegen keine Suchdaten vor (keine Impressionen in den letzten 28 Tagen oder keine Shop-URL zugeordnet).' : 'Die Google Search Console unter Einstellungen verbinden, dann siehst du hier, wie diese Seite bei Google gefunden wird.')); return; }
+    box.replaceChildren(
+      r.page ? h('div', { class: 'seokpis' },
+        h('div', {}, h('b', {}, nf.format(r.page.clicks)), h('small', {}, 'Klicks')),
+        h('div', {}, h('b', {}, nf.format(r.page.impressions)), h('small', {}, 'Impressionen')),
+        h('div', {}, h('b', {}, `${nf1.format(r.page.ctr * 100)} %`), h('small', {}, 'Klickrate')),
+        h('div', {}, h('b', {}, nf1.format(r.page.position)), h('small', {}, 'Ø Position'))) : null,
+      r.queries.length ? h('table', { class: 'plain', style: 'margin-top:8px' }, h('thead', {}, h('tr', {}, ['Suchanfrage', 'Klicks', 'Impr.', 'Pos.'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, r.queries.map((q) => h('tr', {}, h('td', {}, q.query), h('td', {}, nf.format(q.clicks)), h('td', {}, nf.format(q.impressions)), h('td', {}, nf1.format(q.position)))))) : null);
+  }).catch((e) => box.replaceChildren(h('p', { class: 'pmeta' }, e.message)));
+  return box;
 }
 
 // ---------- So funktioniert's ----------
@@ -834,6 +975,7 @@ function renderHelp(root) {
     ['h-status', 'Was die Angaben in der Preisliste bedeuten'],
     ['h-abruf', 'Wann und wie oft abgefragt wird'],
     ['h-ki', 'Was die KI macht und was sie kostet'],
+    ['h-google', 'Was die Google-Daten zeigen'],
     ['h-analyse', 'Wie die Empfehlungen entstehen'],
     ['h-selbst', 'Was du selbst tun kannst'],
     ['h-daten', 'Deine Daten und faires Verhalten'],
@@ -892,6 +1034,16 @@ function renderHelp(root) {
         '. Ist sie erreicht, arbeitet Preisradar bis Mitternacht ohne KI weiter. Bei nicht gefundenen Artikeln fragt Preisradar die KI höchstens einmal pro Woche erneut.'),
       p(d.config.ai ? 'Die KI ist eingerichtet. ' : h('b', {}, 'Die KI ist derzeit nicht eingerichtet. '), 'Ohne KI funktioniert Preisradar trotzdem, nur bei schwierigen Shops werden weniger Artikel gefunden. Schlüssel, Modell und Tagesgrenze unter ', go('einstellungen', 'Einstellungen → KI'), '. Pro Mitbewerber lässt sich die KI auch ganz abschalten.')),
 
+    sec('h-google', 'Was die Google-Daten zeigen',
+      p('Ist die Google Search Console verbunden, holt Preisradar einmal täglich, wie oft deine Seiten in den letzten 28 Tagen bei Google erschienen sind (Impressionen), wie oft sie angeklickt wurden (Klicks) und auf welchem Platz sie im Schnitt standen. Die Daten kommen direkt von Google und sind 2 bis 3 Tage alt.'),
+      p('Spannend wird es zusammen mit den Preisen. Unter ', go('sichtbarkeit', 'Sichtbarkeit'), ' findest du vier Listen:'),
+      h('ul', { class: 'plainlist' },
+        h('li', {}, h('b', {}, 'Viel gesucht, aber teurer: '), 'Seiten mit vielen Impressionen, bei denen ein Mitbewerber günstiger ist. Hier kostet dich der Preis am meisten Umsatz.'),
+        h('li', {}, h('b', {}, 'Günstigster, aber kaum gefunden: '), 'Du hast den besten Preis, aber die Seite steht weit hinten. Hier hilft Arbeit an Titel, Beschreibung und internen Links mehr als der Preis.'),
+        h('li', {}, h('b', {}, 'Knapp vor Seite 1: '), 'Seiten auf Platz 8 bis 15. Schon wenige Plätze mehr bringen deutlich mehr Besucher.'),
+        h('li', {}, h('b', {}, 'Gut platziert, wenig Klicks: '), 'Weit oben, aber selten angeklickt. Oft helfen ein besserer Seitentitel oder sichtbare Vorteile wie Versand oder Preis im Suchergebnis.')),
+      p('In der Preisliste kannst du nach Impressionen oder Klicks sortieren, und in der Analyse die Empfehlungen nach „Nachfrage × Abstand“: Zuerst kommen die Artikel, bei denen ein besserer Preis die meisten Interessenten erreicht.')),
+
     sec('h-analyse', 'Wie die Empfehlungen entstehen',
       p('Die Empfehlungen folgen festen, nachvollziehbaren Regeln, nicht der KI. Verglichen wird dein Preis mit dem günstigsten bestätigten Angebot eines Mitbewerbers, der den Artikel liefern kann:'),
       h('ul', { class: 'plainlist' },
@@ -909,7 +1061,7 @@ function renderHelp(root) {
         h('li', {}, 'Nur die Artikel beobachten, deren Preise dich wirklich interessieren.'))),
 
     sec('h-daten', 'Deine Daten und faires Verhalten',
-      p('Alle Daten liegen auf deinem eigenen Server. Die Oberfläche lädt nichts von fremden Servern (keine Schriften, kein Tracking). An OpenAI gehen nur der Inhalt öffentlicher Mitbewerberseiten und die Produktangaben deines Artikels (Name, Marke, Nummern), keine Kunden- oder Bestelldaten. Zugangsdaten werden verschlüsselt gespeichert.'),
+      p('Alle Daten liegen auf deinem eigenen Server. Die Oberfläche lädt nichts von fremden Servern (keine Schriften, kein Tracking). An OpenAI gehen nur der Inhalt öffentlicher Mitbewerberseiten und die Produktangaben deines Artikels (Name, Marke, Nummern), keine Kunden- oder Bestelldaten. Von Google liest Preisradar nur die Search-Console-Statistik deiner Seiten, mit reinem Lesezugriff. Zugangsdaten werden verschlüsselt gespeichert.'),
       p('Über den Claude-Zugang (', go('einstellungen', 'Einstellungen'), ') kannst du Preisradar auch im Gespräch mit Claude abfragen und bedienen. Preise in deinem Shop werden auch dort nie geändert.'))));
 }
 
@@ -995,6 +1147,7 @@ function recommendations(a) {
   });
   const sorters = {
     gap: (x, y) => Math.abs(y.gap_percent) - Math.abs(x.gap_percent),
+    demand: (x, y) => (y.impressions ?? -1) * Math.max(0.1, Math.abs(y.gap_percent)) - (x.impressions ?? -1) * Math.max(0.1, Math.abs(x.gap_percent)),
     diff: (x, y) => Math.abs(y.diff) - Math.abs(x.diff),
     price: (x, y) => y.own_price - x.own_price,
     name: (x, y) => x.name.localeCompare(y.name, 'de'),
@@ -1009,7 +1162,7 @@ function recommendations(a) {
       h('tbody', {}, rows.slice(0, 300).map((x) => {
         const [label, cls] = ACTION_TAG[x.action] ?? [x.action, ''];
         return h('tr', { tabindex: 0, onclick: () => { state.tab = 'preise'; render(); openDrawer(x.id); } },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, x.name), h('div', { class: 'pmeta' }, [x.brand, x.number].filter(Boolean).join(' · '))),
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, x.name), h('div', { class: 'pmeta' }, [x.brand, x.number, x.impressions != null ? `${nf.format(x.impressions)} Impr. bei Google` : null].filter(Boolean).join(' · '))),
           h('td', {}, h('span', { class: `tag ${cls}` }, label)),
           h('td', {}, eur.format(x.own_price)),
           h('td', {}, eur.format(x.cheapest), h('div', { class: 'pmeta' }, x.cheapest_competitor)),
@@ -1030,7 +1183,7 @@ function recommendations(a) {
       h('select', { 'aria-label': 'Marke', onchange: (e) => { aState.brand = e.target.value; refreshRecs(); } }, h('option', { value: '' }, 'Alle Marken'), brands.map((b) => h('option', { value: b, selected: b === aState.brand }, b))),
       h('select', { 'aria-label': 'Günstigster Mitbewerber', onchange: (e) => { aState.comp = e.target.value; refreshRecs(); } }, h('option', { value: '' }, 'Jeder Mitbewerber'), a.competitors.map((c) => h('option', { value: c.name, selected: c.name === aState.comp }, `${c.name} günstigster`))),
       h('select', { 'aria-label': 'Sortierung', onchange: (e) => { aState.sort = e.target.value; refreshRecs(); } },
-        [['gap', 'Größter Abstand in %'], ['diff', 'Größter Abstand in €'], ['price', 'Preis absteigend'], ['name', 'Name']].map(([v, l]) => h('option', { value: v, selected: v === aState.sort }, l)))),
+        [['gap', 'Größter Abstand in %'], ['diff', 'Größter Abstand in €'], ['demand', 'Nachfrage × Abstand (Google)'], ['price', 'Preis absteigend'], ['name', 'Name']].map(([v, l]) => h('option', { value: v, selected: v === aState.sort }, l)))),
     tableEl);
 }
 const aRules = (a) => a.rules;
@@ -1195,13 +1348,48 @@ async function renderSettings(root) {
       cur.mcp_enabled ? h('button', { class: 'btn danger', type: 'button', onclick: guard(async () => { if (confirm('Claude-Zugang abschalten?')) { await api('/api/settings/mcp-token', { method: 'DELETE' }); toast('Zugang abgeschaltet'); await refresh(); } }) }, 'Abschalten') : null),
     mcpOut);
 
+  const g = cur.seo.gsc;
+  const gout = h('div', { class: 'result', hidden: true });
+  const gsc = h('form', { class: 'panel', id: 'seo-settings', onsubmit: (e) => e.preventDefault() },
+    h('h3', {}, 'Google Search Console'),
+    h('p', { class: 'sub' }, 'Zeigt, wie oft deine Produktseiten bei Google erscheinen und angeklickt werden. Der Zugang läuft über ein Dienstkonto mit reinem Lesezugriff, der Schlüssel wird verschlüsselt gespeichert.'),
+    h('details', { class: 'howto' }, h('summary', {}, 'So richtest du den Zugang ein (etwa 10 Minuten)'),
+      h('ol', { class: 'plainlist' },
+        h('li', {}, 'In der Google Cloud Console (console.cloud.google.com) ein Projekt wählen oder anlegen.'),
+        h('li', {}, 'Unter „APIs und Dienste“ die „Google Search Console API“ aktivieren.'),
+        h('li', {}, 'Unter „IAM und Verwaltung → Dienstkonten“ ein Dienstkonto anlegen (keine Rollen nötig) und unter „Schlüssel“ einen JSON-Schlüssel erstellen. Die Datei wird heruntergeladen.'),
+        h('li', {}, 'In der Search Console die Property öffnen, „Einstellungen → Nutzer und Berechtigungen → Nutzer hinzufügen“: die E-Mail-Adresse des Dienstkontos (…@….iam.gserviceaccount.com) mit Berechtigung „Eingeschränkt“ eintragen.'),
+        h('li', {}, 'Hier die Property eintragen und den Inhalt der JSON-Datei einfügen, speichern, „Verbindung testen“.'))),
+    h('div', { class: 'grid' },
+      f('Property', 'gsc_site', g.site, { ph: 'sc-domain:belkai.de', hint: 'Domain-Property: „sc-domain:belkai.de“. URL-Präfix-Property: „https://www.belkai.de/“ (mit / am Ende), genau wie in der Search Console.' }),
+      h('div', { class: 'field', style: 'grid-column:1/-1' }, h('label', {}, 'Dienstkonto-Schlüssel (Inhalt der JSON-Datei)'),
+        h('textarea', { name: 'gsc_service_account', rows: 4, placeholder: g.email ? `gespeichert für ${g.email} (leer lassen, um ihn zu behalten)` : '{ "type": "service_account", … }', spellcheck: 'false', autocomplete: 'off' }),
+        g.email ? h('span', { class: 'hint' }, `Dienstkonto: ${g.email}. Diese Adresse muss in der Search Console als Nutzer eingetragen sein.`) : null)),
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
+        gout.hidden = false; gout.textContent = 'Verbindung wird geprüft …';
+        try {
+          const r = await api('/api/seo/gsc/test', { method: 'POST', body: {} });
+          const want = cur.seo.gsc.site;
+          const hit = r.sites.find((x) => x.site === want);
+          gout.replaceChildren(h('div', {}, r.sites.length ? `Verbunden als ${r.email}. Zugriff auf: ${r.sites.map((x) => x.site).join(', ')}.` : `Verbunden als ${r.email}, aber noch ohne Zugriff auf eine Property. Bitte die Adresse in der Search Console als Nutzer eintragen.`),
+            want && !hit && r.sites.length ? h('div', { class: 'warmtxt' }, `Die eingetragene Property „${want}“ ist nicht dabei. Bitte genau so schreiben wie oben aufgeführt.`) : null);
+        } catch (e) { gout.textContent = e.message; }
+      }) }, 'Verbindung testen'),
+      g.configured ? h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/seo/gsc/sync', { method: 'POST', body: {} }); toast('Abgleich gestartet'); }) }, 'Jetzt abgleichen') : null,
+      g.email ? h('button', { class: 'btn danger', type: 'button', onclick: guard(async () => { if (confirm('Dienstkonto-Schlüssel entfernen?')) { await api('/api/settings', { method: 'PUT', body: { gsc_remove: true } }); toast('Schlüssel entfernt'); await refresh(); } }) }, 'Schlüssel entfernen') : null,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(gsc)) }); toast('Search Console gespeichert'); await refresh(); }) }, 'Speichern')),
+    gout,
+    g.synced_at ? h('p', { class: 'pmeta' }, `Letzter Abgleich: ${dt.format(new Date(g.synced_at))}. Danach automatisch einmal täglich.`) : null);
+
   const pw = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
     h('h3', {}, 'Passwort ändern'),
     h('div', { class: 'grid' }, f('Aktuelles Passwort', 'current', '', { type: 'password' }), f('Neues Passwort (mind. 10 Zeichen)', 'password', '', { type: 'password' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
   const up = h('div', { id: 'userpanel' }, await userPanel());
-  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, ki, mcp, up, pw));
+  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, ki, gsc, mcp, up, pw));
 }
 
 // ---------- Laufleiste ----------
@@ -1270,7 +1458,7 @@ function render() {
     if (sameTab) { main.scrollTop = keepMain; window.scrollTo(0, keepWin); } else { main.scrollTop = 0; window.scrollTo(0, 0); }
   };
   const fail = (e) => { if (!(e instanceof AuthError)) toast(e.message, true); };
-  const asyncTabs = { start: renderStart, analyse: renderAnalysis, einstellungen: renderSettings, import: renderImport };
+  const asyncTabs = { start: renderStart, analyse: renderAnalysis, sichtbarkeit: renderSeo, einstellungen: renderSettings, import: renderImport };
   const fn = asyncTabs[state.tab] ?? (state.tab === 'mitbewerber' ? null : asyncTabs.import);
   if (state.tab === 'preise' || state.tab === 'hilfe' || state.tab === 'mitbewerber') {
     main.replaceChildren();

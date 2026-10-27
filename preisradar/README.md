@@ -71,3 +71,7 @@ Claude Code: `claude mcp add --transport http preisradar https://<host>/mcp --he
 - Nicht gefundene Artikel: Link „suchen" in die Shopsuche des Mitbewerbers (Feld „Suchlink für dich", automatisch aus der Startseite erkennbar). Gefundene Produktseite in der Detailansicht einfügen, sie wird sofort abgerufen.
 - Sitemap-Kategorien je Mitbewerber auswählbar; gesucht wird dann nur in diesen URLs.
 - Eigene Artikel, die nicht mehr in der eigenen Sitemap stehen (täglicher Abgleich) oder 404 liefern, bleiben erhalten und werden als „bei dir offline" markiert; sie zählen nicht in der Analyse und werden nicht mehr abgefragt.
+
+## Google Search Console
+
+Einstellungen → „Google Search Console“: Property (`sc-domain:belkai.de` oder `https://www.belkai.de/`) und JSON-Schlüssel eines Dienstkontos (Search Console API aktiviert, Dienstkonto-E-Mail in der Search Console als Nutzer „Eingeschränkt“ eingetragen). Abgleich täglich (Seiten, Suchanfragen je Seite, 90 Tage Tagesverlauf; letzte 28 Tage, Daten 2–3 Tage verzögert). Bereich „Sichtbarkeit“: Kennzahlen, Verlauf, Chancen aus Preis und Suche, Produktseiten, Suchanfragen. Preisliste sortierbar nach Impressionen/Klicks, Empfehlungen nach „Nachfrage × Abstand“. Testumgebung: `GSC_API_BASE`, `GSC_TOKEN_URL`.

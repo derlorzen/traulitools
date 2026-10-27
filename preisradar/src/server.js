@@ -19,6 +19,8 @@ import { hashPassword, verifyPassword, createSession, destroySession, currentUse
 import { startScrape, scrapeState, closeStaleRuns, checkProductNow } from './scraper.js';
 import { listProducts, getProduct, invalidatePriceList } from './pricelist.js';
 import { loadTemplates, removeTemplate } from './templates.js';
+import { gscSites, syncGsc, saveServiceAccount, gscConfig } from './gsc.js';
+import { seoOverview, seoStatus, productSeo } from './seo.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -104,7 +106,7 @@ export function createApp(db, { dataDir = null } = {}) {
       offline: db.prepare('SELECT COUNT(*) AS n FROM products WHERE active=1 AND offline_since IS NOT NULL').get().n,
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -122,6 +124,16 @@ export function createApp(db, { dataDir = null } = {}) {
     const results = await checkProductNow(db, id);
     invalidatePriceList();
     res.json({ results, product: getProduct(db, id) });
+  }));
+
+  app.get('/api/products/:id/seo', wrap((req, res) => res.json(productSeo(db, Number(req.params.id)))));
+
+  // --- Sichtbarkeit: Google Search Console ---
+  app.get('/api/seo', wrap((_req, res) => res.json({ ...seoOverview(db), job: { ...seoJob } })));
+  app.post('/api/seo/gsc/test', wrap(async (_req, res) => res.json({ sites: await gscSites(db), email: gscConfig(db).email })));
+  app.post('/api/seo/gsc/sync', wrap((_req, res) => {
+    if (!startSeoJob(db)) throw bad('Es läuft bereits ein Abgleich', 409);
+    res.json({ ok: true, job: { ...seoJob } });
   }));
 
   app.get('/api/products/:id/history', wrap((req, res) => {
@@ -370,6 +382,7 @@ export function createApp(db, { dataDir = null } = {}) {
       shopware_secret_set: Boolean(cfg.clientSecret),
       shopware_from_env: !hasSetting(db, 'shopware_url') && Boolean(process.env.SHOPWARE_URL),
       mcp_enabled: mcpEnabled(db),
+      seo: seoStatus(db),
       openai_key_set: Boolean(aiConfig(db).key),
       openai_from_env: !hasSetting(db, 'openai_api_key') && Boolean(process.env.OPENAI_API_KEY),
       openai_model: aiConfig(db).model,
@@ -400,6 +413,14 @@ export function createApp(db, { dataDir = null } = {}) {
     if (b.openai_api_key) setSetting(db, 'openai_api_key', String(b.openai_api_key).trim(), { secret: true });
     if (typeof b.openai_model === 'string') setSetting(db, 'openai_model', b.openai_model.trim());
     if (b.openai_remove_key) setSetting(db, 'openai_api_key', '');
+    // Search Console
+    if (typeof b.gsc_site === 'string') {
+      const site = b.gsc_site.trim();
+      if (site && !/^(sc-domain:[a-z0-9.-]+|https?:\/\/\S+\/)$/i.test(site)) throw bad('Property: „sc-domain:belkai.de“ (Domain-Property) oder vollständige URL mit / am Ende, z. B. „https://www.belkai.de/“');
+      setSetting(db, 'gsc_site', site);
+    }
+    if (b.gsc_service_account && String(b.gsc_service_account).trim()) saveServiceAccount(db, String(b.gsc_service_account).trim());
+    if (b.gsc_remove) { setSetting(db, 'gsc_service_account', ''); }
     if (b.ai_daily_limit !== undefined && b.ai_daily_limit !== '') {
       const n = Number(b.ai_daily_limit);
       if (!Number.isInteger(n) || n < 0 || n > 100000) throw bad('KI-Tagesgrenze: ganze Zahl zwischen 0 und 100000');
@@ -506,6 +527,18 @@ export function scheduleConfig(db) {
   };
 }
 
+/** Abgleich mit der Search Console im Hintergrund (dauert je nach Datenmenge bis zu einigen Minuten). */
+export const seoJob = { running: false, startedAt: null, finishedAt: null, result: null, error: null };
+export function startSeoJob(db) {
+  if (seoJob.running) return false;
+  Object.assign(seoJob, { running: true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null });
+  syncGsc(db)
+    .then((r) => { seoJob.result = r; invalidatePriceList(); })
+    .catch((e) => { seoJob.error = e.message; console.error('Abgleich Search Console:', e.message); })
+    .finally(() => { seoJob.running = false; seoJob.finishedAt = new Date().toISOString(); });
+  return true;
+}
+
 export function startScheduler(db) {
   const done = new Set(); // "YYYY-MM-DD-HH" – pro Zeitfenster nur ein Lauf (Modus slots)
   let ownRefreshing = false;
@@ -514,6 +547,12 @@ export function startScheduler(db) {
     let next = 30;
     try {
       const cfg = scheduleConfig(db);
+      // Search Console täglich abgleichen (fehlgeschlagene Versuche frühestens nach 6 Stunden erneut)
+      const retryOk = Date.now() - (Date.parse(getSetting(db, 'gsc_tried_at') || 0) || 0) > 6 * 3600 * 1000;
+      if (!seoJob.running && gscConfig(db).configured && Date.now() - (Date.parse(getSetting(db, 'gsc_synced_at') || 0) || 0) > 24 * 3600 * 1000 && retryOk) {
+        setSetting(db, 'gsc_tried_at', new Date().toISOString());
+        startSeoJob(db);
+      }
       // Eigene Sitemap täglich neu einlesen (erkennt offline gegangene Artikel)
       const ownUrls = sitemapList({ sitemap_url: getSetting(db, 'own_sitemap_url') });
       const lastOwn = Date.parse(getSetting(db, 'own_sitemap_fetched_at') || 0) || 0;

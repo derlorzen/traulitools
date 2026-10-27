@@ -32,9 +32,17 @@ const BUCKETS = [
   { label: 'über 10 % teurer', from: 10, to: Infinity },
 ];
 
+const pageKeyOf = (u) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/+$/, '')).toLowerCase(); } catch { return null; } };
+function demand(seo, url) {
+  const r = url ? seo.get(pageKeyOf(url)) : null;
+  return r ? { impressions: r.impressions, clicks: r.clicks, search_position: Math.round(r.position * 10) / 10 } : { impressions: null, clicks: null, search_position: null };
+}
+
 export function analyse(db, rules = RULES) {
   const now = Date.now();
-  const tracked = db.prepare('SELECT id, number, name, manufacturer, price FROM products WHERE active=1 AND tracked=1 AND offline_since IS NULL').all();
+  const tracked = db.prepare('SELECT id, number, name, manufacturer, price, url FROM products WHERE active=1 AND tracked=1 AND offline_since IS NULL').all();
+  // Nachfrage aus der Search Console (letzte 28 Tage) je Produktseite, falls angebunden
+  const seo = new Map(db.prepare('SELECT page, clicks, impressions, position FROM seo_pages').all().map((r) => [r.page, r]));
   const comps = db.prepare('SELECT id, name FROM competitors WHERE enabled=1 ORDER BY position, id').all();
   const ms = db
     .prepare(
@@ -70,6 +78,7 @@ export function analyse(db, rules = RULES) {
     const gap = r1(((p.price - low.price) / low.price) * 100);
     const base = {
       id: p.id, number: p.number, name: p.name, brand: p.manufacturer, own_price: p.price,
+      ...demand(seo, p.url),
       cheapest: low.price, cheapest_competitor: low.competitor, gap_percent: gap, diff: r2(p.price - low.price), offers: ok.length,
       cheapest_unavailable: lowAny.price < low.price - 0.004 ? { competitor: lowAny.competitor, price: lowAny.price } : null,
       prices: ok.map((m) => ({ competitor: m.competitor, price: m.price, out_of_stock: m.availability === 'out_of_stock' })),

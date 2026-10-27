@@ -93,6 +93,10 @@ CREATE TABLE IF NOT EXISTS ai_reports (
   result TEXT NOT NULL,
   usage TEXT
 );
+CREATE TABLE IF NOT EXISTS seo_pages (page TEXT PRIMARY KEY, url TEXT, clicks REAL, impressions REAL, ctr REAL, position REAL);
+CREATE TABLE IF NOT EXISTS seo_queries (page TEXT NOT NULL, query TEXT NOT NULL, clicks REAL, impressions REAL, ctr REAL, position REAL);
+CREATE INDEX IF NOT EXISTS idx_seo_queries_page ON seo_queries(page);
+CREATE TABLE IF NOT EXISTS seo_daily (date TEXT PRIMARY KEY, clicks REAL, impressions REAL, ctr REAL, position REAL);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT NOT NULL,
