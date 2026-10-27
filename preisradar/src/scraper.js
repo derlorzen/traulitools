@@ -3,6 +3,7 @@ import { extractProduct, findCandidates } from './extract.js';
 import { normId, sleep, tokens, jaccard } from './util.js';
 import { aiConfig } from './ai.js';
 import { sitemapCandidates, hasSitemap, refreshSitemaps, sitemapDue } from './sitemap.js';
+import { computeTiers, tierConfig, dueByTier } from './tiers.js';
 import { deriveTemplates, applyTemplates, loadTemplates, learnTemplates, scoreTemplates } from './templates.js';
 import { pageDigest, linkList, aiPick, aiExtract, aiVerdict, aiNote, aiBudgetLeft, resetAiBudget, aiCallCount, CONFIDENT } from './aiscrape.js';
 
@@ -44,7 +45,8 @@ function updateMatch(db, id, fields) {
 
 function recordPrice(db, matchId, price, now) {
   const last = db.prepare('SELECT price, at FROM price_history WHERE match_id=? ORDER BY at DESC LIMIT 1').get(matchId);
-  if (!last || last.price !== price || Date.parse(now) - Date.parse(last.at) > 10 * HOUR) {
+  // nur bei Preisänderung speichern, sonst einmal pro Woche ein Stützpunkt (hält die Datenbank bei großen Sortimenten klein)
+  if (!last || last.price !== price || Date.parse(now) - Date.parse(last.at) > 7 * 24 * HOUR) {
     db.prepare('INSERT INTO price_history(match_id, price, at) VALUES (?,?,?)').run(matchId, price, now);
   }
 }
@@ -94,6 +96,8 @@ export async function processItem(db, comp, product, match, now = new Date().toI
     // Abrufe je Tag zählen (Grenze: höchstens zwei automatische Prüfungen am Tag)
     const day = berlinDay();
     db.prepare('UPDATE matches SET check_count=CASE WHEN check_day=? THEN check_count+1 ELSE 1 END, check_day=? WHERE id=?').run(day, day, match.id);
+    // erfolglose Suchen in Folge zählen (nach 4 wird nur noch monatlich gesucht)
+    db.prepare("UPDATE matches SET miss_count=CASE WHEN status='not_found' THEN miss_count+1 WHEN status IN ('ok','review') THEN 0 ELSE miss_count END WHERE id=?").run(match.id);
   }
 }
 
@@ -298,15 +302,6 @@ async function processItemInner(db, comp, product, match, now, ai) {
   }
 }
 
-function isDue(m, force, now, minH = MIN_INTERVAL_H) {
-  if (force) return true;
-  if (!m.last_checked) return true;
-  const age = now - Date.parse(m.last_checked);
-  if (m.status === 'ok' || m.status === 'review') return age > minH * HOUR;
-  if (m.status === 'error') return age > 6 * HOUR;
-  if (m.status === 'pending') return true;
-  return age > 7 * 24 * HOUR; // not_found, nourl, blocked: nur selten erneut
-}
 
 /** Lauf starten (läuft im Hintergrund). Liefert false, wenn bereits einer läuft. */
 /**
@@ -338,24 +333,30 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
 
   resetAiBudget();
   const aiCfg = aiConfig(db);
+  // Stufen aktualisieren (A = täglich, B = alle paar Tage); bei Einzelprüfung nicht nötig
+  if (!productId) { try { computeTiers(db); } catch (e) { console.error('Stufen:', e.message); } }
+  const tiers = new Map(db.prepare('SELECT id, tier FROM products').all().map((r) => [r.id, r.tier]));
+  const tcfg = { refreshH: Math.max(minIntervalH, MIN_GAP_H), bDays: tierConfig(db).bDays };
+  const rank = (it) => (tiers.get(it.p.id) === 'A' ? 0 : 2) + (!it.m.last_checked || it.m.status === 'pending' ? 0 : 1); // A-Erstsuche, A, B-Erstsuche, B
   const queues = comps.map((c) => {
     const rows = db.prepare('SELECT * FROM matches WHERE competitor_id=?').all(c.id);
     const byProduct = new Map(rows.map((r) => [r.product_id, r]));
     const items = prods
       .map((p) => ({ p, m: byProduct.get(p.id) }))
       .filter(({ m }) => m)
-      .sort((a, b) => (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''));
+      .sort((a, b) => rank(a) - rank(b) || (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''));
     // Gesamtabrufe (ohne einzelnen Artikel) halten die Tagesgrenzen ein; „Prüfen“ für einen Artikel ist davon ausgenommen
     const limited = productId || force ? items : items.filter(({ m }) => withinDailyLimits(m, now));
-    const due = limited.filter(({ m }) => isDue(m, force || Boolean(productId), now, Math.max(minIntervalH, productId ? 0 : MIN_GAP_H)));
+    const due = productId || force ? limited : limited.filter(({ p, m }) => dueByTier(m, tiers.get(p.id), now, tcfg));
     // Volle Pakete: sind weniger Artikel fällig als die Paketgröße, wird mit den am längsten nicht geprüften aufgefüllt
-    // (frühestens eine Stunde nach der letzten Prüfung).
+    // (frühestens 24 Stunden nach der letzten Prüfung, nicht gefundene nie).
     if (fill && limitPerCompetitor && due.length < limitPerCompetitor) {
       const taken = new Set(due.map(({ p }) => p.id));
-      for (const it of limited) {
+      const oldest = [...limited].sort((a, b) => (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''));
+      for (const it of oldest) {
         if (due.length >= limitPerCompetitor) break;
-        if (taken.has(it.p.id) || (it.m.last_checked && now - Date.parse(it.m.last_checked) < HOUR)) continue;
-        if (['not_found', 'nourl', 'blocked'].includes(it.m.status)) continue; // nicht gefunden: nur wöchentlich (über isDue)
+        if (taken.has(it.p.id) || (it.m.last_checked && now - Date.parse(it.m.last_checked) < 24 * HOUR)) continue;
+        if (['not_found', 'nourl', 'blocked'].includes(it.m.status)) continue;
         due.push(it);
       }
     }

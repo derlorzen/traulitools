@@ -125,12 +125,13 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   if (!compCols.includes('sitemap_url')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_url TEXT');
   if (!compCols.includes('sitemap_fetched_at')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_fetched_at TEXT');
   const mCols = db.prepare('PRAGMA table_info(matches)').all().map((c) => c.name);
+  if (!mCols.includes('miss_count')) db.exec('ALTER TABLE matches ADD COLUMN miss_count INTEGER NOT NULL DEFAULT 0');
   if (!mCols.includes('check_day')) db.exec('ALTER TABLE matches ADD COLUMN check_day TEXT');
   if (!mCols.includes('check_count')) db.exec('ALTER TABLE matches ADD COLUMN check_count INTEGER NOT NULL DEFAULT 0');
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_tried_at')) db.exec('ALTER TABLE matches ADD COLUMN ai_tried_at TEXT');
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_note')) db.exec('ALTER TABLE matches ADD COLUMN ai_note TEXT');
   const prodCols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
-  for (const [c, t] of [['purchase_price', 'REAL'], ['tax_rate', 'REAL'], ['stock', 'INTEGER'], ['sw_id', 'TEXT']]) if (!prodCols.includes(c)) db.exec(`ALTER TABLE products ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [['purchase_price', 'REAL'], ['tax_rate', 'REAL'], ['stock', 'INTEGER'], ['sw_id', 'TEXT'], ['tier', 'TEXT'], ['tier_reason', 'TEXT'], ['tier_pin', 'INTEGER NOT NULL DEFAULT 0']]) if (!prodCols.includes(c)) db.exec(`ALTER TABLE products ADD COLUMN ${c} ${t}`);
   if (!prodCols.includes('offline_since')) db.exec('ALTER TABLE products ADD COLUMN offline_since TEXT');
   const compCols2 = db.prepare('PRAGMA table_info(competitors)').all().map((c) => c.name);
   if (!compCols2.includes('sitemap_categories')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_categories TEXT');

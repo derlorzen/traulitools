@@ -172,7 +172,7 @@ function renderPrices(root) {
   const reload = () => loadRows(true);
   let typingTimer;
   const typed = (key) => (e) => { state[key] = e.target.value; clearTimeout(typingTimer); typingTimer = setTimeout(reload, 250); };
-  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline'].includes(state.filter) ? 1 : 0);
+  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'tierA'].includes(state.filter) ? 1 : 0);
   const reset = () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '' }); render(); };
 
   root.append(
@@ -206,7 +206,11 @@ function renderPrices(root) {
       h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
         h('span', { class: 'pmeta' }, 'Nur beobachtete Artikel werden bei Mitbewerbern abgeglichen.'),
         h('button', { class: 'btn small', onclick: guard(() => track(null, true)) }, 'Gefilterte beobachten'),
-        h('button', { class: 'btn small', onclick: guard(() => track(null, false)) }, 'Gefilterte nicht beobachten'))),
+        h('button', { class: 'btn small', onclick: guard(() => track(null, false)) }, 'Gefilterte nicht beobachten')),
+      h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
+        h('span', { class: 'pmeta' }, 'Zusätzlich zu den automatisch gewählten Artikeln täglich prüfen:'),
+        h('button', { class: 'btn small', onclick: guard(() => pinFiltered(true)) }, 'Gefilterte täglich prüfen'),
+        h('button', { class: 'btn small', onclick: guard(() => pinFiltered(false)) }, 'Gefilterte nicht mehr von Hand'))),
     h('div', { class: 'tablewrap', id: 'tablewrap' }));
   buildTable();
   loadRows(true);
@@ -220,7 +224,7 @@ function renderChips() {
     chip('review', 'zu prüfen', 'warn'), chip('none', 'ohne Vergleichspreis'));
   document.getElementById('chips-more')?.replaceChildren(
     chip('equal', 'gleichauf'), chip('moved', 'Preis geändert'), chip('problem', 'Fehler oder gesperrt', 'bad'),
-    chip('notFound', 'nicht gefunden'), chip('oos', 'Mitbewerber ausverkauft'), chip('offline', 'bei mir offline', 'warn'));
+    chip('notFound', 'nicht gefunden'), chip('oos', 'Mitbewerber ausverkauft'), chip('offline', 'bei mir offline', 'warn'), chip('tierA', 'täglich geprüft'));
   const sel = document.getElementById('brandsel');
   if (sel && sel.options.length <= 1 && list.brands.length) sel.append(...list.brands.map((b) => h('option', { value: b, selected: b === state.brand }, b)));
 }
@@ -305,6 +309,7 @@ function rowEl(p) {
       h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.mpn && p.mpn !== p.number ? `HAN ${p.mpn}` : null].filter(Boolean).join(' · ')),
       econLine(p),
       p.seo ? h('div', { class: 'seoline', title: `Google, letzte 28 Tage: ${p.seo.clicks} Klicks, ${p.seo.impressions} Impressionen, Ø Position ${p.seo.position}` }, `${nf.format(p.seo.impressions)} Impr. · ${nf.format(p.seo.clicks)} Klicks · Pos. ${nf1.format(p.seo.position)}`) : null,
+      tierTag(p),
       p.offline_since ? h('span', { class: 'tag warn', title: `Seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar` }, 'bei dir offline') : null),
     h('td', { class: `own ${position(p, a)?.tone ?? ''}`, 'data-label': d.own.name }, p.price != null ? eur.format(p.price) : '–'),
     a.cells.map((cell) => matchCell(p, a, cell)),
@@ -313,8 +318,23 @@ function rowEl(p) {
       a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `günstigster: ${a.ok.find(({ m }) => m.price === a.min)?.c.name ?? ''}`)]
         : a.kind === 'cheapest' ? ['günstigster', h('small', {}, a.min - p.price > 0.004 ? `${eur.format(a.min - p.price)} Vorsprung` : 'gleichauf')]
           : h('span', { class: 'tag mute' }, '–')) : null,
-    d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, checkButton(p.id)) : null);
+    d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, checkButton(p.id), pinButton(p))) : null);
   return tr;
+}
+
+/** Lagebild: wie oft geprüft wird, Fortschritt der Erstzuordnung und Aktualität je Stufe. */
+function tiersFacts(t, sch) {
+  if (!t) return [h('dt', {}, 'Aktualität'), h('dd', {}, `jeder Artikel höchstens alle ${sch.refresh} Stunden`)];
+  const pct = (v) => (v == null ? '–' : `${String(v).replace('.', ',')} %`);
+  const prog = t.matches ? Math.round((t.checked / t.matches) * 1000) / 10 : 100;
+  return [
+    h('dt', {}, 'Prüf-Rhythmus'), h('dd', {}, h('button', { class: 'linkbtn', title: 'Täglich geprüfte Artikel in der Preisliste zeigen', onclick: () => { state.filter = 'tierA'; state.more = true; setTab('preise'); } }, `${t.a.toLocaleString('de-DE')} täglich`),
+      `${t.pinned ? ` (davon ${t.pinned.toLocaleString('de-DE')} von Hand)` : ''}, ${t.b.toLocaleString('de-DE')} alle ${t.bDays} Tage`),
+    t.open ? [h('dt', {}, 'Erstzuordnung'), h('dd', {},
+      h('div', { class: 'aimeter', title: `${t.checked} von ${t.matches} Zuordnungen mindestens einmal geprüft` }, h('div', { style: `width:${Math.min(100, prog)}%` })),
+      `${pct(prog)} erledigt, ${t.open.toLocaleString('de-DE')} offen${t.days_left ? `, noch etwa ${t.days_left < 1 ? 'einen Tag' : `${String(Math.ceil(t.days_left)).replace('.', ',')} Tage`}` : ''}`)] : null,
+    h('dt', {}, 'Aktualität'), h('dd', {}, `täglich geprüfte: ${pct(t.fresh_a)} von heute, übrige: ${pct(t.fresh_b)} im Rhythmus`),
+  ];
 }
 
 /** Verkäufe, Bestand und Marge eines Artikels in einer Zeile. */
@@ -342,6 +362,40 @@ function checkButton(id, label = 'Prüfen') {
   }) }, label);
   return b;
 }
+/** Prüf-Stufe eines Artikels als kleines Etikett (nur bei täglicher Prüfung). */
+function tierTag(p) {
+  if (p.tier !== 'A') return null;
+  return h('span', { class: `tag tier${p.tier_pin ? ' pinned' : ''}`, title: `Wird täglich bei den Mitbewerbern abgefragt: ${p.tier_reason || 'von Hand gesetzt'}` }, p.tier_pin ? 'täglich (von Hand)' : 'täglich');
+}
+
+/** Artikel von Hand auf tägliche Prüfung setzen bzw. zurücknehmen. */
+function pinButton(p, long = false) {
+  const on = Boolean(p.tier_pin);
+  const label = on ? (long ? 'Nicht mehr täglich prüfen' : 'täglich ✓') : (long ? 'Täglich prüfen' : 'täglich');
+  const b = h('button', { class: `btn small pin${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false',
+    title: on ? 'Von Hand auf tägliche Prüfung gesetzt. Klicken, um das zurückzunehmen; danach entscheiden wieder Verkäufe, Preisbewegung und Google-Daten.' : 'Diesen Artikel immer täglich bei den Mitbewerbern prüfen, unabhängig von Verkäufen und Google-Daten',
+    onclick: guard(async () => {
+      b.disabled = true;
+      try {
+        const r = await api('/api/products/pin', { body: { ids: [p.id], pin: !on } });
+        toast(on ? 'Wird wieder automatisch eingestuft' : 'Wird ab jetzt täglich geprüft');
+        replaceRow(r.product);
+        if (state.selected === p.id) openDrawer(p.id, r.product);
+      } finally { b.disabled = false; }
+    }) }, label);
+  return b;
+}
+
+/** Gefilterte Artikel von Hand auf täglich setzen bzw. zurücknehmen. */
+async function pinFiltered(pin) {
+  const n = list.total;
+  if (!n) return toast('Keine Artikel im Filter', true);
+  if (pin && n > 200 && !confirm(`${n.toLocaleString('de-DE')} Artikel täglich prüfen? Das erhöht die Zahl der Abfragen bei den Mitbewerbern deutlich.`)) return;
+  const r = await api('/api/products/pin', { body: { query: listQuery(), pin } });
+  toast(pin ? `${r.changed} Artikel werden täglich geprüft` : `${r.changed} Artikel wieder automatisch eingestuft`);
+  await refresh();
+}
+
 function replaceRow(p) {
   const i = list.rows.findIndex((x) => x.id === p.id);
   if (i >= 0) list.rows[i] = p;
@@ -415,8 +469,12 @@ async function openDrawer(id, given = null) {
       p.purchase_price > 0 ? h('span', { class: 'pmeta' }, `EK ${eur.format(p.purchase_price)} netto`) : null,
       p.url ? h('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, 'im Shop öffnen') : null,
       h('span', { class: 'spacer' }),
+      pinButton(p, true),
       checkButton(p.id, 'Jetzt alle Mitbewerber prüfen')),
     econLine(p),
+    p.tracked && !p.offline_since && p.tier ? h('p', { class: 'pmeta tierline' }, p.tier === 'A'
+      ? `Abfrage bei Mitbewerbern: täglich, weil ${p.tier_reason || 'von Hand gesetzt'}.`
+      : `Abfrage bei Mitbewerbern: alle ${state.data.tiers?.bDays ?? 4} Tage (keine Verkäufe, Preisbewegung oder Google-Nachfrage erfasst).`) : null,
     p.google?.suggested && Math.abs(p.google.suggested - p.price) >= 0.01 ? h('p', { class: 'note' }, `Google-Preisvorschlag: ${eur.format(p.google.suggested)}${p.google.conversions_change != null ? `, erwartet ${p.google.conversions_change > 0 ? '+' : ''}${Math.round(p.google.conversions_change * 100)} % Verkäufe in Shopping` : ''}.`) : null,
     h('h3', { style: 'margin-top:18px' }, 'Preisverlauf'), histBox,
     h('h3', { style: 'margin-top:22px' }, 'Bei Google (letzte 28 Tage)'), seoDrawerBox(p.id),
@@ -847,7 +905,7 @@ async function renderStart(root) {
     h('div', { class: 'list-h' }, h('h3', {}, 'Betrieb'), h('button', { class: 'linkbtn', onclick: () => setTab('import') }, 'Läufe ansehen')),
     h('dl', { class: 'facts' },
       h('dt', {}, 'Abruf'), h('dd', {}, d.scrape.running ? `läuft: ${d.scrape.done} von ${d.scrape.total}` : sch.mode === 'rolling' ? `verteilt, ${sch.batch} Artikel je Mitbewerber, Pause ${sch.interval}–${sch.interval + sch.jitter} s nach jedem Lauf` : `feste Zeiten ${sch.hours.join(', ')} Uhr`),
-      h('dt', {}, 'Aktualität'), h('dd', {}, `jeder Artikel höchstens alle ${sch.refresh} Stunden`),
+      tiersFacts(d.tiers, sch),
       h('dt', {}, 'Artikel'), h('dd', {}, `${d.counts.all} gesamt, ${d.counts.tracked} beobachtet`),
       imp?.running ? [h('dt', {}, 'Import'), h('dd', {}, `läuft: ${imp.done} von ${imp.total}`)] : imp?.finishedAt ? [h('dt', {}, 'Letzter Import'), h('dd', {}, `${dt.format(new Date(imp.finishedAt))}, ${imp.created} neu, ${imp.updated} aktualisiert${imp.errors ? `, ${imp.errors} Fehler` : ''}`)] : null,
       h('dt', {}, 'Shopware'), h('dd', {}, d.config.shopware ? (d.config.swSynced ? `Abgleich ${dt.format(new Date(d.config.swSynced))}` : 'verbunden, Abgleich steht aus') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht verbunden (Verkäufe, Einkaufspreise)')),
@@ -1098,7 +1156,9 @@ function renderHelp(root) {
       sch.mode === 'rolling'
         ? p(`Preisradar arbeitet in Paketen: Pro Mitbewerber werden bis zu ${sch.batch} Artikel abgefragt, danach folgt eine Pause von ${sch.interval} bis ${sch.interval + sch.jitter} Sekunden, erst dann beginnt das nächste Paket. Zwischen zwei Seitenaufrufen beim selben Shop liegen einige Sekunden. Jeder Artikel wird höchstens zweimal am Tag automatisch abgefragt, mit mindestens ${sch.refresh} Stunden Abstand. So verteilt sich die Last über den Tag, ohne dass ein Shop ständig dieselben Seiten sieht.`)
         : p(`Preisradar fragt zu festen Zeiten ab (${sch.hours.map((x) => String(x).padStart(2, '0') + ':00').join(', ')} Uhr), jeder Artikel höchstens alle ${sch.refresh} Stunden.`),
-      p('Artikel, die bei einem Mitbewerber nicht gefunden wurden, werden dort nur einmal pro Woche erneut gesucht. Mit „Prüfen“ in der Preisliste fragst du einen Artikel jederzeit sofort bei allen Mitbewerbern ab. Einstellbar unter ', go('einstellungen', 'Einstellungen → Abrufplan'), '.'),
+      p(h('b', {}, 'Wichtige Artikel täglich, der Rest im Wechsel: '), `Bei großen Sortimenten werden nicht alle Artikel jeden Tag abgefragt. Täglich geprüft werden die ${(d.tiers?.size ?? sch.tier_a_size ?? 1000).toLocaleString('de-DE')} wichtigsten: zuerst Artikel, die sich in den letzten 90 Tagen verkauft haben (aus Shopware, nach Umsatz), dann solche, bei denen ein Mitbewerber in der letzten Woche den Preis geändert hat, dann Artikel mit viel Google-Nachfrage und solche über dem Google-Vergleichspreis. Alle übrigen werden alle ${d.tiers?.bDays ?? sch.tier_b_days ?? 4} Tage abgefragt. Die Einstufung wird laufend neu berechnet. Mit „täglich“ in der Preisliste oder in der Detailansicht setzt du einzelne Artikel zusätzlich von Hand auf tägliche Prüfung.`),
+      p('Neue Artikel werden zuerst einmal bei allen Mitbewerbern gesucht, die täglich geprüften vorneweg. Den Fortschritt siehst du im Lagebild unter „Betrieb“. Der Preisverlauf speichert einen Preis nur, wenn er sich ändert, und sonst einmal pro Woche; so bleibt die Datenbank auch bei vielen Artikeln schlank.'),
+      p('Artikel, die bei einem Mitbewerber nicht gefunden wurden, werden dort einmal pro Woche erneut gesucht, nach vier erfolglosen Versuchen nur noch monatlich. Mit „Prüfen“ in der Preisliste fragst du einen Artikel jederzeit sofort bei allen Mitbewerbern ab. Einstellbar unter ', go('einstellungen', 'Einstellungen → Abrufplan'), '.'),
       p('Preisradar gibt sich offen als „PreisradarBot“ zu erkennen und hält sich an die Regeln, die jeder Shop in seiner robots.txt festlegt. Seiten, die ein Shop für Programme sperrt, werden nicht abgerufen.')),
 
     sec('h-ki', 'Was die KI macht und was sie kostet',
@@ -1418,7 +1478,9 @@ async function renderSettings(root) {
       f('Artikel je Mitbewerber und Paket', 'batch', sch.batch, { type: 'number' }),
       f('Abstand zwischen Paketen (Sekunden)', 'interval', sch.interval, { type: 'number' }),
       f('Zufälliger Aufschlag bis (Sekunden)', 'jitter', sch.jitter, { type: 'number' }),
-      f('Mindestabstand je Artikel (Stunden)', 'refresh', sch.refresh, { type: 'number', hint: 'Mindestens 8. Jeder Artikel wird höchstens zweimal am Tag automatisch abgefragt.' })),
+      f('Mindestabstand je Artikel (Stunden)', 'refresh', sch.refresh, { type: 'number', hint: 'Mindestens 8. Jeder Artikel wird höchstens zweimal am Tag automatisch abgefragt.' }),
+      f('Täglich geprüfte Artikel', 'tier_a_size', sch.tier_a_size, { type: 'number', hint: 'Die wichtigsten Artikel nach Verkäufen, Preisbewegung und Google-Nachfrage. Von Hand gesetzte kommen dazu.' }),
+      f('Übrige Artikel alle … Tage', 'tier_b_days', sch.tier_b_days, { type: 'number', hint: 'Nicht gefundene Artikel werden wöchentlich erneut gesucht, nach vier erfolglosen Versuchen monatlich.' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: { schedule: Object.fromEntries(new FormData(plan)) } }); toast('Abrufplan gespeichert'); await refresh(); }) }, 'Speichern')));
 

@@ -23,6 +23,7 @@ import { gscSites, syncGsc, saveServiceAccount, gscConfig } from './gsc.js';
 import { seoOverview, seoStatus, productSeo } from './seo.js';
 import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from './digest.js';
 import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
+import { computeTiers, tierConfig, tierStatus } from './tiers.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -108,6 +109,7 @@ export function createApp(db, { dataDir = null } = {}) {
       counts,
       schedule: scheduleConfig(db),
       offline: db.prepare('SELECT COUNT(*) AS n FROM products WHERE active=1 AND offline_since IS NOT NULL').get().n,
+      tiers: tierStatus(db),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
       config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
@@ -394,6 +396,18 @@ export function createApp(db, { dataDir = null } = {}) {
     res.json({ set, skipped: skipped.length });
   }));
 
+  // --- „Täglich prüfen“ von Hand (Stufe A unabhängig von den automatischen Regeln) ---
+  app.post('/api/products/pin', wrap((req, res) => {
+    let ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length && req.body?.query && typeof req.body.query === 'object') ids = listProducts(db, { ...req.body.query, ids: true, limit: 1 }).ids;
+    if (!ids.length) throw bad('Keine Artikel ausgewählt');
+    const v = req.body?.pin === false ? 0 : 1;
+    const upd = db.prepare('UPDATE products SET tier_pin=? WHERE id=?');
+    tx(db, () => { for (const id of ids) upd.run(v, id); });
+    const dist = computeTiers(db, { force: true });
+    res.json({ ok: true, changed: ids.length, tiers: dist, product: ids.length === 1 ? getProduct(db, ids[0]) : undefined });
+  }));
+
   // --- Beobachtete Artikel (nur diese werden bei Mitbewerbern abgeglichen) ---
   app.post('/api/products/track', wrap((req, res) => {
     let ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
@@ -454,7 +468,7 @@ export function createApp(db, { dataDir = null } = {}) {
     if (b.schedule && typeof b.schedule === 'object') {
       const sc = b.schedule;
       if (['rolling', 'slots'].includes(sc.mode)) setSetting(db, 'scrape_mode', sc.mode);
-      for (const [k, key] of [['batch', 'scrape_batch'], ['interval', 'scrape_interval'], ['jitter', 'scrape_jitter'], ['refresh', 'scrape_refresh_hours']]) {
+      for (const [k, key] of [['batch', 'scrape_batch'], ['interval', 'scrape_interval'], ['jitter', 'scrape_jitter'], ['refresh', 'scrape_refresh_hours'], ['tier_a_size', 'tier_a_size'], ['tier_b_days', 'tier_b_days']]) {
         if (sc[k] !== undefined && sc[k] !== '' && Number.isFinite(Number(sc[k]))) setSetting(db, key, String(Number(sc[k])));
       }
     }
@@ -591,6 +605,8 @@ export function scheduleConfig(db) {
     interval: clamp(getSetting(db, 'scrape_interval'), 10, 86400, 200), // Sekunden zwischen den Paketen
     jitter: clamp(getSetting(db, 'scrape_jitter'), 0, 3600, 100), // zufälliger Aufschlag in Sekunden
     refresh: clamp(getSetting(db, 'scrape_refresh_hours'), 8, 168, 12), // Mindestabstand je Artikel in Stunden (mind. 8, höchstens zweimal täglich)
+    tier_a_size: tierConfig(db).size, // Artikel, die täglich geprüft werden (Stufe A)
+    tier_b_days: tierConfig(db).bDays, // übrige Artikel alle x Tage (Stufe B)
     hours: SCRAPE_HOURS,
   };
 }
@@ -613,7 +629,7 @@ export function startShopwareJob(db) {
   if (swJob.running) return false;
   Object.assign(swJob, { running: true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null });
   syncShopware(db)
-    .then((r) => { swJob.result = r; setSetting(db, 'sw_synced_at', new Date().toISOString()); setSetting(db, 'sw_last', JSON.stringify(r)); invalidatePriceList(); })
+    .then((r) => { swJob.result = r; setSetting(db, 'sw_synced_at', new Date().toISOString()); setSetting(db, 'sw_last', JSON.stringify(r)); try { computeTiers(db, { force: true }); } catch { /* beim nächsten Lauf */ } invalidatePriceList(); })
     .catch((e) => { swJob.error = e.message; console.error('Shopware-Abgleich:', e.message); })
     .finally(() => { swJob.running = false; swJob.finishedAt = new Date().toISOString(); });
   return true;

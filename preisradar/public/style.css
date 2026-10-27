@@ -612,3 +612,13 @@ tr.nolink { cursor: default; }
 .econline { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .drawer .econline { font-size: 13px; margin: 0 0 6px; }
 .panel.flush .prices td.prod, .panel.flush .prices th.prod { width: auto; min-width: 180px; max-width: 280px; }
+
+/* Prüf-Stufen: täglich geprüfte Artikel */
+.acts { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+.tag.tier { background: var(--petrol-soft); color: var(--petrol); margin-right: 4px; }
+.tag.tier.pinned { background: var(--petrol); color: #fff; }
+@media (prefers-color-scheme: dark) { .tag.tier.pinned { color: #0b1417; } }
+.btn.pin { color: var(--muted); }
+.btn.pin.on { color: var(--petrol); border-color: var(--petrol); }
+.tierline { margin: 6px 0 0; }
+@media (max-width: 760px) { #tablewrap .prices td.actcell .acts .btn { width: auto; flex: 1; } }

@@ -87,3 +87,9 @@ SMTP unter Einstellungen; Versand einmal täglich zur eingestellten Stunde (Euro
 ## Google Merchant Center
 
 Merchant API (Berichte) mit dem Dienstkonto der Search Console (Scope `content`): Vergleichspreise (`price_competitiveness_product_view`), Preisvorschläge (`price_insights_product_view`), Wettbewerber je Kategorie (`competitive_visibility_competitor_view`). Zuordnung über Angebots-ID = Artikelnummer. Mitbewerber aus Domain anlegen: `POST /api/competitors/from-domain`. Testumgebung: `MERCHANT_API_BASE`.
+
+## Prüf-Stufen für große Sortimente
+
+Bei vielen tausend Artikeln wird nicht alles täglich abgefragt. **Täglich** (Stufe A, Standard 1000 Artikel, einstellbar unter Einstellungen → Abrufplan) werden die wichtigsten Artikel geprüft, in dieser Reihenfolge: von Hand gesetzt, in den letzten 90 Tagen verkauft (Shopware, nach Umsatz), Preisänderung eines Mitbewerbers in den letzten 7 Tagen, Google-Impressionen (Search Console), über dem Google-Vergleichspreis (Merchant Center). Alle **übrigen** (Stufe B) alle 4 Tage (einstellbar). Nicht gefundene Artikel werden wöchentlich, nach 4 erfolglosen Versuchen monatlich erneut gesucht. Neue Zuordnungen werden zuerst einmal gesucht, Stufe A vorneweg. Der Preisverlauf speichert nur Änderungen plus einen Punkt pro Woche.
+
+In der Preisliste setzt „täglich“ (Zeile und Detailansicht) einen Artikel von Hand auf tägliche Prüfung; unter „Weitere Filter“ gibt es den Filter „täglich geprüft“ und die Sammelaktion für gefilterte Artikel. Das Lagebild zeigt unter „Betrieb“ Verteilung, Fortschritt der Erstzuordnung und Aktualität je Stufe. API: `POST /api/products/pin {ids|query, pin}`.
