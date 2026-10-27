@@ -1190,6 +1190,271 @@ function seoDrawerBox(id) {
   return box;
 }
 
+// ---------- Keywords ----------
+const kw = { data: null, filter: 'all', q: '', tag: '', sort: 'position', dir: 'asc', view: 'list', sug: null, sugSrc: 'all', picked: new Set(), poll: null };
+const KW_OUT = 51; // „nicht in den Top 50“ im Diagramm
+
+/** Platzierungsverlauf: Platz 1 oben, „nicht gefunden“ unten. */
+function rankChart(series, { height = 220, depth = 50 } = {}) {
+  const all = series.flatMap((x) => x.points);
+  if (!all.length) return h('p', { class: 'pmeta' }, 'Noch kein Verlauf.');
+  const W = 900, H = height, L = 40, R = 12, T = 10, B = 24;
+  const out = depth + 1;
+  const xs = all.map((p) => Date.parse(p.date));
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const ys = all.map((p) => p.value ?? out);
+  const yMax = Math.min(out, Math.max(10, ...ys));
+  const X = (t) => L + (x1 === x0 ? 0.5 : (t - x0) / (x1 - x0)) * (W - L - R);
+  const Y = (v) => T + ((Math.min(v ?? out, yMax) - 1) / Math.max(1, yMax - 1)) * (H - T - B);
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', class: 'lchart', role: 'img', 'aria-label': 'Platzierungsverlauf' });
+  for (const v of [1, 3, 10, 20, 30, 50].filter((v) => v <= yMax)) {
+    svg.append(s('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: 'var(--line)', 'stroke-dasharray': v === 1 ? '' : '2 4' }),
+      s('text', { x: L - 6, y: Y(v) + 4, 'text-anchor': 'end', 'font-size': 11, fill: 'var(--muted)' }, String(v)));
+  }
+  if (yMax === out) svg.append(s('text', { x: L - 6, y: Y(out) + 4, 'text-anchor': 'end', 'font-size': 10, fill: 'var(--muted)' }, '>' + depth));
+  for (let i = 0; i < 4 && x1 > x0; i++) {
+    const t = x0 + ((x1 - x0) * i) / 3;
+    svg.append(s('text', { x: X(t), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === 3 ? 'end' : 'middle', 'font-size': 11, fill: 'var(--muted)' }, dDay.format(new Date(t))));
+  }
+  for (const se of series) {
+    const pts = se.points.map((p) => [X(Date.parse(p.date)), Y(p.value), p]);
+    svg.append(s('path', { d: pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' '), fill: 'none', stroke: se.color, 'stroke-width': se.width ?? 2, 'stroke-linejoin': 'round', 'stroke-dasharray': se.dash ?? '', class: 'lpath' }));
+    for (const [x, y, p] of pts) svg.append(s('circle', { cx: x, cy: y, r: se.width > 2 ? 3 : 2.2, fill: se.color }, s('title', {}, `${se.name} · ${new Date(p.date).toLocaleDateString('de-DE')}: ${p.value == null ? `nicht in den Top ${depth}` : `Platz ${p.value}`}`)));
+  }
+  return h('div', {}, svg, series.length > 1 ? h('div', { class: 'legend' }, series.map((x) => h('span', {}, h('i', { style: `background:${x.color}` }), x.name))) : null);
+}
+
+/** Kleiner Verlauf in der Tabelle (30 Tage). */
+function rankSpark(hist, depth) {
+  if (!hist?.length) return h('span', { class: 'tag mute' }, '–');
+  const W = 96, H = 26, out = depth + 1;
+  const vals = hist.map((x) => x.p ?? out);
+  const max = Math.min(out, Math.max(10, ...vals));
+  const X = (i) => (hist.length === 1 ? W / 2 : 2 + (i / (hist.length - 1)) * (W - 4));
+  const Y = (v) => 3 + ((Math.min(v, max) - 1) / Math.max(1, max - 1)) * (H - 6);
+  const last = vals[vals.length - 1];
+  return s('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'kspark', 'aria-hidden': 'true' },
+    s('line', { x1: 0, x2: W, y1: Y(Math.min(10, max)), y2: Y(Math.min(10, max)), stroke: 'var(--line)', 'stroke-dasharray': '2 3' }),
+    s('path', { d: vals.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(' '), fill: 'none', stroke: 'var(--petrol)', 'stroke-width': 1.6, 'stroke-linejoin': 'round' }),
+    s('circle', { cx: X(vals.length - 1), cy: Y(last), r: 2.4, fill: last === out ? 'var(--muted)' : 'var(--petrol)' }));
+}
+
+const kwPill = (p, depth) => (p === undefined ? h('span', { class: 'tag mute' }, 'ausstehend') : p == null ? h('span', { class: 'gpill out', title: `nicht unter den ersten ${depth}` }, `>${depth}`) : h('span', { class: `gpill ${gTone(p)}` }, String(p)));
+const kwDelta = (d) => (d == null || d === 0 ? h('span', { class: 'kdelta' }, d === 0 ? '±0' : '') : h('span', { class: `kdelta ${d > 0 ? 'up' : 'down'}`, title: d > 0 ? `${d} Plätze besser` : `${-d} Plätze schlechter` }, `${d > 0 ? '▲' : '▼'} ${Math.abs(d)}`));
+const shortUrl = (u) => { try { const x = new URL(u); return decodeURIComponent(x.pathname).replace(/\/$/, '') || '/'; } catch { return u ?? ''; } };
+
+const KW_FILTERS = {
+  all: ['alle', () => true],
+  top3: ['Top 3', (k) => k.position != null && k.position <= 3, 'good'],
+  top10: ['Top 10', (k) => k.position != null && k.position <= 10, 'good'],
+  p11: ['Platz 11–20', (k) => k.position > 10 && k.position <= 20],
+  p21: ['Platz 21–50', (k) => k.position > 20],
+  out: ['nicht gefunden', (k) => k.position === null, 'bad'],
+  up: ['verbessert', (k) => k.change1 > 0, 'good'],
+  down: ['verschlechtert', (k) => k.change1 < 0, 'bad'],
+  comp: ['Mitbewerber vorn', (k) => k.better > 0, 'warn'],
+  pending: ['ausstehend', (k) => k.position === undefined || k.pending],
+};
+
+async function renderKeywords(root) {
+  const [o, sg] = await Promise.all([api('/api/keywords'), api('/api/keywords/suggestions')]);
+  kw.data = o; kw.sug = sg.suggestions;
+  if ((o.pending || o.sug.running) && !kw.poll) {
+    kw.poll = setInterval(guard(async () => {
+      const x = await api('/api/keywords');
+      if (!x.pending && !x.sug.running) { clearInterval(kw.poll); kw.poll = null; if (state.tab === 'keywords') render(); toast(x.sug.error ? `Vorschläge: ${x.sug.error}` : 'Keyword-Platzierungen aktualisiert', Boolean(x.sug.error)); }
+    }), 15000);
+  }
+  const sm = o.summary;
+  const left = o.limit - sm.count;
+  root.append(h('div', { class: 'pagehead' }, h('h2', {}, 'Keywords'),
+    h('span', { class: 'pmeta' }, `${sm.count} von ${o.limit}`),
+    h('span', { class: 'spacer' }),
+    h('div', { class: 'seg', role: 'group', 'aria-label': 'Ansicht' },
+      h('button', { class: `chip${kw.view === 'list' ? ' on' : ''}`, onclick: () => { kw.view = 'list'; render(); } }, 'Beobachtet'),
+      h('button', { class: `chip${kw.view === 'sug' ? ' on' : ''}`, onclick: () => { kw.view = 'sug'; render(); } }, h('b', {}, String(kw.sug.length)), 'Vorschläge'))));
+
+  // Abrufstatus
+  root.append(h('div', { class: 'panel head kwstatus' },
+    o.configured
+      ? h('div', {}, o.pending ? h('strong', {}, `${o.pending} Abfragen laufen bei DataForSEO, Ergebnisse kommen in einigen Minuten. `) : null,
+        `Geprüft werden die ersten ${o.depth} Google-Ergebnisse (${o.device === 'mobile' ? 'Smartphone' : 'Desktop'}, Deutschland) ${o.every_days === 1 ? 'täglich' : o.every_days === 7 ? 'wöchentlich' : `alle ${o.every_days} Tage`} ab ${o.hour} Uhr. `,
+        `Kosten diesen Monat: ${o.cost_month.toFixed(2).replace('.', ',')} US-$, erwartet etwa ${o.est_month.toFixed(2).replace('.', ',')} US-$ im Monat.`,
+        o.error ? h('div', { class: 'warmtxt' }, o.error) : null)
+      : h('div', {}, h('strong', {}, 'Noch nicht verbunden. '), 'Keywords kannst du schon anlegen; geprüft wird, sobald unter Einstellungen der DataForSEO-Zugang eingetragen ist.'),
+    h('span', { class: 'spacer' }),
+    o.configured ? h('button', { class: 'btn', disabled: o.pending > 0 || !sm.count, onclick: guard(async () => { const r = await api('/api/keywords/check', { method: 'POST', body: {} }); toast(r.posted ? `${r.posted} Abfragen abgegeben, Ergebnisse in einigen Minuten` : 'Alle Keywords sind bereits in Arbeit'); render(); }) }, 'Jetzt alle prüfen')
+      : h('button', { class: 'btn primary', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('kw-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'Zugang einrichten')));
+
+  if (kw.view === 'sug') { root.append(kwSuggestionsPanel(o)); return; }
+
+  // Kennzahlen und Verlauf
+  if (sm.checked) {
+    root.append(h('div', { class: 'kpis' },
+      kpiTile('Ø Position', sm.avg == null ? '–' : nf1.format(sm.avg), `${sm.top50} von ${sm.checked} in den Top ${o.depth}`, 'cool'),
+      kpiTile('Top 3', h('span', { 'data-count': sm.top3 }, String(sm.top3)), sm.out ? `${sm.out} nicht in den Top ${o.depth}` : `von ${sm.checked} geprüften`),
+      kpiTile('Top 10', h('span', { 'data-count': sm.top10 }, String(sm.top10)), 'erste Seite'),
+      kpiTile('Seit der letzten Prüfung', h('span', {}, h('span', { class: 'kdelta up' }, `▲ ${sm.up}`), ' ', h('span', { class: 'kdelta down' }, `▼ ${sm.down}`)), 'verbessert / verschlechtert'),
+      sm.clicks_est ? kpiTile('Geschätzte Klicks', nf.format(sm.clicks_est), 'pro Monat, aus Suchvolumen und Platz') : null));
+    if (o.trend.length > 1) {
+      root.append(h('div', { class: 'panel' }, h('h3', {}, 'Keywords auf Seite 1'), h('p', { class: 'pmeta' }, 'Anzahl der Keywords in den Top 10 und Top 3 je Prüftag'),
+        lineChart([
+          { name: 'Top 10', color: 'var(--petrol)', points: o.trend.map((t) => ({ date: t.date, value: t.top10 })), width: 2.5 },
+          { name: 'Top 3', color: 'var(--good)', points: o.trend.map((t) => ({ date: t.date, value: t.top3 })) },
+        ], { height: 180 })));
+    }
+  }
+
+  // Hinzufügen
+  const ta = h('textarea', { rows: 3, placeholder: 'Ein Keyword pro Zeile, z. B.\nhansgrohe talis e\nwaschtischarmatur schwarz', 'aria-label': 'Neue Keywords' });
+  const tagIn = h('input', { type: 'text', class: 'kwtag', placeholder: 'Gruppe (optional)', list: 'kwtags', 'aria-label': 'Gruppe' });
+  root.append(h('div', { class: 'panel kwadd' },
+    h('div', { class: 'kwaddrow' }, ta,
+      h('div', { class: 'kwaddside' }, tagIn, h('datalist', { id: 'kwtags' }, o.tags.map((t) => h('option', { value: t }))),
+        h('button', { class: 'btn primary', disabled: left <= 0, onclick: guard(async () => {
+          const r = await api('/api/keywords', { body: { keywords: ta.value, tag: tagIn.value } });
+          toast(`${r.added} hinzugefügt${r.duplicate ? `, ${r.duplicate} schon vorhanden` : ''}${r.over_limit ? `, ${r.over_limit} über der Grenze von ${r.limit}` : ''}`, !r.added);
+          render();
+        }) }, 'Hinzufügen'),
+        h('span', { class: 'pmeta' }, left > 0 ? `noch ${left} frei` : 'Grenze erreicht'))),
+    kw.sug.length ? h('p', { class: 'pmeta', style: 'margin:8px 0 0' }, `${kw.sug.length} Vorschläge aus Search Console, Bestsellern${o.sug.fetched_at ? ' und DataForSEO' : ''}: `, h('button', { class: 'linkbtn', onclick: () => { kw.view = 'sug'; render(); } }, 'ansehen')) : null));
+
+  if (!sm.count) { root.append(h('div', { class: 'panel empty' }, h('h3', {}, 'Noch keine Keywords'), h('p', {}, 'Trage oben Suchbegriffe ein oder übernimm Vorschläge.'))); return; }
+
+  // Filter
+  const rows = o.keywords;
+  const base = rows.filter((k) => (!kw.q || k.keyword.includes(kw.q.toLowerCase())) && (!kw.tag || k.tag === kw.tag));
+  const chips = h('div', { class: 'seg' }, Object.entries(KW_FILTERS).map(([key, [label, fn, cls]]) => {
+    const n = base.filter(fn).length;
+    if (!n && key !== 'all' && kw.filter !== key) return null;
+    return h('button', { class: `chip ${cls ?? ''}${kw.filter === key ? ' on' : ''}`, onclick: () => { kw.filter = key; render(); } }, h('b', {}, String(n)), label);
+  }));
+  const tbody = h('tbody', {});
+  const fill = () => {
+    const f = (KW_FILTERS[kw.filter] ?? KW_FILTERS.all)[1];
+    const d = kw.dir === 'desc' ? -1 : 1;
+    const val = { keyword: (k) => k.keyword, position: (k) => (k.position === undefined ? 999 : k.position ?? 500), change: (k) => k.change1 ?? 0, change7: (k) => k.change7 ?? 0, volume: (k) => k.volume ?? -1, better: (k) => k.better, gsc: (k) => k.gsc?.position ?? 999 }[kw.sort] ?? ((k) => k.keyword);
+    const list = base.filter(f).sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : a.keyword.localeCompare(b.keyword, 'de')) * d; });
+    tbody.replaceChildren(...list.map((k) => kwRow(k, o)));
+  };
+  const th = (label, key, firstDir = 'asc', cls = '') => {
+    const on = kw.sort === key;
+    return h('th', { class: `${cls} sortable${on ? ' sorted' : ''}` }, h('button', { class: 'thbtn', onclick: () => { kw.dir = on ? (kw.dir === 'asc' ? 'desc' : 'asc') : firstDir; kw.sort = key; render(); } }, label, on ? (kw.dir === 'desc' ? ' ▼' : ' ▲') : ''));
+  };
+  let tmr;
+  root.append(
+    h('div', { class: 'toolbar' },
+      h('input', { type: 'search', placeholder: 'Keyword suchen', value: kw.q, 'aria-label': 'Keyword suchen', oninput: (e) => { kw.q = e.target.value; clearTimeout(tmr); tmr = setTimeout(render, 200); } }),
+      o.tags.length ? h('select', { 'aria-label': 'Gruppe', onchange: (e) => { kw.tag = e.target.value; render(); } }, h('option', { value: '' }, 'Alle Gruppen'), o.tags.map((t) => h('option', { value: t, selected: t === kw.tag }, t))) : null),
+    h('div', { class: 'toolbar' }, chips),
+    h('div', { class: 'tablewrap kwwrap' }, h('table', { class: 'prices kwtable' },
+      h('thead', {}, h('tr', {},
+        th('Keyword', 'keyword', 'asc', 'prod'), th('Platz', 'position'), th('seit letzter', 'change', 'desc'), th('7 Tage', 'change7', 'desc'),
+        h('th', {}, 'Verlauf'), th('Suchvolumen', 'volume', 'desc'), th('Search Console', 'gsc'), th('Mitbewerber', 'better', 'desc', 'kcomp'), h('th', { class: 'kurl' }, 'Rankende Seite'), h('th', {}, ''))),
+      tbody)));
+  fill();
+}
+
+function kwRow(k, o) {
+  const comps = k.comps.filter((c) => c.position != null).slice(0, 3);
+  return h('tr', { tabindex: 0, onclick: () => openKwDrawer(k.id), onkeydown: (e) => e.key === 'Enter' && openKwDrawer(k.id) },
+    h('td', { class: 'prod' }, h('div', { class: 'pname' }, k.keyword),
+      h('div', { class: 'pmeta' }, [k.tag, k.pending ? 'wird geprüft …' : k.last_checked ? `geprüft ${dt.format(new Date(k.last_checked))}` : 'noch nicht geprüft'].filter(Boolean).join(' · '))),
+    h('td', { class: 'mcell', 'data-label': 'Platz' }, kwPill(k.position, o.depth), k.best != null && k.best !== k.position ? h('small', { class: 'pmeta kbest' }, `beste ${k.best}`) : null),
+    h('td', { class: 'mcell', 'data-label': 'seit letzter Prüfung' }, kwDelta(k.change1)),
+    h('td', { class: 'mcell', 'data-label': '7 Tage' }, kwDelta(k.change7)),
+    h('td', { class: 'mcell', 'data-label': 'Verlauf' }, rankSpark(k.history, o.depth)),
+    h('td', { class: 'mcell', 'data-label': 'Suchvolumen' }, k.volume != null ? nf.format(k.volume) : '–'),
+    h('td', { class: 'mcell', 'data-label': 'Search Console', title: k.gsc ? `Ø Platz ${k.gsc.position} in den letzten 28 Tagen, ${k.gsc.impressions} Impressionen, ${k.gsc.clicks} Klicks` : 'keine Daten aus der Search Console' }, k.gsc ? [`Ø ${nf1.format(k.gsc.position)}`, h('small', { class: 'pmeta kbest' }, `${nf.format(k.gsc.impressions)} Impr.`)] : '–'),
+    h('td', { class: 'mcell kcomp', 'data-label': 'Mitbewerber' }, comps.length ? h('div', { class: 'kcomps' }, comps.map((c) => h('span', { class: `kc${k.position == null || c.position < k.position ? ' ahead' : ''}`, title: `${c.domain} auf Platz ${c.position}` }, c.domain.replace(/\.(de|com|at|ch|eu|net)$/, ''), h('b', {}, String(c.position))))) : h('span', { class: 'tag mute' }, k.comps.length ? 'nicht in den Top ' + o.depth : '–')),
+    h('td', { class: 'mcell kurl', 'data-label': 'Rankende Seite' }, k.product ? h('span', { title: k.url }, k.product.name) : k.url ? h('span', { title: k.url }, shortUrl(k.url)) : '–'),
+    h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('button', { class: 'btn small', title: 'Keyword entfernen', 'aria-label': `${k.keyword} entfernen`, onclick: guard(async () => { if (!confirm(`„${k.keyword}“ mit Verlauf entfernen?`)) return; await api(`/api/keywords/${k.id}`, { method: 'DELETE' }); toast('Entfernt'); render(); }) }, 'Entfernen')));
+}
+
+async function openKwDrawer(id) {
+  const el = document.getElementById('drawer');
+  el.hidden = false;
+  document.body.classList.add('drawer-open');
+  state.selected = null;
+  const top = h('div', { class: 'drawer-top' }, h('button', { class: 'btn small close', onclick: closeDrawer, 'aria-label': 'Detailansicht schließen' }, 'Schließen'));
+  el.replaceChildren(top, h('p', { class: 'pmeta' }, 'Wird geladen …'));
+  const d = await api(`/api/keywords/${id}`).catch((e) => { toast(e.message, true); return null; });
+  if (!d) return;
+  const o = kw.data;
+  const k = d.keyword;
+  const row = o.keywords.find((x) => x.id === id);
+  const COLS = ['#c2410c', '#7c3aed', '#0891b2', '#a16207', '#be185d', '#4d7c0f'];
+  const doms = [...new Set(d.comp_history.map((c) => c.domain))];
+  const series = [{ name: 'du', color: 'var(--petrol)', width: 3, points: d.history.map((x) => ({ date: x.date, value: x.position })) },
+    ...doms.map((dm, i) => ({ name: dm, color: COLS[i % COLS.length], dash: '4 3', points: d.comp_history.filter((c) => c.domain === dm).map((c) => ({ date: c.date, value: c.position })) }))];
+  const tagIn = h('input', { type: 'text', class: 'kwtag', value: k.tag ?? '', list: 'kwtags', placeholder: 'Gruppe', 'aria-label': 'Gruppe' });
+  el.replaceChildren(top,
+    h('h2', {}, k.keyword),
+    h('p', { class: 'pmeta' }, [k.volume != null ? `${nf.format(k.volume)} Suchen im Monat` : null, k.cpc ? `Klickpreis ca. ${eur.format(k.cpc)}` : null, k.last_checked ? `zuletzt geprüft ${dt.format(new Date(k.last_checked))}` : 'noch nicht geprüft'].filter(Boolean).join(' · ')),
+    h('div', { class: 'row', style: 'margin:10px 0' },
+      h('strong', {}, k.last_checked ? (k.position ? `Platz ${k.position}` : `nicht in den Top ${o.depth}`) : 'ausstehend'),
+      row?.gsc ? h('span', { class: 'pmeta' }, `Search Console: Ø Platz ${nf1.format(row.gsc.position)}, ${nf.format(row.gsc.impressions)} Impressionen, ${nf.format(row.gsc.clicks)} Klicks (28 Tage)`) : null,
+      h('span', { class: 'spacer' }),
+      o.configured ? h('button', { class: 'btn small', disabled: row?.pending, onclick: guard(async () => { await api('/api/keywords/check', { body: { ids: [id] } }); toast('Abfrage abgegeben, Ergebnis in einigen Minuten'); render(); }) }, row?.pending ? 'wird geprüft …' : 'Jetzt prüfen') : null),
+    k.url ? h('p', {}, 'Rankende Seite: ', h('a', { href: k.url, target: '_blank', rel: 'noopener noreferrer' }, row?.product?.name ?? shortUrl(k.url))) : null,
+    h('div', { class: 'row' }, tagIn, h('button', { class: 'btn small', onclick: guard(async () => { await api(`/api/keywords/${id}`, { method: 'PUT', body: { tag: tagIn.value } }); toast('Gruppe gespeichert'); render(); }) }, 'Gruppe speichern')),
+    h('h3', { style: 'margin-top:18px' }, 'Verlauf'),
+    rankChart(series, { depth: o.depth }),
+    h('h3', { style: 'margin-top:22px' }, `Google-Ergebnisse (Top ${o.depth})`),
+    d.serp.length ? h('ol', { class: 'serp' }, d.serp.map((r) => h('li', { class: r.own ? 'own' : r.competitor ? 'comp' : '' },
+      h('span', { class: 'srank' }, String(r.rank)),
+      h('div', {}, h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, r.title || r.url), h('div', { class: 'pmeta' }, r.domain, r.own ? h('span', { class: 'tag good' }, 'du') : r.competitor ? h('span', { class: 'tag warn' }, 'Mitbewerber') : null)))))
+      : h('p', { class: 'pmeta' }, 'Noch keine Ergebnisse.'));
+}
+
+function kwSuggestionsPanel(o) {
+  const src = { all: 'alle', gsc: 'Search Console', labs_comp: 'Mitbewerber', labs_own: 'eigener Shop', sales: 'Bestseller' };
+  const label = { gsc: 'Search Console', labs_comp: 'Mitbewerber', labs_own: 'eigener Shop', sales: 'Bestseller' };
+  const list = kw.sug.filter((x) => kw.sugSrc === 'all' || x.sources.includes(kw.sugSrc));
+  const left = o.limit - o.summary.count;
+  const pickedN = () => [...kw.picked].filter((k) => kw.sug.some((x) => x.keyword === k)).length;
+  const addBtn = h('button', { class: 'btn primary' }, 'Markierte hinzufügen');
+  const upd = () => { const n = pickedN(); addBtn.disabled = !n || n > left; addBtn.textContent = n ? `${n} markierte hinzufügen` : 'Markierte hinzufügen'; };
+  addBtn.onclick = guard(async () => {
+    const r = await api('/api/keywords', { body: { keywords: [...kw.picked].join('\n'), source: 'suggestion' } });
+    kw.picked.clear();
+    toast(`${r.added} Keywords hinzugefügt${o.configured ? ', werden jetzt geprüft' : ''}`);
+    render();
+  });
+  upd();
+  const box = h('div', {},
+    h('div', { class: 'panel head' },
+      h('div', {}, 'Vorschläge aus deinen Daten: Suchanfragen aus der Search Console, Bestseller aus Shopware und, wenn abgerufen, Begriffe, für die du oder deine Mitbewerber bei Google gut stehen (DataForSEO, kostet je Shop etwa 2 Cent).',
+        o.sug.fetched_at ? h('div', { class: 'pmeta' }, `DataForSEO-Vorschläge vom ${dt.format(new Date(o.sug.fetched_at))}`) : null,
+        o.sug.result?.warnings?.length ? h('div', { class: 'warmtxt' }, o.sug.result.warnings.join(' · ')) : null),
+      h('span', { class: 'spacer' }),
+      o.configured ? h('button', { class: 'btn', disabled: o.sug.running, onclick: guard(async () => { await api('/api/keywords/suggestions/refresh', { method: 'POST', body: {} }); toast('Vorschläge werden geholt'); render(); }) }, o.sug.running ? 'wird geholt …' : 'Von DataForSEO holen') : null),
+    h('div', { class: 'toolbar' }, h('div', { class: 'seg' }, Object.entries(src).map(([k, l]) => {
+      const n = k === 'all' ? kw.sug.length : kw.sug.filter((x) => x.sources.includes(k)).length;
+      return n || k === 'all' ? h('button', { class: `chip${kw.sugSrc === k ? ' on' : ''}`, onclick: () => { kw.sugSrc = k; render(); } }, h('b', {}, String(n)), l) : null;
+    })),
+    h('span', { class: 'spacer' }),
+    h('button', { class: 'btn small', onclick: () => { list.slice(0, Math.max(0, left)).forEach((x) => kw.picked.add(x.keyword)); render(); } }, `Erste ${Math.min(list.length, Math.max(0, left))} markieren`),
+    h('button', { class: 'btn small', disabled: !pickedN(), onclick: guard(async () => { await api('/api/keywords/suggestions/dismiss', { body: { keywords: [...kw.picked] } }); kw.picked.clear(); toast('Ausgeblendet'); render(); }) }, 'Markierte ausblenden'),
+    addBtn),
+    list.length ? h('div', { class: 'tablewrap kwwrap' }, h('table', { class: 'prices kwtable sugtable' },
+      h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', { class: 'prod' }, 'Vorschlag'), h('th', {}, 'Suchvolumen'), h('th', {}, 'Dein Platz (geschätzt)'), h('th', { class: 'kurl' }, 'Warum'), h('th', {}, ''))),
+      h('tbody', {}, list.map((x) => {
+        const cb = h('input', { type: 'checkbox', checked: kw.picked.has(x.keyword), 'aria-label': `${x.keyword} markieren`, onchange: (e) => { e.target.checked ? kw.picked.add(x.keyword) : kw.picked.delete(x.keyword); upd(); } });
+        return h('tr', { onclick: (e) => { if (e.target !== cb) { cb.checked = !cb.checked; cb.onchange({ target: cb }); } } },
+          h('td', { class: 'trackcell' }, cb),
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, x.keyword), h('div', { class: 'ksrc' }, x.sources.map((s2) => h('span', { class: `tag src-${s2}` }, label[s2])))),
+          h('td', { class: 'mcell', 'data-label': 'Suchvolumen' }, x.volume != null ? nf.format(x.volume) : '–'),
+          h('td', { class: 'mcell', 'data-label': 'Dein Platz' }, x.own_position != null ? h('span', { class: `gpill ${gTone(x.own_position)}` }, String(x.own_position)) : '–'),
+          h('td', { class: 'mcell kurl', 'data-label': 'Warum' }, x.reasons.slice(0, 2).join(' · ')),
+          h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' },
+            h('button', { class: 'btn small', disabled: left <= 0, onclick: guard(async () => { await api('/api/keywords', { body: { keywords: x.keyword, source: 'suggestion' } }); toast(`„${x.keyword}“ hinzugefügt`); render(); }) }, 'Hinzufügen'),
+            h('button', { class: 'btn small', title: 'Nicht mehr vorschlagen', onclick: guard(async () => { await api('/api/keywords/suggestions/dismiss', { body: { keyword: x.keyword } }); render(); }) }, 'Ausblenden'))));
+      }))))
+      : h('div', { class: 'panel empty' }, h('h3', {}, 'Keine Vorschläge'), h('p', {}, o.configured ? 'Verbinde die Search Console oder hol Vorschläge von DataForSEO.' : 'Vorschläge kommen aus der Search Console, den Shopware-Verkäufen und DataForSEO.')));
+  return box;
+}
+
 // ---------- So funktioniert's ----------
 function renderHelp(root) {
   const d = state.data;
@@ -1694,13 +1959,44 @@ async function renderSettings(root) {
     mcout,
     mcCur.synced_at ? h('p', { class: 'pmeta' }, `Letzter Abgleich: ${dt.format(new Date(mcCur.synced_at))}. Danach automatisch täglich.`) : null);
 
+  const kc = cur.keywords;
+  const kwout = h('div', { class: 'result', hidden: true });
+  const sel = (label, name, opts, value, hint) => h('div', { class: 'field' }, h('label', {}, label), h('select', { name }, opts.map(([v, t]) => h('option', { value: v, selected: String(v) === String(value) }, t))), hint ? h('span', { class: 'hint' }, hint) : null);
+  const kwPanel = h('form', { class: 'panel', id: 'kw-settings', onsubmit: (e) => e.preventDefault() },
+    h('h3', {}, 'Keyword-Monitoring (DataForSEO)'),
+    h('p', { class: 'sub' }, 'Die Google-Platzierungen kommen von DataForSEO, einem Anbieter für Suchergebnis-Daten. Google selbst fragt Preisradar nicht ab, weil Google das für Programme sperrt. Abgerechnet wird nach Verbrauch: für 200 Keywords mit 50 Ergebnissen täglich etwa 18 € im Monat, wöchentlich etwa 3 €. Dazu einmalig rund 2 Cent je Shop für Vorschläge.'),
+    h('details', { class: 'howto' }, h('summary', {}, 'So richtest du den Zugang ein'),
+      h('ol', { class: 'plainlist' },
+        h('li', {}, 'Auf dataforseo.com ein Konto anlegen und Guthaben aufladen (Mindestbetrag laut Anbieter, kein Abo).'),
+        h('li', {}, 'Im Dashboard unter „API Access“ stehen API-Login (deine E-Mail) und API-Passwort. Das API-Passwort ist nicht dein Konto-Passwort.'),
+        h('li', {}, 'Beides hier eintragen und „Speichern und testen“ klicken. Danach werden alle Keywords täglich zur eingestellten Uhrzeit geprüft.'))),
+    h('div', { class: 'grid' },
+      f('API-Login', 'dfs_login', kc.login, { ph: 'name@firma.de' }),
+      f('API-Passwort', 'dfs_password', '', { type: 'password', ph: kc.password_set ? 'gespeichert (leer lassen = behalten)' : '' }),
+      sel('Gerät', 'kw_device', [['desktop', 'Desktop'], ['mobile', 'Smartphone']], kc.device),
+      sel('Ergebnisse prüfen', 'kw_depth', [[10, 'Top 10'], [20, 'Top 20'], [30, 'Top 30'], [50, 'Top 50']], kc.depth, 'Abgerechnet wird je 10 Ergebnisse.'),
+      sel('Rhythmus', 'kw_every_days', [[1, 'täglich'], [2, 'alle 2 Tage'], [3, 'alle 3 Tage'], [7, 'wöchentlich']], kc.every_days),
+      f('Ab Uhrzeit (Stunde)', 'kw_hour', kc.hour, { type: 'number', hint: 'Die Ergebnisse kommen meist innerhalb einiger Minuten.' })),
+    h('p', { class: 'pmeta' }, kc.own_host ? `Eigene Domain: ${kc.own_host} (aus der Shop-URL oben).` : 'Bitte oben die Shop-URL eintragen, damit Preisradar deine Platzierung erkennt.'),
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
+        await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(kwPanel)) });
+        kwout.hidden = false; kwout.textContent = 'Verbindung wird geprüft …';
+        try { const r = await api('/api/keywords/test', { method: 'POST', body: {} }); kwout.textContent = `Verbunden als ${r.login}.${r.balance != null ? ` Guthaben: ${Number(r.balance).toFixed(2).replace('.', ',')} US-$.` : ''}`; await refresh(); }
+        catch (e) { kwout.textContent = e.message; }
+      }) }, 'Speichern und testen'),
+      kc.configured && !kc.from_env ? h('button', { class: 'btn danger', type: 'button', onclick: guard(async () => { if (confirm('DataForSEO-Zugang entfernen? Die bisherigen Platzierungen bleiben erhalten.')) { await api('/api/settings', { method: 'PUT', body: { dfs_remove: true } }); toast('Zugang entfernt'); await refresh(); } }) }, 'Zugang entfernen') : null,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(kwPanel)) }); toast('Keyword-Monitoring gespeichert'); await refresh(); }) }, 'Speichern')),
+    kwout);
+
   const pw = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
     h('h3', {}, 'Passwort ändern'),
     h('div', { class: 'grid' }, f('Aktuelles Passwort', 'current', '', { type: 'password' }), f('Neues Passwort (mind. 10 Zeichen)', 'password', '', { type: 'password' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
   const up = h('div', { id: 'userpanel' }, await userPanel());
-  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, mail, ki, gsc, merchant, mcp, up, pw));
+  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, mail, ki, gsc, merchant, kwPanel, mcp, up, pw));
 }
 
 // ---------- Laufleiste ----------
@@ -1769,7 +2065,7 @@ function render() {
     if (sameTab) { main.scrollTop = keepMain; window.scrollTo(0, keepWin); } else { main.scrollTop = 0; window.scrollTo(0, 0); }
   };
   const fail = (e) => { if (!(e instanceof AuthError)) toast(e.message, true); };
-  const asyncTabs = { start: renderStart, analyse: renderAnalysis, sichtbarkeit: renderSeo, einstellungen: renderSettings, import: renderImport };
+  const asyncTabs = { start: renderStart, analyse: renderAnalysis, sichtbarkeit: renderSeo, keywords: renderKeywords, einstellungen: renderSettings, import: renderImport };
   const fn = asyncTabs[state.tab] ?? (state.tab === 'mitbewerber' ? null : asyncTabs.import);
   if (state.tab === 'preise' || state.tab === 'hilfe' || state.tab === 'mitbewerber') {
     main.replaceChildren();

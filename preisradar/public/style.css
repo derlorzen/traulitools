@@ -668,3 +668,60 @@ ul.todo li.content::before { background: var(--cool); }
 .gprank.warm b { color: var(--warm); } .gprank.cool b { color: var(--cool); }
 .gview td.own { min-width: 0; }
 @media (max-width: 760px) { .gprank b, .gprank small { display: inline; margin-left: 6px; } }
+
+/* Keyword-Monitoring */
+.kwstatus { font-size: 14px; }
+.kwadd textarea { width: 100%; min-height: 74px; resize: vertical; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.kwaddrow { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 12px; align-items: start; }
+.kwaddside { display: grid; gap: 8px; }
+.kwaddside input { width: 100%; }
+.kwwrap { max-height: none; }
+table.kwtable { min-width: 1080px; }
+.kwtable td.prod, .kwtable th.prod { width: 260px; max-width: 260px; }
+.gpill.out { background: var(--sunk); color: var(--muted); font-weight: 600; }
+.kbest { display: block; font-size: 11px; }
+.kdelta { font-weight: 700; font-size: 13px; color: var(--muted); }
+.kdelta.up { color: var(--good); } .kdelta.down { color: var(--bad); }
+.kspark { display: inline-block; vertical-align: middle; }
+.kcomps { display: inline-flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.kc { display: inline-flex; gap: 4px; align-items: baseline; font-size: 11.5px; padding: 1px 7px; border-radius: 999px; background: var(--sunk); color: var(--muted); }
+.kc b { color: var(--ink); }
+.kc.ahead { background: var(--bad-bg); color: var(--bad); } .kc.ahead b { color: var(--bad); }
+.kwtable td.kurl { white-space: normal; text-align: left; max-width: 240px; font-size: 12.5px; color: var(--muted); }
+.kwtable th.kurl { text-align: left; }
+.ksrc { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+.tag.src-gsc { background: var(--cool-bg); color: var(--cool); }
+.tag.src-labs_comp { background: var(--bad-bg); color: var(--bad); }
+.tag.src-labs_own { background: var(--good-bg); color: var(--good); }
+.tag.src-sales { background: var(--petrol-soft); color: var(--petrol); }
+.sugtable { min-width: 860px; }
+ol.serp { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 2px; }
+ol.serp li { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 13px; }
+ol.serp li a { color: var(--ink); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ol.serp li a:hover { text-decoration: underline; }
+ol.serp li .pmeta { display: flex; gap: 6px; align-items: center; }
+ol.serp li.own { background: var(--good-bg); }
+ol.serp li.comp { background: var(--warn-bg); }
+.srank { font-family: var(--display); font-weight: 700; color: var(--muted); text-align: right; }
+@media (max-width: 760px) {
+  .kwaddrow { grid-template-columns: 1fr; }
+  #main .kwwrap { overflow: visible; border: 0; background: none; }
+  .kwwrap table.kwtable { min-width: 0; display: block; }
+  .kwwrap .kwtable thead { display: none; }
+  .kwwrap .kwtable tbody { display: grid; gap: 10px; }
+  .kwwrap .kwtable tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .kwwrap .kwtable td { position: static; border-bottom: 0; white-space: normal; background: none; box-shadow: none; padding: 7px 14px; }
+  .kwwrap .kwtable td.prod { width: auto; max-width: none; padding-top: 12px; }
+  .kwwrap .kwtable td.mcell { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 8px; border-top: 1px solid var(--line); max-width: none; }
+  .kwwrap .kwtable td.mcell::before { content: attr(data-label); margin-right: auto; color: var(--muted); font-size: 13px; }
+  .kwwrap .kwtable td.trackcell { grid-column: 1 / -1; padding: 12px 14px 0; }
+  .kwwrap .kwtable td.actcell { grid-column: 1 / -1; background: var(--sunk); }
+  .kwwrap .kwtable td.actcell .btn { width: 100%; }
+  .kwwrap .kwtable td.mcell .kbest { display: inline; }
+}
+input.kwtag { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; }
+#drawer input.kwtag { min-width: 200px; }
+@media (max-width: 760px) {
+  /* Karten kompakt halten: Details stehen in der Detailansicht */
+  .kwwrap .kwtable:not(.sugtable) td[data-label="7 Tage"], .kwwrap .kwtable:not(.sugtable) td[data-label="Search Console"], .kwwrap .kwtable:not(.sugtable) td[data-label="Rankende Seite"] { display: none; }
+}

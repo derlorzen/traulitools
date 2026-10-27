@@ -4,6 +4,7 @@ import { startScrape, scrapeState } from './scraper.js';
 import { getSetting, setSetting } from './settings.js';
 import { tx } from './db.js';
 import { listProducts } from './pricelist.js';
+import { kwOverview, addKeywords, suggestions, postChecks, refreshVolumes, kwConfig, kwJob } from './keywords.js';
 
 /**
  * MCP-Endpunkt (Streamable HTTP, JSON-RPC) – damit Claude Preisradar lesen und bedienen kann.
@@ -108,6 +109,9 @@ const TOOLS = [
     description: 'Artikel nach Google-Sichtbarkeit (Search Console, Merchant Center): Position, Impressionen, Klicks, Klickpotenzial und Hinweise. Filter: demandDear (gefragt, aber teurer), aboveBench (über Google-Vergleichspreis), striking (Platz 4–20), lowCtr (wenig geklickt), demand, suggest, soldHidden, invisible, advice (mit Handlungsbedarf). query sucht auch in Google-Suchanfragen.',
     inputSchema: obj({ filter: { type: 'string', enum: ['advice', 'demandDear', 'aboveBench', 'striking', 'lowCtr', 'demand', 'suggest', 'soldHidden', 'invisible'] }, query: { type: 'string' }, sort: { type: 'string', enum: ['potential', 'impressions', 'clicks', 'position', 'benchmark'] }, limit: { type: 'integer', minimum: 1, maximum: 100 } }),
   },
+  { name: 'keywords_overview', description: 'Keyword-Monitoring: Google-Platzierung (Top 50) je beobachtetem Keyword mit Veränderung, Suchvolumen, Search-Console-Daten und Mitbewerber-Positionen sowie Kennzahlen.', inputSchema: obj({ filter: { type: 'string', enum: ['all', 'top10', 'out', 'up', 'down', 'comp'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }) },
+  { name: 'keyword_suggestions', description: 'Vorschläge für neue Keywords (Search Console, Bestseller, DataForSEO-Daten zu eigenem Shop und Mitbewerbern) mit Begründung.', inputSchema: obj({ limit: { type: 'integer', minimum: 1, maximum: 150 } }) },
+  { name: 'add_keywords', description: 'Keywords zum Monitoring hinzufügen (höchstens 200 insgesamt). Sie werden sofort geprüft, wenn DataForSEO verbunden ist.', inputSchema: obj({ keywords: { type: 'array', items: { type: 'string' } }, tag: { type: 'string' } }, ['keywords']) },
   { name: 'merchant_overview', description: 'Google Merchant Center: Artikel über dem Google-Vergleichspreis, Googles Preisvorschläge und weitere Mitbewerber-Shops aus der Wettbewerbsübersicht.', inputSchema: obj() },
   { name: 'check_product_now', description: 'Einen Artikel sofort bei allen Mitbewerbern prüfen (aktuellster Preis), unabhängig vom laufenden Abruf.', inputSchema: obj({ id: { type: 'integer' }, number: { type: 'string' } }) },
   { name: 'competitor_categories', description: 'Kategorien aus der Sitemap eines Mitbewerbers mit Anzahl URLs und aktueller Auswahl.', inputSchema: obj({ id: { type: 'integer' } }, ['id']) },
@@ -127,6 +131,20 @@ function handlers(db, ownName, schedule, call) {
   const slim = (p, by) => ({ id: p.id, number: p.number, name: p.name, brand: p.manufacturer, ean: p.ean, price: p.price, tracked: Boolean(p.tracked), offline_seit: p.offline_since ?? null, competitors: by.get(p.id) ?? [] });
   return {
     merchant_overview: () => call('GET', '/api/merchant'),
+    keywords_overview: ({ filter = 'all', limit = 200 } = {}) => {
+      const o = kwOverview(db);
+      const f = { all: () => true, top10: (k) => k.position != null && k.position <= 10, out: (k) => k.position === null, up: (k) => k.change1 > 0, down: (k) => k.change1 < 0, comp: (k) => k.better > 0 }[filter] ?? (() => true);
+      return {
+        verbunden: o.configured, tiefe: o.depth, kennzahlen: o.summary, kosten_monat_usd: o.cost_month,
+        keywords: o.keywords.filter(f).slice(0, limit).map((k) => ({ id: k.id, keyword: k.keyword, gruppe: k.tag, platz: k.position === undefined ? 'ausstehend' : k.position ?? `nicht in Top ${o.depth}`, veraenderung: k.change1, veraenderung_7_tage: k.change7, bester_platz: k.best, suchvolumen: k.volume, url: k.url, search_console: k.gsc, mitbewerber: k.comps.filter((c) => c.position != null) })),
+      };
+    },
+    keyword_suggestions: ({ limit = 50 } = {}) => ({ vorschlaege: suggestions(db, { limit }).map((x) => ({ keyword: x.keyword, suchvolumen: x.volume, eigener_platz: x.own_position, quellen: x.sources, gruende: x.reasons })) }),
+    add_keywords: ({ keywords = [], tag } = {}) => {
+      const r = addKeywords(db, keywords, { tag, source: 'mcp' });
+      if (r.ids.length && kwConfig(db).configured) postChecks(db, r.ids).then(() => refreshVolumes(db)).catch((e) => { kwJob.error = e.message; });
+      return r;
+    },
     google_opportunities: ({ filter = 'advice', query = '', sort = 'potential', limit = 25 } = {}) => {
       const key = `g${filter.charAt(0).toUpperCase()}${filter.slice(1)}`;
       const r = listProducts(db, { scope: 'tracked', filter: key, q: query, sort, dir: ['position'].includes(sort) ? 'asc' : 'desc', limit: Math.min(100, Number(limit) || 25) });

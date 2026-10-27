@@ -24,6 +24,7 @@ import { seoOverview, seoStatus, productSeo } from './seo.js';
 import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from './digest.js';
 import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
 import { computeTiers, tierConfig, tierStatus } from './tiers.js';
+import { kwConfig, kwTest, addKeywords, postChecks, collectChecks, refreshVolumes, kwOverview, kwDetail, suggestions, startSuggestionJob, kwTick, kwJob, MAX_KEYWORDS, normKeyword } from './keywords.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -112,7 +113,7 @@ export function createApp(db, { dataDir = null } = {}) {
       tiers: tierStatus(db),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -133,6 +134,52 @@ export function createApp(db, { dataDir = null } = {}) {
   }));
 
   // --- Google Merchant Center ---
+  // --- Keyword-Monitoring ---
+  app.get('/api/keywords', wrap((_req, res) => res.json({ ...kwOverview(db), job: { posting: kwJob.posting, collecting: kwJob.collecting } })));
+  app.get('/api/keywords/suggestions', wrap((_req, res) => res.json({ suggestions: suggestions(db) })));
+  app.post('/api/keywords', wrap(async (req, res) => {
+    const r = addKeywords(db, req.body?.keywords ?? '', { tag: req.body?.tag, source: req.body?.source === 'suggestion' ? 'suggestion' : 'manual' });
+    if (!r.added && r.over_limit) throw bad(`Höchstens ${MAX_KEYWORDS} Keywords. Entferne zuerst welche.`);
+    // neue Keywords gleich prüfen (Ergebnis kommt nach einigen Minuten) und Suchvolumen holen
+    if (r.ids.length && kwConfig(db).configured) {
+      postChecks(db, r.ids).then(() => refreshVolumes(db)).catch((e) => { kwJob.error = e.message; });
+    }
+    res.json(r);
+  }));
+  app.put('/api/keywords/:id', wrap((req, res) => {
+    const tag = req.body?.tag == null ? null : String(req.body.tag).trim().slice(0, 40) || null;
+    db.prepare('UPDATE keywords SET tag=? WHERE id=?').run(tag, Number(req.params.id));
+    res.json({ ok: true });
+  }));
+  app.delete('/api/keywords/:id', wrap((req, res) => {
+    db.prepare('DELETE FROM kw_tasks WHERE keyword_id=?').run(Number(req.params.id));
+    db.prepare('DELETE FROM keywords WHERE id=?').run(Number(req.params.id));
+    res.json({ ok: true });
+  }));
+  app.get('/api/keywords/:id', wrap((req, res) => {
+    const d = kwDetail(db, Number(req.params.id));
+    if (!d) throw bad('Keyword nicht gefunden', 404);
+    res.json(d);
+  }));
+  app.post('/api/keywords/check', wrap(async (req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
+    const r = await postChecks(db, ids?.length ? ids : null);
+    res.json(r);
+  }));
+  app.post('/api/keywords/collect', wrap(async (_req, res) => res.json(await collectChecks(db))));
+  app.post('/api/keywords/test', wrap(async (_req, res) => res.json(await kwTest(db))));
+  app.post('/api/keywords/suggestions/refresh', wrap((_req, res) => {
+    if (!kwConfig(db).configured) throw bad('Zuerst DataForSEO unter Einstellungen verbinden');
+    if (!startSuggestionJob(db)) throw bad('Vorschläge werden bereits geholt', 409);
+    res.json({ ok: true });
+  }));
+  app.post('/api/keywords/suggestions/dismiss', wrap((req, res) => {
+    const list = (Array.isArray(req.body?.keywords) ? req.body.keywords : [req.body?.keyword]).map(normKeyword).filter(Boolean);
+    const ins = db.prepare('INSERT OR IGNORE INTO kw_dismissed(keyword) VALUES (?)');
+    for (const k of list) ins.run(k);
+    res.json({ ok: true, dismissed: list.length });
+  }));
+
   app.get('/api/merchant', wrap((_req, res) => res.json({ ...merchantSummary(db), job: { ...mcJob } })));
   app.post('/api/merchant/test', wrap(async (_req, res) => res.json(await merchantTest(db))));
   app.post('/api/merchant/sync', wrap((_req, res) => {
@@ -448,6 +495,7 @@ export function createApp(db, { dataDir = null } = {}) {
       merchant: (() => { const m = merchantConfig(db); return { account: m.account, country: m.country, categories: m.categories.join(', '), configured: m.configured, synced_at: getSetting(db, 'mc_synced_at') }; })(),
       mail: (() => { const m = mailConfig(db); return { enabled: m.enabled, host: m.host, port: m.port, secure: m.secure, user: m.user, pass_set: Boolean(m.pass), from: m.from, to: m.to.join(', '), hour: m.hour, last_sent: getSetting(db, 'mail_last_sent') }; })(),
       min_margin: Number(getSetting(db, 'min_margin') ?? 10),
+      keywords: (() => { const k = kwConfig(db); return { login: k.login, password_set: Boolean(k.password), configured: k.configured, device: k.device, depth: k.depth, hour: k.hour, every_days: k.everyDays, own_host: k.ownHost, from_env: !getSetting(db, 'dfs_login') && Boolean(process.env.DATAFORSEO_LOGIN) }; })(),
       sw_synced_at: getSetting(db, 'sw_synced_at'),
       openai_key_set: Boolean(aiConfig(db).key),
       openai_from_env: !hasSetting(db, 'openai_api_key') && Boolean(process.env.OPENAI_API_KEY),
@@ -487,6 +535,16 @@ export function createApp(db, { dataDir = null } = {}) {
     // E-Mail
     for (const k of ['mail_host', 'mail_user', 'mail_from', 'mail_to']) if (typeof b[k] === 'string') setSetting(db, k, b[k].trim());
     if (b.mail_pass) setSetting(db, 'mail_pass', String(b.mail_pass), { secret: true });
+    if (typeof b.dfs_login === 'string') setSetting(db, 'dfs_login', b.dfs_login.trim());
+    if (b.dfs_password) setSetting(db, 'dfs_password', String(b.dfs_password).trim(), { secret: true });
+    if (b.dfs_remove === true) { setSetting(db, 'dfs_login', ''); setSetting(db, 'dfs_password', ''); }
+    if (b.kw_device !== undefined) setSetting(db, 'kw_device', b.kw_device === 'mobile' ? 'mobile' : 'desktop');
+    for (const [k, lo, hi, label] of [['kw_depth', 10, 50, 'Tiefe: 10 bis 50'], ['kw_hour', 0, 23, 'Uhrzeit: volle Stunde 0 bis 23'], ['kw_every_days', 1, 7, 'Rhythmus: 1 bis 7 Tage']]) {
+      if (b[k] === undefined || b[k] === '') continue;
+      const n = Number(b[k]);
+      if (!Number.isInteger(n) || n < lo || n > hi) throw bad(label);
+      setSetting(db, k, String(n));
+    }
     if (b.mail_port !== undefined && b.mail_port !== '') { const n = Number(b.mail_port); if (!Number.isInteger(n) || n < 1 || n > 65535) throw bad('SMTP-Port ungültig'); setSetting(db, 'mail_port', String(n)); }
     if (b.mail_hour !== undefined && b.mail_hour !== '') { const n = Number(b.mail_hour); if (!Number.isInteger(n) || n < 0 || n > 23) throw bad('Uhrzeit: volle Stunde 0 bis 23'); setSetting(db, 'mail_hour', String(n)); }
     if (b.mail_secure !== undefined) setSetting(db, 'mail_secure', b.mail_secure === true || b.mail_secure === 'on' || b.mail_secure === '1' ? '1' : '0');
@@ -666,6 +724,8 @@ export function startScheduler(db) {
         setSetting(db, 'mc_tried_at', new Date().toISOString());
         startMerchantJob(db);
       }
+      // Keyword-Monitoring: Aufträge abgeben und fertige abholen
+      kwTick(db);
       // Tägliche Zusammenfassung per E-Mail
       maybeSendDigest(db).then((r) => r && console.log(`Zusammenfassung an ${r.to.join(', ')} gesendet`)).catch((e) => console.error('E-Mail:', e.message));
       // Shopware täglich (Verkäufe, Einkaufspreise, Bestand)

@@ -100,6 +100,13 @@ CREATE TABLE IF NOT EXISTS seo_daily (date TEXT PRIMARY KEY, clicks REAL, impres
 CREATE TABLE IF NOT EXISTS product_sales (product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, units_30 REAL, revenue_30 REAL, units_90 REAL, revenue_90 REAL, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS mc_products (offer_id TEXT PRIMARY KEY, title TEXT, brand TEXT, price REAL, benchmark REAL, suggested REAL, clicks_change REAL, conversions_change REAL, effectiveness TEXT);
 CREATE TABLE IF NOT EXISTS mc_competitors (category TEXT NOT NULL, domain TEXT NOT NULL, own INTEGER, rank REAL, visibility REAL, overlap REAL, higher REAL, ads_ratio REAL, PRIMARY KEY (category, domain));
+CREATE TABLE IF NOT EXISTS keywords (id INTEGER PRIMARY KEY, keyword TEXT NOT NULL UNIQUE COLLATE NOCASE, tag TEXT, source TEXT, created_at TEXT NOT NULL, volume INTEGER, cpc REAL, volume_at TEXT, last_checked TEXT, position INTEGER, url TEXT);
+CREATE TABLE IF NOT EXISTS keyword_ranks (keyword_id INTEGER NOT NULL REFERENCES keywords(id) ON DELETE CASCADE, date TEXT NOT NULL, position INTEGER, url TEXT, PRIMARY KEY (keyword_id, date));
+CREATE TABLE IF NOT EXISTS keyword_comp_ranks (keyword_id INTEGER NOT NULL REFERENCES keywords(id) ON DELETE CASCADE, date TEXT NOT NULL, domain TEXT NOT NULL, position INTEGER, PRIMARY KEY (keyword_id, date, domain));
+CREATE TABLE IF NOT EXISTS keyword_serp (keyword_id INTEGER NOT NULL REFERENCES keywords(id) ON DELETE CASCADE, rank INTEGER NOT NULL, domain TEXT, url TEXT, title TEXT, PRIMARY KEY (keyword_id, rank));
+CREATE TABLE IF NOT EXISTS kw_tasks (task_id TEXT PRIMARY KEY, keyword_id INTEGER NOT NULL, posted_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS kw_dismissed (keyword TEXT PRIMARY KEY COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS kw_suggestions (keyword TEXT NOT NULL COLLATE NOCASE, source TEXT NOT NULL, domain TEXT, position INTEGER, volume INTEGER, url TEXT, fetched_at TEXT, PRIMARY KEY (keyword, source, domain));
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT NOT NULL,
