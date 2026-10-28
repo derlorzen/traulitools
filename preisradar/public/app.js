@@ -191,6 +191,7 @@ function renderPrices(root) {
       h('div', { class: 'seg', role: 'group', 'aria-label': 'Artikelauswahl' },
         h('button', { class: `chip${state.scope === 'tracked' ? ' on' : ''}`, onclick: () => { state.scope = 'tracked'; render(); } }, h('b', {}, String(d.counts.tracked)), 'beobachtet'),
         h('button', { class: `chip${state.scope === 'all' ? ' on' : ''}`, onclick: () => { state.scope = 'all'; render(); } }, h('b', {}, String(d.counts.all)), 'alle Artikel')),
+      d.counts.tracked < d.counts.all ? h('button', { class: 'btn small', title: 'Alle Artikel bei den Mitbewerbern abgleichen. Die wichtigsten werden täglich geprüft, die übrigen im Wechsel.', onclick: guard(trackAll) }, 'Alle beobachten') : null,
       h('span', { class: 'spacer' }),
       hasGoogle ? h('div', { class: 'seg viewseg', role: 'group', 'aria-label': 'Ansicht' },
         h('button', { class: `chip${!gview ? ' on' : ''}`, 'aria-pressed': String(!gview), onclick: () => setView('preise') }, 'Preisvergleich'),
@@ -261,6 +262,18 @@ function renderChips() {
 }
 
 /** Gefilterte Artikel (Serverabfrage) beobachten bzw. nicht mehr beobachten. */
+/** Alle aktiven Artikel beobachten, unabhängig vom Filter. */
+async function trackAll() {
+  const d = state.data;
+  const n = d.counts.all - d.counts.tracked;
+  if (n > 500 && !confirm(`Alle ${d.counts.all.toLocaleString('de-DE')} Artikel beobachten (${n.toLocaleString('de-DE')} kommen dazu)? Die wichtigsten werden täglich geprüft, die übrigen im Abstand von einigen Tagen.`)) return;
+  const r = await api('/api/products/track', { body: { query: { scope: 'all' }, tracked: true } });
+  toast(`Alle ${r.counts.tracked.toLocaleString('de-DE')} Artikel werden beobachtet`);
+  state.scope = 'tracked';
+  await refresh();
+  render();
+}
+
 async function track(ids, tracked) {
   const body = ids ? { ids, tracked } : { query: listQuery(), tracked };
   const n = ids ? ids.length : list.total;
@@ -269,6 +282,7 @@ async function track(ids, tracked) {
   const r = await api('/api/products/track', { body });
   toast(`${r.changed} Artikel ${tracked ? 'werden beobachtet' : 'werden nicht mehr beobachtet'}`);
   await refresh();
+  if (!ids) render(); // Zähler oben aktualisieren
 }
 
 function sortHead(label, key, cls = '', firstDir = 'asc') {
@@ -286,7 +300,7 @@ function buildTable() {
   const gview = state.view === 'google' && Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit);
   const table = gview ? h('table', { class: 'prices gview' },
     h('thead', {}, h('tr', {},
-      h('th', { title: 'Beobachten: wird bei Mitbewerbern abgeglichen' }, '👁'),
+      h('th', { class: 'trackhead', title: 'Alle Artikel im aktuellen Filter beobachten bzw. nicht mehr beobachten' }, h('input', { type: 'checkbox', id: 'trackall', 'aria-label': 'Alle Artikel im Filter beobachten', onchange: guard(async (e) => { const on = e.target.checked; e.target.checked = !on; await track(null, on); }) })),
       sortHead(h('span', { id: 'prodcount' }, 'Produkt'), 'name', 'prod'),
       d.config.gsc ? [sortHead('Google-Position', 'position', 'gposh'), sortHead('Impressionen', 'impressions', '', 'desc'), sortHead('Klicks', 'clicks', '', 'desc'), sortHead('Klickrate', 'ctr'), sortHead('Klickpotenzial', 'potential', '', 'desc')] : null,
       h('th', { class: 'gtodo' }, 'Was tun'),
@@ -295,7 +309,7 @@ function buildTable() {
       h('th', {}, ''))),
     h('tbody', { id: 'rows' })) : h('table', { class: 'prices' },
     h('thead', {}, h('tr', {},
-      h('th', { title: 'Beobachten: wird bei Mitbewerbern abgeglichen' }, '👁'),
+      h('th', { class: 'trackhead', title: 'Alle Artikel im aktuellen Filter beobachten bzw. nicht mehr beobachten' }, h('input', { type: 'checkbox', id: 'trackall', 'aria-label': 'Alle Artikel im Filter beobachten', onchange: guard(async (e) => { const on = e.target.checked; e.target.checked = !on; await track(null, on); }) })),
       sortHead(h('span', { id: 'prodcount' }, 'Produkt'), 'name', 'prod'),
       sortHead(d.own.name, 'price', 'own', 'desc'),
       d.competitors.map((c) => sortHead(`${c.name}${c.enabled ? '' : ' (aus)'}`, `comp:${c.id}`)),
@@ -328,6 +342,8 @@ async function loadRows(reset, { keep = false } = {}) {
     if (reset) { list.rows = r.rows; tbody.replaceChildren(...els); if (!keep) document.getElementById('tablewrap').scrollTop = 0; }
     else { list.rows.push(...r.rows); tbody.append(...els); }
     renderChips();
+    const ta = document.getElementById('trackall');
+    if (ta) { ta.checked = list.rows.length > 0 && list.rows.every((x) => x.tracked); ta.indeterminate = !ta.checked && list.rows.some((x) => x.tracked); }
     const pc = document.getElementById('prodcount');
     if (pc) pc.textContent = `Produkt (${list.total.toLocaleString('de-DE')}${list.total !== list.inScope ? ' von ' + list.inScope.toLocaleString('de-DE') : ''})`;
     const st = document.getElementById('liststatus');
