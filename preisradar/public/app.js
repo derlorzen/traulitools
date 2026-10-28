@@ -2656,7 +2656,27 @@ async function renderSettings(root) {
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
   const up = h('div', { id: 'userpanel' }, await userPanel());
-  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, await channelSettingsPanel(), ebaySettingsPanel(cur, f), mail, ki, gsc, merchant, kwPanel, mcp, up, pw));
+  const groups = [
+    { id: 'set-shop', title: 'Shop und Daten', sub: 'Eigener Shop, Sitemap und Shopware-Anbindung (Artikel, Einkaufspreise, Bestand, Verkäufe).', panels: [form] },
+    { id: 'set-abruf', title: 'Preisabfrage', sub: 'Wie oft und wie schonend die Mitbewerber abgefragt werden, und die KI für schwierige Shops.', panels: [plan, ki] },
+    { id: 'set-kanaele', title: 'Verkaufskanäle und eBay', sub: 'Gebühren und Versand je Kanal für die Gewinnrechnung, eBay-Anbindung zum Vergleichen und Einstellen.', panels: [await channelSettingsPanel(), ebaySettingsPanel(cur, f)] },
+    { id: 'set-google', title: 'Google und SEO', sub: 'Search Console, Merchant Center und Keyword-Monitoring.', panels: [gsc, merchant, kwPanel] },
+    { id: 'set-mail', title: 'Benachrichtigungen', sub: 'Tägliche Zusammenfassung per E-Mail.', panels: [mail] },
+    { id: 'set-zugang', title: 'Zugang und Sicherheit', sub: 'Benutzer, Passwort und der Zugang für Claude.', panels: [up, pw, mcp] },
+  ];
+  const links = groups.map((g) => h('a', { href: `#${g.id}`, 'data-sec': g.id, onclick: (e) => { e.preventDefault(); links.forEach((l) => l.classList.toggle('on', l.dataset.sec === g.id)); document.getElementById(g.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, g.title));
+  const nav = h('nav', { class: 'setnav', 'aria-label': 'Bereiche der Einstellungen' }, links);
+  root.append(h('div', { class: 'setwrap' }, nav,
+    h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'),
+      groups.map((g) => h('section', { class: 'setgroup', id: g.id, 'aria-labelledby': `${g.id}-h` },
+        h('div', { class: 'setgroup-h' }, h('h3', { id: `${g.id}-h` }, g.title), h('p', { class: 'pmeta' }, g.sub)), g.panels)))));
+  // Aktiven Bereich in der Navigation markieren
+  const io = new IntersectionObserver((es) => {
+    const vis = es.filter((e) => e.isIntersecting).sort((x, y) => x.boundingClientRect.top - y.boundingClientRect.top)[0];
+    if (vis) links.forEach((l) => l.classList.toggle('on', l.dataset.sec === vis.target.id));
+  }, { rootMargin: '-15% 0px -70% 0px' });
+  setTimeout(() => document.querySelectorAll('.setgroup').forEach((sec) => io.observe(sec)), 50); // nach dem Einhängen in den Inhaltsbereich
+  links[0].classList.add('on');
 }
 
 // ---------- Laufleiste ----------
