@@ -11,6 +11,85 @@
 </head>
 <body>
   <a class="skip" href="#main">Zum Inhalt springen</a>
+  <div id="preloader" aria-live="polite" aria-label="Preisradar wird geladen">
+    <div class="pl-floor" aria-hidden="true"></div>
+    <div class="pl-glow" aria-hidden="true"></div>
+    <div class="pl-stage" aria-hidden="true">
+      <svg class="pl-scope" viewBox="-200 -200 400 400">
+        <defs>
+          <radialGradient id="plFace" r="0.5"><stop offset="0" stop-color="#0f5a6c" stop-opacity=".55"/><stop offset=".75" stop-color="#08343f" stop-opacity=".35"/><stop offset="1" stop-color="#041d24" stop-opacity="0"/></radialGradient>
+          <path id="plOrbit" d="M0,-182 a182,182 0 1,1 -0.1,0"/>
+        </defs>
+        <circle r="170" fill="url(#plFace)"/>
+        <g class="pl-rings"><circle r="168"/><circle r="126"/><circle r="84"/><circle r="42"/></g>
+        <g class="pl-cross"><line x1="-170" y1="0" x2="170" y2="0"/><line x1="0" y1="-170" x2="0" y2="170"/><line x1="-120" y1="-120" x2="120" y2="120"/><line x1="-120" y1="120" x2="120" y2="-120"/></g>
+        <g class="pl-ticks"></g>
+        <g class="pl-orbit"><text><textPath href="#plOrbit" startOffset="0" textLength="1128" lengthAdjust="spacing">PREISE · MITBEWERBER · GOOGLE · KEYWORDS · SEITEN-CHECK · EBAY · CHANCEN · LAGER · </textPath></text></g>
+      </svg>
+      <div class="pl-sweep"></div>
+      <div class="pl-blips"></div>
+      <div class="pl-core"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M6 21h20" stroke="#fff" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="21" r="3" fill="none" stroke="#fff" stroke-width="2"/><circle cx="21" cy="21" r="3.5" fill="#fff"/></svg></div>
+    </div>
+    <div class="pl-text">
+      <div class="pl-word" aria-hidden="true"><span>P</span><span>r</span><span>e</span><span>i</span><span>s</span><span>r</span><span>a</span><span>d</span><span>a</span><span>r</span></div>
+      <div class="pl-status"><span id="pl-msg">Radar wird kalibriert</span><i></i><i></i><i></i></div>
+      <div class="pl-bar"><div></div></div>
+      <div class="pl-stats" aria-hidden="true"><span><b data-to="15">0</b> Signale</span><span><b data-to="6">0</b> Quellen</span><span><b data-to="360">0</b>° Rundumblick</span></div>
+    </div>
+  </div>
+  <script>
+  (function () {
+    var el = document.getElementById('preloader');
+    if (!el) return;
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var t0 = Date.now();
+    // Gradskala
+    var ticks = el.querySelector('.pl-ticks'), NS = 'http://www.w3.org/2000/svg';
+    for (var i = 0; i < 120; i++) {
+      var a = i * 3 * Math.PI / 180, long = i % 10 === 0, r1 = long ? 156 : 162;
+      var l = document.createElementNS(NS, 'line');
+      l.setAttribute('x1', Math.sin(a) * r1); l.setAttribute('y1', -Math.cos(a) * r1);
+      l.setAttribute('x2', Math.sin(a) * 168); l.setAttribute('y2', -Math.cos(a) * 168);
+      if (long) l.setAttribute('class', 'long');
+      l.style.animationDelay = (i * 6) + 'ms';
+      ticks.appendChild(l);
+    }
+    // Ziele: Preise, die aufleuchten, wenn der Strahl darüberstreicht (eine Umdrehung = 2,4 s)
+    var blips = el.querySelector('.pl-blips');
+    var prices = [['89,90 €', 'cool'], ['+4,2 %', 'warm'], ['Platz 3', 'cool'], ['124,00 €', 'warm'], ['eBay 79 €', 'cool'], ['−6 %', 'cool'], ['SEO ok', 'cool'], ['Pos. 8,2', 'warm'], ['212,50 €', 'warm']];
+    var period = 2.4;
+    prices.forEach(function (p, n) {
+      var ang = (n * 137.5 + 20) % 360, dist = 34 + ((n * 53) % 50);
+      var b = document.createElement('div');
+      b.className = 'pl-blip ' + p[1];
+      b.style.setProperty('--a', ang + 'deg'); b.style.setProperty('--d', dist);
+      b.style.animationDelay = (ang / 360 * period) + 's';
+      b.innerHTML = '<i></i><span>' + p[0] + '</span>';
+      blips.appendChild(b);
+    });
+    // Statuszeilen
+    var msgs = ['Radar wird kalibriert', 'Mitbewerberpreise werden eingesammelt', 'Google-Daten werden abgeglichen', 'Keywords und Seiten-Check laufen auf', 'Chancen werden bewertet', 'Lagebild wird gezeichnet'];
+    var mi = 0, msg = document.getElementById('pl-msg');
+    var iv = setInterval(function () { mi = (mi + 1) % msgs.length; msg.classList.remove('in'); void msg.offsetWidth; msg.textContent = msgs[mi]; msg.classList.add('in'); }, 900);
+    // Zähler
+    el.querySelectorAll('[data-to]').forEach(function (b) {
+      var to = +b.dataset.to, s = Date.now() + 500;
+      (function step() { var k = Math.min(1, Math.max(0, (Date.now() - s) / 1400)); b.textContent = Math.round(to * (1 - Math.pow(1 - k, 3))); if (k < 1) requestAnimationFrame(step); })();
+    });
+    var gone = false;
+    window.__preloaderDone = function () {
+      if (gone) return; gone = true;
+      var wait = reduce ? 0 : Math.max(0, 1500 - (Date.now() - t0)); // einmal ganz sehen lassen
+      setTimeout(function () {
+        el.classList.add('pl-exit');
+        clearInterval(iv);
+        setTimeout(function () { el.remove(); document.documentElement.classList.remove('pl-lock'); }, reduce ? 150 : 1100);
+      }, wait);
+    };
+    document.documentElement.classList.add('pl-lock');
+    setTimeout(function () { window.__preloaderDone && window.__preloaderDone(); }, 20000); // Sicherheitsnetz
+  })();
+  </script>
 <div class="shell">
   <aside class="side">
     <div class="brand">

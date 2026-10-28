@@ -973,6 +973,7 @@ async function renderImport(root) {
 
 // ---------- Anmeldung ----------
 async function showAuth(info) {
+  window.__preloaderDone?.();
   clearInterval(pollTimer);
   closeDrawer();
   document.body.classList.add('noauth');
@@ -2688,6 +2689,7 @@ function render() {
   const keepWin = window.scrollY;
   const seq = ++renderSeq;
   const done = () => {
+    window.__preloaderDone?.();
     if (!sameTab) enterAnim(main);
     renderedTab = state.tab;
     if (sameTab) { main.scrollTop = keepMain; window.scrollTo(0, keepWin); } else { main.scrollTop = 0; window.scrollTo(0, 0); }
@@ -2745,4 +2747,4 @@ async function boot() {
   document.getElementById('logout').hidden = false;
   await refresh();
 }
-boot().catch((e) => toast(e.message, true));
+boot().catch((e) => { window.__preloaderDone?.(); toast(e.message, true); });
