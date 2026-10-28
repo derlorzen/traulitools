@@ -145,6 +145,14 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   if (!mCols.includes('check_count')) db.exec('ALTER TABLE matches ADD COLUMN check_count INTEGER NOT NULL DEFAULT 0');
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_tried_at')) db.exec('ALTER TABLE matches ADD COLUMN ai_tried_at TEXT');
   if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'ai_note')) db.exec('ALTER TABLE matches ADD COLUMN ai_note TEXT');
+  // Vorletzter Preis je Treffer (für „Preis geändert“), per Trigger gepflegt statt bei jeder Preisliste neu berechnet
+  if (!db.prepare('PRAGMA table_info(matches)').all().some((c) => c.name === 'prev_price')) {
+    db.exec('ALTER TABLE matches ADD COLUMN prev_price REAL');
+    db.exec(`UPDATE matches SET prev_price = (SELECT price FROM price_history h WHERE h.match_id = matches.id ORDER BY at DESC LIMIT 1 OFFSET 1)`);
+  }
+  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_hist_prev AFTER INSERT ON price_history BEGIN
+    UPDATE matches SET prev_price = (SELECT price FROM price_history WHERE match_id = NEW.match_id ORDER BY at DESC LIMIT 1 OFFSET 1) WHERE id = NEW.match_id;
+  END`);
   const prodCols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
   for (const [c, t] of [['purchase_price', 'REAL'], ['tax_rate', 'REAL'], ['stock', 'INTEGER'], ['sw_id', 'TEXT'], ['tier', 'TEXT'], ['tier_reason', 'TEXT'], ['tier_pin', 'INTEGER NOT NULL DEFAULT 0']]) if (!prodCols.includes(c)) db.exec(`ALTER TABLE products ADD COLUMN ${c} ${t}`);
   if (!prodCols.includes('offline_since')) db.exec('ALTER TABLE products ADD COLUMN offline_since TEXT');

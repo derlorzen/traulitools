@@ -292,6 +292,17 @@ function sortHead(label, key, cls = '', firstDir = 'asc') {
     h('button', { class: 'thbtn', onclick: () => { state.dir = on ? (state.dir === 'asc' ? 'desc' : 'asc') : firstDir; state.sort = key; render(); } }, label, arrow));
 }
 
+/** Kleines Radar als Ladeanzeige für einen einzelnen Bereich (nicht die ganze Seite). */
+function miniRadar(text = 'Wird geladen', { small = false } = {}) {
+  return h('div', { class: `mr${small ? ' small' : ''}`, role: 'status', 'aria-live': 'polite' },
+    h('div', { class: 'mr-scope', 'aria-hidden': 'true' },
+      h('div', { class: 'mr-sweep' }),
+      [['32deg', '62%', 'c'], ['148deg', '38%', 'w'], ['250deg', '74%', 'c'], ['305deg', '48%', 'w']].map(([a, d, t], i) => h('i', { class: `mr-blip ${t}`, style: `--a:${a};--d:${d};animation-delay:${(parseInt(a, 10) / 360) * 1.6}s` })),
+      h('b', { class: 'mr-core' })),
+    h('div', { class: 'mr-text' }, text, h('span', { class: 'mr-dots' }, h('i'), h('i'), h('i'))));
+}
+const TAB_LOADING = { start: 'Lagebild wird gezeichnet', analyse: 'Analyse wird gerechnet', chancen: 'Chancen werden bewertet', sichtbarkeit: 'Google-Daten werden geladen', keywords: 'Keywords werden geladen', seitencheck: 'Seiten-Check wird geladen', ebay: 'eBay-Daten werden geladen', import: 'Läufe werden geladen', einstellungen: 'Einstellungen werden geladen' };
+
 function buildTable() {
   const d = state.data;
   const wrap = document.getElementById('tablewrap');
@@ -315,7 +326,7 @@ function buildTable() {
       d.competitors.map((c) => sortHead(`${c.name}${c.enabled ? '' : ' (aus)'}`, `comp:${c.id}`)),
       has ? [sortHead('Position (Platz)', 'gappct', 'posh', 'desc'), sortHead('Abstand zum günstigsten', 'gap', '', 'desc'), h('th', {}, '')] : null)),
     h('tbody', { id: 'rows' }));
-  const status = h('div', { id: 'liststatus', class: 'liststatus' }, 'Wird geladen …');
+  const status = h('div', { id: 'liststatus', class: 'liststatus' }, miniRadar('Preise werden geladen'));
   wrap.replaceChildren(table, status);
   list.observer?.disconnect();
   const narrow = window.matchMedia('(max-width: 700px)').matches; // mobil scrollt die Seite, nicht die Tabelle
@@ -328,6 +339,10 @@ async function loadRows(reset, { keep = false } = {}) {
   if (!reset && (list.loading || list.rows.length >= list.total)) return;
   const seq = ++list.seq;
   list.loading = true;
+  // Neu filtern/sortieren: dauert es länger, das Radar über der Tabelle zeigen (nur dort, nicht auf der ganzen Seite)
+  const wrapEl = document.getElementById('tablewrap');
+  if (!reset) document.getElementById('liststatus')?.replaceChildren(miniRadar('Weitere Artikel werden geladen', { small: true }));
+  const busyTimer = reset && document.getElementById('rows')?.children.length ? setTimeout(() => { if (seq === list.seq && list.loading && wrapEl && !wrapEl.querySelector('.mr-overlay')) wrapEl.append(h('div', { class: 'mr-overlay' }, miniRadar('Wird aktualisiert', { small: true }))); }, 220) : null;
   const offset = reset ? 0 : list.rows.length;
   const limit = keep ? Math.min(500, Math.max(PAGE, list.rows.length)) : PAGE;
   try {
@@ -349,7 +364,7 @@ async function loadRows(reset, { keep = false } = {}) {
     const st = document.getElementById('liststatus');
     if (st) st.textContent = !list.total ? 'Keine Produkte für diesen Filter.' : list.rows.length < list.total ? `${list.rows.length.toLocaleString('de-DE')} von ${list.total.toLocaleString('de-DE')} geladen, weitere beim Scrollen …` : `Alle ${list.total.toLocaleString('de-DE')} geladen.`;
   } finally {
-    if (seq === list.seq) list.loading = false;
+    if (seq === list.seq) { list.loading = false; clearTimeout(busyTimer); wrapEl?.querySelector('.mr-overlay')?.remove(); }
   }
   // Passt die erste Seite ganz auf den Bildschirm, gleich weiterladen
   const st = document.getElementById('liststatus');
@@ -557,7 +572,7 @@ async function openDrawer(id, given = null, section = null) {
   const d = state.data;
   const el = document.getElementById('drawer');
   el.hidden = false;
-  if (!given) el.replaceChildren(h('div', { class: 'drawer-top' }, h('button', { class: 'btn small close', onclick: closeDrawer, 'aria-label': 'Detailansicht schließen' }, 'Schließen')), h('p', { class: 'pmeta' }, 'Wird geladen …'));
+  if (!given) el.replaceChildren(h('div', { class: 'drawer-top' }, h('button', { class: 'btn small close', onclick: closeDrawer, 'aria-label': 'Detailansicht schließen' }, 'Schließen')), miniRadar('Artikel wird geladen', { small: true }));
   document.body.classList.add('drawer-open');
   const p = given ?? await api(`/api/products/${id}`).catch((e) => { toast(e.message, true); return null; });
   if (!p || state.selected !== id) return;
@@ -2705,7 +2720,7 @@ function render() {
     done();
     return;
   }
-  if (!sameTab) main.setAttribute('aria-busy', 'true');
+  if (!sameTab) { main.setAttribute('aria-busy', 'true'); main.replaceChildren(h('div', { class: 'mainload' }, miniRadar(TAB_LOADING[state.tab] ?? 'Wird geladen'))); }
   const box = document.createElement('div');
   Promise.resolve(fn(box)).then(() => {
     if (seq !== renderSeq) return; // inzwischen anderer Bereich gewählt

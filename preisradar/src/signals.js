@@ -12,8 +12,9 @@ export function productSignals(db, ids = null) {
   if (!prods.length) return new Map();
   const want = new Set(prods.map((p) => p.id));
   const minBy = new Map();
+  const idList = ids ? `AND m.product_id IN (${ids.map(() => '?').join(',') || 'NULL'})` : '';
   for (const m of db.prepare(`SELECT m.product_id, m.price, m.availability, c.name FROM matches m JOIN competitors c ON c.id=m.competitor_id
-    WHERE c.enabled=1 AND m.status='ok' AND m.price IS NOT NULL`).all()) {
+    WHERE c.enabled=1 AND m.status='ok' AND m.price IS NOT NULL ${idList}`).all(...(ids ?? []))) {
     if (!want.has(m.product_id)) continue;
     const cur = minBy.get(m.product_id) ?? { min: null, name: null, n: 0, oos: 0 };
     cur.n++;
@@ -23,7 +24,7 @@ export function productSignals(db, ids = null) {
   }
   const gsc = new Map(db.prepare('SELECT page, clicks, impressions, position FROM seo_pages').all().map((r) => [r.page, r]));
   const audit = new Map();
-  for (const a of db.prepare('SELECT product_id, issues, checked_at FROM seo_audit').all()) {
+  for (const a of db.prepare(`SELECT product_id, issues, checked_at FROM seo_audit ${ids ? `WHERE product_id IN (${ids.map(() => '?').join(',') || 'NULL'})` : ''}`).all(...(ids ?? []))) {
     if (!want.has(a.product_id)) continue;
     const list = JSON.parse(a.issues || '[]');
     const errs = list.filter((i) => ISSUES[i.code]?.sev === 'error');

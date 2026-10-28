@@ -17,7 +17,7 @@ import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import crypto from 'node:crypto';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState, closeStaleRuns, checkProductNow } from './scraper.js';
-import { listProducts, getProduct, invalidatePriceList } from './pricelist.js';
+import { listProducts, getProduct, invalidatePriceList, warmPriceList } from './pricelist.js';
 import { loadTemplates, removeTemplate } from './templates.js';
 import { gscSites, syncGsc, saveServiceAccount, gscConfig, pageKey as pageKeyOf } from './gsc.js';
 import { seoOverview, seoStatus, productSeo } from './seo.js';
@@ -811,7 +811,7 @@ export function startMerchantJob(db) {
   if (mcJob.running) return false;
   Object.assign(mcJob, { running: true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null });
   syncMerchant(db)
-    .then((r) => { mcJob.result = r; invalidatePriceList(); })
+    .then((r) => { mcJob.result = r; })
     .catch((e) => { mcJob.error = e.message; console.error('Merchant Center:', e.message); })
     .finally(() => { mcJob.running = false; mcJob.finishedAt = new Date().toISOString(); });
   return true;
@@ -823,7 +823,7 @@ export function startShopwareJob(db) {
   if (swJob.running) return false;
   Object.assign(swJob, { running: true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null });
   syncShopware(db)
-    .then((r) => { swJob.result = r; setSetting(db, 'sw_synced_at', new Date().toISOString()); setSetting(db, 'sw_last', JSON.stringify(r)); try { computeTiers(db, { force: true }); } catch { /* beim nächsten Lauf */ } invalidatePriceList(); })
+    .then((r) => { swJob.result = r; setSetting(db, 'sw_synced_at', new Date().toISOString()); setSetting(db, 'sw_last', JSON.stringify(r)); try { computeTiers(db, { force: true }); } catch { /* beim nächsten Lauf */ } })
     .catch((e) => { swJob.error = e.message; console.error('Shopware-Abgleich:', e.message); })
     .finally(() => { swJob.running = false; swJob.finishedAt = new Date().toISOString(); });
   return true;
@@ -835,7 +835,7 @@ export function startSeoJob(db) {
   if (seoJob.running) return false;
   Object.assign(seoJob, { running: true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null });
   syncGsc(db)
-    .then((r) => { seoJob.result = r; invalidatePriceList(); })
+    .then((r) => { seoJob.result = r; })
     .catch((e) => { seoJob.error = e.message; console.error('Abgleich Search Console:', e.message); })
     .finally(() => { seoJob.running = false; seoJob.finishedAt = new Date().toISOString(); });
   return true;
@@ -987,5 +987,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   createApp(db, { dataDir: path.dirname(process.env.DB_PATH || './data/preisradar.db') }).listen(port, () => console.log(`Preisradar läuft auf Port ${port}`));
   closeStaleRuns(db); // Läufe eines vorherigen Prozesses abschließen
   startScheduler(db);
+  setTimeout(() => warmPriceList(db), 1500); // Preisliste vorbereiten und aktuell halten, damit das Öffnen schnell ist
   applyBootstrap(db).catch((e) => console.error('Bootstrap fehlgeschlagen:', e.message));
 }

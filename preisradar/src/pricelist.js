@@ -4,21 +4,45 @@
  */
 import { auditFlags } from './seoaudit.js';
 
-let cache = null; // { key, at, rows }
-const TTL = 60000;
-export const invalidatePriceList = () => { cache = null; };
+/*
+ * Zwischenspeicher je Ausschnitt (beobachtet / alle), gültig solange sich der Datenstand nicht ändert.
+ * Ein Hintergrund-Wärmer rechnet nach Änderungen (z. B. während ein Abruf läuft) alle paar Sekunden vor,
+ * damit das Öffnen der Preisliste meist ohne Neuberechnung auskommt.
+ */
+const caches = new Map(); // scope -> { key, at, rows }
+const TTL = 10 * 60000;
+export const invalidatePriceList = () => { caches.clear(); };
+const lastUsed = new Map(); // scope -> Zeitpunkt der letzten Abfrage durch die Oberfläche
+function rowsFor(db, scope, key, { warm = false } = {}) {
+  if (!warm) lastUsed.set(scope, Date.now());
+  const c = caches.get(scope);
+  if (c && c.key === key && Date.now() - c.at <= TTL) return c.rows;
+  const rows = build(db, scope);
+  caches.set(scope, { key, at: Date.now(), rows });
+  return rows;
+}
+/**
+ * Preisliste im Hintergrund aktuell halten: beim Start beide Ausschnitte, danach alle 20 Sekunden nur die, die in den
+ * letzten 10 Minuten benutzt wurden (spart Rechenzeit, wenn niemand hinschaut).
+ */
+export function warmPriceList(db) {
+  const tick = (first = false) => {
+    try {
+      const key = dataVersion(db);
+      for (const scope of ['tracked', 'all']) if (first || Date.now() - (lastUsed.get(scope) ?? 0) < 10 * 60000) rowsFor(db, scope, key, { warm: true });
+    } catch (e) { console.error('Preisliste vorbereiten:', e.message); }
+  };
+  tick(true);
+  return setInterval(tick, 20000);
+}
 
 function build(db, scope) {
   const comps = db.prepare('SELECT id FROM competitors ORDER BY position, id').all();
   const products = db.prepare(`SELECT * FROM products WHERE active=1 ${scope === 'tracked' ? 'AND tracked=1' : ''}`).all();
-  const prev = new Map(db.prepare(`
-    SELECT match_id, price FROM (
-      SELECT match_id, price, ROW_NUMBER() OVER (PARTITION BY match_id ORDER BY at DESC) AS rn FROM price_history
-    ) WHERE rn = 2`).all().map((r) => [r.match_id, r.price]));
   const byProduct = new Map();
-  for (const m of db.prepare('SELECT * FROM matches').all()) {
+  for (const m of db.prepare('SELECT id, product_id, competitor_id, status, price, url, title, availability, last_checked, last_error, source, ai_note, prev_price FROM matches').all()) {
     if (!byProduct.has(m.product_id)) byProduct.set(m.product_id, {});
-    byProduct.get(m.product_id)[m.competitor_id] = matchView(m, prev.get(m.id));
+    byProduct.get(m.product_id)[m.competitor_id] = matchView(m, m.prev_price);
   }
   const seo = seoMap(db);
   const sales = salesMap(db);
@@ -205,15 +229,14 @@ function sorter(key, dir) {
   return byName;
 }
 
+// Datenstand: ändert sich bei jedem Abruf, Import oder jeder Zuordnung
+const dataVersion = (db) => db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(last_checked),'') || ':' || COALESCE(SUM(LENGTH(COALESCE(url,'')) + LENGTH(status)),0) FROM matches) || '|' ||
+    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM seo_audit) AS v`).get().v;
+
 export function listProducts(db, q = {}) {
   const counts = db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get();
   const scope = q.scope === 'all' || (q.scope !== 'tracked' && !counts.tracked) ? 'all' : 'tracked';
-  // Datenstand: ändert sich bei jedem Abruf, Import oder jeder Zuordnung
-  const v = db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(last_checked),'') || ':' || COALESCE(SUM(LENGTH(COALESCE(url,'')) + LENGTH(status)),0) FROM matches) || '|' ||
-    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM seo_audit) AS v`).get().v;
-  const key = `${scope}#${v}`;
-  if (!cache || cache.key !== key || Date.now() - cache.at > TTL) cache = { key, at: Date.now(), rows: build(db, scope) };
-  const all = cache.rows;
+  const all = rowsFor(db, scope, dataVersion(db));
   const base = all.filter(baseFilter(q));
   const chips = Object.fromEntries(Object.entries(CHIPS).map(([k, f]) => [k, base.filter(f).length]));
   const chip = CHIPS[q.filter] ?? CHIPS.all;
