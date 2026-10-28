@@ -19,13 +19,14 @@ export function shopwareConfig(db) {
   };
 }
 
-async function api(cfg, path, { token, body } = {}) {
+async function api(cfg, path, { token, body, headers = {} } = {}) {
   const res = await fetch(`${cfg.url}/api${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       accept: 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...headers,
     },
     body: JSON.stringify(body),
   });
@@ -206,4 +207,44 @@ export async function syncShopware(db) {
     throw e;
   }
   return { products: all.length, updated, unknown, with_purchase: withPurchase, sold_90: sold };
+}
+
+/**
+ * Angebotsdaten eines Artikels für Marktplätze: Beschreibung, Bilder, Hersteller, Eigenschaften, Maße.
+ * Mit `sw-inheritance` liefert Shopware bei Varianten die vom Hauptartikel geerbten Werte mit.
+ */
+export async function productDetails(db, { swId, number }) {
+  const cfg = shopwareConfig(db);
+  if (!cfg.configured) return null;
+  const tok = await token(cfg);
+  const res = await api(cfg, '/search/product', {
+    token: tok,
+    headers: { 'sw-inheritance': '1' },
+    body: {
+      limit: 1,
+      filter: [swId ? { type: 'equals', field: 'id', value: swId } : { type: 'equals', field: 'productNumber', value: String(number) }],
+      associations: { media: { sort: [{ field: 'position', order: 'ASC' }], associations: { media: {} } }, cover: { associations: { media: {} } }, manufacturer: {}, properties: { associations: { group: {} } }, options: { associations: { group: {} } } },
+      includes: {
+        product: ['id', 'productNumber', 'ean', 'manufacturerNumber', 'name', 'description', 'translated', 'media', 'cover', 'manufacturer', 'properties', 'options', 'stock', 'weight', 'width', 'height', 'length'],
+        product_media: ['media', 'position'], media: ['url', 'alt'], product_manufacturer: ['name', 'translated'],
+        property_group_option: ['name', 'translated', 'group'], property_group: ['name', 'translated'],
+      },
+    },
+  });
+  const p = res.data?.[0];
+  if (!p) return null;
+  const t = (x) => x?.translated?.name || x?.name || null;
+  const urls = [];
+  for (const m of [p.cover, ...(p.media ?? [])]) { const u = m?.media?.url; if (u && /^https:\/\//.test(u) && !urls.includes(u)) urls.push(u); }
+  const props = {};
+  for (const o of [...(p.properties ?? []), ...(p.options ?? [])]) {
+    const g = t(o.group);
+    if (!g) continue;
+    props[g] = props[g] ? `${props[g]}, ${t(o)}` : t(o);
+  }
+  return {
+    sw_id: p.id, number: p.productNumber, name: p.translated?.name || p.name, description: p.translated?.description || p.description || '',
+    ean: p.ean || null, mpn: p.manufacturerNumber || null, manufacturer: t(p.manufacturer), images: urls.slice(0, 12), properties: props,
+    stock: p.stock ?? null, weight: p.weight ?? null, dims: [p.length, p.width, p.height].every((v) => v) ? { length: p.length, width: p.width, height: p.height } : null,
+  };
 }

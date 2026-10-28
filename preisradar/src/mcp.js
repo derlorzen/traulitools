@@ -5,6 +5,9 @@ import { getSetting, setSetting } from './settings.js';
 import { tx } from './db.js';
 import { listProducts } from './pricelist.js';
 import { auditOverview, auditOf } from './seoaudit.js';
+import { findOpportunities } from './opportunities.js';
+import { ebayOverview } from './ebay.js';
+import { channelView, listChannels } from './channels.js';
 import { kwOverview, addKeywords, suggestions, postChecks, refreshVolumes, kwConfig, kwJob } from './keywords.js';
 
 /**
@@ -112,6 +115,9 @@ const TOOLS = [
   },
   { name: 'seo_audit_overview', description: 'Seiten-Check der eigenen Produktseiten: SEO-Wert, Befunde nach Art (Fehler, Warnungen, Hinweise) und die wichtigsten betroffenen Seiten. Filter: issue (Befund-Code), sev (error, warn, info, ok), important (nur verkaufte/täglich geprüfte Artikel).', inputSchema: obj({ issue: { type: 'string' }, sev: { type: 'string', enum: ['error', 'warn', 'info', 'ok'] }, important: { type: 'boolean' }, limit: { type: 'integer', minimum: 1, maximum: 100 } }) },
   { name: 'seo_audit_page', description: 'Seiten-Check eines Artikels: Titel, Beschreibung, Produktdaten, Befunde mit Erklärung und ggf. KI-Vorschlag.', inputSchema: obj({ id: { type: 'integer' } }, ['id']) },
+  { name: 'opportunities', description: 'Chancenfinder: Mitbewerber ausverkauft, fehlt auf eBay, eBay-Angebot zu teuer, bald ausverkauft, zu wenig Gewinn, Ladenhüter – mit Begründung, geschätztem Wert und Handlung.', inputSchema: obj({ type: { type: 'string', enum: ['comp_oos', 'ebay_missing', 'ebay_cheaper', 'stockout', 'low_profit', 'slow_mover'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }) },
+  { name: 'channel_prices', description: 'Gewinn, Marge, Preisuntergrenze und Vorschlag je Verkaufskanal (Shop, eBay, ggf. Amazon) für einen Artikel; dazu die Kanal-Einstellungen (Gebühren, Versand).', inputSchema: obj({ id: { type: 'integer' }, number: { type: 'string' } }) },
+  { name: 'ebay_overview', description: 'eBay: Verbindung, eigene Angebote mit Preis, günstigstem Mitbewerber auf eBay, Gewinn, und Angebote, deren Übernahme in JTL noch aussteht.', inputSchema: obj() },
   { name: 'keywords_overview', description: 'Keyword-Monitoring: Google-Platzierung (Top 50) je beobachtetem Keyword mit Veränderung, Suchvolumen, Search-Console-Daten und Mitbewerber-Positionen sowie Kennzahlen.', inputSchema: obj({ filter: { type: 'string', enum: ['all', 'top10', 'out', 'up', 'down', 'comp'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }) },
   { name: 'keyword_suggestions', description: 'Vorschläge für neue Keywords (Search Console, Bestseller, DataForSEO-Daten zu eigenem Shop und Mitbewerbern) mit Begründung.', inputSchema: obj({ limit: { type: 'integer', minimum: 1, maximum: 150 } }) },
   { name: 'add_keywords', description: 'Keywords zum Monitoring hinzufügen (höchstens 200 insgesamt). Sie werden sofort geprüft, wenn DataForSEO verbunden ist.', inputSchema: obj({ keywords: { type: 'array', items: { type: 'string' } }, tag: { type: 'string' } }, ['keywords']) },
@@ -139,6 +145,18 @@ function handlers(db, ownName, schedule, call) {
       return { geprueft: o.checked, seiten_gesamt: o.total, seo_wert_prozent: o.score, anzahl: o.counts, produktdaten_prozent: o.schema_share, befunde: o.issues.map((i) => ({ code: i.code, schwere: i.sev, befund: i.label, seiten: i.count, wichtig: i.important, tipp: i.hint })), seiten: o.pages.map((p) => ({ id: p.product_id, name: p.name, url: p.url, titel: p.title, beschreibung: p.description, befunde: p.issues.map((i) => `${i.label}${i.detail ? ` (${i.detail})` : ''}`) })) };
     },
     seo_audit_page: ({ id } = {}) => auditOf(db, Number(id)),
+    opportunities: ({ type = null, limit = 50 } = {}) => {
+      const o = findOpportunities(db);
+      return { anzahl: o.counts, chancen: o.items.filter((i) => !type || i.type === type).slice(0, limit).map((i) => ({ id: i.product_id, nummer: i.number, name: i.name, chance: i.label, warum: i.detail, wert_eur: i.value, handlung: i.action, preisvorschlag: i.suggested_price ?? null, kanal: i.channel ?? null })) };
+    },
+    channel_prices: ({ id, number } = {}) => {
+      const p = id != null ? db.prepare('SELECT * FROM products WHERE id=?').get(id) : db.prepare('SELECT * FROM products WHERE number=?').get(String(number ?? ''));
+      if (!p) throw new Error('Artikel nicht gefunden');
+      const l = db.prepare("SELECT price FROM ebay_listings WHERE status='active' AND product_id=?").get(p.id);
+      const m = db.prepare('SELECT min_total FROM ebay_market WHERE product_id=?').get(p.id);
+      return { artikel: { id: p.id, number: p.number, name: p.name, einkauf_netto: p.purchase_price }, kanaele: channelView(db, p, { prices: { shop: p.price, ebay: l?.price ?? null }, market: { ebay: m?.min_total ?? null } }), einstellungen: listChannels(db) };
+    },
+    ebay_overview: () => { const o = ebayOverview(db); return { ...o, listings: o.listings.slice(0, 100) }; },
     keywords_overview: ({ filter = 'all', limit = 200 } = {}) => {
       const o = kwOverview(db);
       const f = { all: () => true, top10: (k) => k.position != null && k.position <= 10, out: (k) => k.position === null, up: (k) => k.change1 > 0, down: (k) => k.change1 < 0, comp: (k) => k.better > 0 }[filter] ?? (() => true);

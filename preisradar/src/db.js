@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ensureChannels } from './channels.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS products (
@@ -110,6 +111,10 @@ CREATE TABLE IF NOT EXISTS kw_suggestions (keyword TEXT NOT NULL COLLATE NOCASE,
 CREATE TABLE IF NOT EXISTS seo_audit (product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, url TEXT, checked_at TEXT NOT NULL, http_status INTEGER, final_url TEXT, ms INTEGER, bytes INTEGER,
   title TEXT, description TEXT, h1 TEXT, h1_count INTEGER, canonical TEXT, robots TEXT, schema TEXT, words INTEGER, text_hash TEXT, images INTEGER, images_no_alt INTEGER, og INTEGER, issues TEXT NOT NULL DEFAULT '[]', error TEXT);
 CREATE TABLE IF NOT EXISTS seo_ai (product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, title TEXT, description TEXT, notes TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS channels (key TEXT PRIMARY KEY, name TEXT NOT NULL, fee_percent REAL NOT NULL DEFAULT 0, fee_fixed REAL NOT NULL DEFAULT 0, shipping_cost REAL NOT NULL DEFAULT 0, target_margin REAL NOT NULL DEFAULT 20, min_profit REAL NOT NULL DEFAULT 0, ending TEXT NOT NULL DEFAULT '99', active INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS ebay_listings (item_id TEXT PRIMARY KEY, sku TEXT, product_id INTEGER REFERENCES products(id) ON DELETE SET NULL, title TEXT, price REAL, quantity INTEGER, sold INTEGER, variation INTEGER NOT NULL DEFAULT 0, url TEXT, status TEXT NOT NULL DEFAULT 'active', created_by_us INTEGER NOT NULL DEFAULT 0, jtl_state TEXT, created_at TEXT, checked_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_ebay_listings_product ON ebay_listings(product_id);
+CREATE TABLE IF NOT EXISTS ebay_market (product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, checked_at TEXT NOT NULL, offers INTEGER, min_total REAL, min_price REAL, min_shipping REAL, min_seller TEXT, min_url TEXT, min_title TEXT, own_rank INTEGER, error TEXT);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT NOT NULL,
@@ -148,6 +153,7 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   if (!compCols2.includes('templates')) db.exec('ALTER TABLE competitors ADD COLUMN templates TEXT');
   if (!compCols2.includes('manual_search_url')) db.exec('ALTER TABLE competitors ADD COLUMN manual_search_url TEXT');
   if (!db.prepare('PRAGMA table_info(runs)').all().some((c) => c.name === 'heartbeat')) db.exec('ALTER TABLE runs ADD COLUMN heartbeat TEXT');
+  ensureChannels(db);
   return db;
 }
 

@@ -764,3 +764,31 @@ ul.auditlist li.error { border-color: var(--bad); } ul.auditlist li.warn { borde
   .sctable td.sncell::before { display: block; margin-bottom: 6px; }
   .issuerow { grid-template-columns: 12px minmax(0, 1fr) auto; }
 }
+
+/* Kanäle, eBay, Chancen */
+.chtable td, .chtable th { white-space: nowrap; }
+.chtable small { font-size: 11px; }
+.chset input.chnum { width: 86px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 8px; font: inherit; }
+.chset select { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 8px; font: inherit; }
+input.kwtag.wide { flex: 1; min-width: 0; width: 100%; }
+.catlist { display: grid; gap: 4px; margin-top: 6px; max-height: 220px; overflow: auto; }
+.catopt { display: flex; gap: 8px; align-items: baseline; font-size: 13.5px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.catopt:hover { background: var(--sunk); }
+.specbox .grid { margin-top: 6px; }
+.calcout { margin: 8px 0; }
+.imgpick { display: flex; flex-wrap: wrap; gap: 8px; }
+.imgpick label { position: relative; display: block; cursor: pointer; }
+.imgpick img { width: 84px; height: 84px; object-fit: contain; background: #fff; border: 1px solid var(--line); border-radius: 8px; display: block; }
+.imgpick input { position: absolute; top: 4px; left: 4px; }
+textarea.desc { width: 100%; font: 12.5px/1.4 ui-monospace, monospace; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 8px; padding: 8px; }
+iframe.descprev { width: 100%; height: 220px; border: 1px solid var(--line); border-radius: 8px; background: #fff; margin-top: 8px; }
+.jtlsteps { font-size: 13.5px; margin: 8px 0 12px; padding-left: 20px; list-style: decimal; display: grid; gap: 4px; }
+.note.good { border-color: var(--good); background: var(--good-bg); }
+.ebtable { min-width: 980px; }
+.opptable { min-width: 900px; }
+.opptable td.kurl { max-width: 380px; }
+.whatif-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; margin-top: 10px; align-items: start; }
+.whatif-in input.calcin { width: 110px; }
+.row label input.calcin { width: 70px; }
+.whatif th { text-align: left; font-weight: 500; }
+@media (max-width: 760px) { .whatif-grid { grid-template-columns: 1fr; } .whatif-in input.calcin { width: 90px; } }

@@ -584,6 +584,7 @@ async function openDrawer(id, given = null) {
     p.google?.suggested && Math.abs(p.google.suggested - p.price) >= 0.01 ? h('p', { class: 'note' }, `Google-Preisvorschlag: ${eur.format(p.google.suggested)}${p.google.conversions_change != null ? `, erwartet ${p.google.conversions_change > 0 ? '+' : ''}${Math.round(p.google.conversions_change * 100)} % Verkäufe in Shopping` : ''}.`) : null,
     h('h3', { style: 'margin-top:18px' }, 'Preisverlauf'), histBox,
     h('h3', { style: 'margin-top:22px' }, 'Bei Google (letzte 28 Tage)'), seoDrawerBox(p.id),
+    h('h3', { style: 'margin-top:22px' }, 'Preise je Kanal'), channelBox(p),
     p.url ? [h('h3', { style: 'margin-top:22px' }, 'Seiten-Check (SEO)'), seoAuditBox(p.id)] : null,
     h('h3', { style: 'margin-top:22px' }, 'Mitbewerber'),
     ...a.cells.map(({ c, m }) => {
@@ -1208,6 +1209,366 @@ function seoDrawerBox(id) {
   return box;
 }
 
+// ---------- Verkaufskanäle, eBay, Chancen ----------
+const r2c = (v) => Math.round(v * 100) / 100;
+const chProfit = (gross, cost, ch, vat = 19) => (gross == null || !(cost > 0) || !ch ? null : r2c(gross / (1 + vat / 100) - gross * (ch.fee_percent / 100) - ch.fee_fixed - ch.shipping_cost - cost));
+const chMargin = (gross, cost, ch, vat = 19) => { const p = chProfit(gross, cost, ch, vat); const net = gross / (1 + vat / 100); return p == null || !(net > 0) ? null : Math.round((p / net) * 1000) / 10; };
+const money = (v) => (v == null ? '–' : eur.format(v));
+const pctTxt = (v) => (v == null ? '–' : `${nf1.format(v)} %`);
+
+/** „Preise je Kanal“ in der Detailansicht eines Artikels. */
+function channelBox(p) {
+  const box = h('div', { class: 'chbox' }, h('p', { class: 'pmeta' }, 'Wird berechnet …'));
+  api(`/api/products/${p.id}/channels`).then((r) => {
+    if (!r.purchase_price) { box.replaceChildren(h('p', { class: 'pmeta' }, 'Ohne Einkaufspreis keine Gewinnrechnung. Einkaufspreise kommen aus Shopware oder per CSV unter Import.')); return; }
+    const l = r.ebay.listing;
+    box.replaceChildren(
+      h('table', { class: 'plain chtable' },
+        h('thead', {}, h('tr', {}, ['Kanal', 'Preis', 'Gewinn', 'Marge', 'Untergrenze', 'Günstigster am Markt', 'Vorschlag'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, r.channels.map((c) => h('tr', {},
+          h('td', {}, c.name),
+          h('td', {}, c.price != null ? money(c.price) : h('span', { class: 'pmeta' }, c.key === 'ebay' ? 'nicht auf eBay' : '–')),
+          h('td', { class: c.profit == null ? '' : c.profit < 0 ? 'warmtxt' : 'cooltxt' }, money(c.profit)),
+          h('td', {}, pctTxt(c.margin)),
+          h('td', { title: 'Preis mit genau dem Mindestgewinn nach Einkauf, Gebühren und Versand' }, money(c.floor)),
+          h('td', {}, c.market != null ? [money(c.market), c.key === 'ebay' && r.ebay.market?.min_seller ? h('small', { class: 'pmeta' }, ` ${r.ebay.market.min_seller}`) : null] : '–'),
+          h('td', {}, c.suggestion != null ? [money(c.suggestion), c.market_reachable === false ? h('small', { class: 'warmtxt' }, ' Markt unter Untergrenze') : null] : c.target != null ? h('span', { title: 'Zielpreis nach Zielmarge' }, money(c.target)) : '–'))))),
+      h('div', { class: 'row', style: 'margin-top:8px' },
+        l ? h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer' }, `eBay-Angebot ${l.item_id}`) : null,
+        l?.created_by_us && l.jtl_state === 'pending' ? h('span', { class: 'tag warn' }, 'Übernahme in JTL ausstehend') : null,
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn small', onclick: () => { calcState.product = { ...p, units_30: p.sales?.units_30 ?? 0 }; setTab('chancen'); } }, 'Im Rechner öffnen'),
+        !l && state.data.config.ebayConnected ? h('button', { class: 'btn small', onclick: () => openListingEditor(p.id) }, 'Auf eBay einstellen') : null,
+        state.data.config.ebay && p.ean ? h('button', { class: 'btn small', onclick: guard(async () => { await api('/api/ebay/market', { body: { ids: [p.id] } }); toast('eBay-Preise geprüft'); box.replaceWith(channelBox(p)); }) }, 'eBay-Preise prüfen') : null));
+  }).catch((e) => box.replaceChildren(h('p', { class: 'pmeta' }, e.message)));
+  return box;
+}
+
+// ---------- eBay-Bereich ----------
+const JTL_STEPS = [
+  'In JTL-Wawi „Plattformen → eBay → Angebotsimport“ öffnen und „eBay-Angebote laden“ klicken.',
+  'Prüfen, dass in der Spalte „Art.Nr. (zugeordnet)“ die Artikelnummer steht (gelbe oder grüne Zeile). Die Zuordnung läuft über die eBay-SKU, die Preisradar immer auf die Artikelnummer setzt.',
+  'Unter „Einstellungen → Bestände“ die Option „Bestand beibehalten“ wählen, damit der JTL-Bestand nicht von der Angebotsmenge überschrieben wird.',
+  'Nicht „Artikel aus Angebot neu erstellen“ klicken: Das legt neue Artikel an (Dubletten). Ist eine Zeile rot, das Angebot dem vorhandenen Artikel von Hand zuordnen.',
+  '„Speichern“: JTL übernimmt die Angebote und kümmert sich ab jetzt um Bestand, Preis und Aufträge.',
+];
+
+async function renderEbay(root) {
+  const o = await api('/api/ebay');
+  const c = o.config;
+  const conn = new URLSearchParams(location.search).get('ebay');
+  if (conn) { history.replaceState(null, '', '/'); toast(conn === 'connected' ? 'eBay verbunden' : `eBay: ${new URLSearchParams(location.search).get('msg') || 'Verbindung fehlgeschlagen'}`, conn !== 'connected'); }
+  root.append(h('div', { class: 'pagehead' }, h('h2', {}, 'eBay'),
+    c.connected ? h('span', { class: 'pmeta' }, `verbunden als ${c.username ?? 'eBay-Konto'}`) : null,
+    h('span', { class: 'spacer' }),
+    c.connected ? h('button', { class: 'btn', onclick: guard(async () => { const r = await api('/api/ebay/sync', { body: {} }); toast(`${r.listings} Angebote gelesen, ${r.matched} zugeordnet`); render(); }) }, 'Angebote abgleichen') : null,
+    c.app ? h('button', { class: 'btn', disabled: o.market.job.running, onclick: guard(async () => { const r = await api('/api/ebay/market', { body: {} }); toast(`${r.job.total} Artikel werden auf eBay gesucht`); render(); }) }, o.market.job.running ? `prüft ${o.market.job.done} von ${o.market.job.total} …` : 'Mitbewerberpreise prüfen') : null));
+
+  if (!c.app || !c.connected) {
+    root.append(h('div', { class: 'panel head' },
+      h('div', {},
+        h('strong', {}, !c.app ? 'eBay ist noch nicht eingerichtet. ' : 'Noch nicht mit Marcos eBay-Konto verbunden. '),
+        !c.app ? 'Mit einem kostenlosen eBay-Entwicklerkonto sieht Preisradar die Preise der Mitbewerber auf eBay. Mit der Verbindung zum Verkäuferkonto kommen die eigenen Angebote und das Einstellen dazu.'
+          : c.can_connect ? 'Mitbewerberpreise laufen schon. Für eigene Angebote und das Einstellen einmal bei eBay anmelden und zustimmen.' : 'Für die Verbindung fehlt noch der RuName unter Einstellungen → eBay.'),
+      h('span', { class: 'spacer' }),
+      c.can_connect && !c.connected ? h('a', { class: 'btn primary', href: '/api/ebay/connect' }, 'Mit eBay verbinden') : h('button', { class: 'btn primary', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('ebay-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'eBay einrichten')));
+  }
+  if (c.app) root.append(h('div', { class: 'kpis' },
+    kpiTile('Eigene Angebote', h('span', { 'data-count': o.listings.length }, nf.format(o.listings.length)), o.listings_at ? `abgeglichen ${dt.format(new Date(o.listings_at))}` : 'noch nicht abgeglichen'),
+    kpiTile('Mitbewerber geprüft', nf.format(o.market.checked), `${nf.format(o.market.with_offers)} mit Angeboten auf eBay`),
+    kpiTile('Übernahme in JTL', nf.format(o.pending_jtl), 'eingestellt, noch nicht übernommen', o.pending_jtl ? 'warm' : ''),
+    kpiTile('eBay-Gebühr', `${nf1.format(o.fees.fee_percent)} %`, `+ ${eur.format(o.fees.fee_fixed)} je Verkauf, anpassbar unter Einstellungen`)));
+
+  // Übernahme in JTL
+  const pending = o.listings.filter((l) => l.created_by_us && l.jtl_state === 'pending');
+  if (pending.length) {
+    root.append(h('section', { class: 'panel jtlpanel' }, h('h3', {}, `${pending.length} Angebote in JTL übernehmen`),
+      h('p', { class: 'pmeta' }, 'Bis zur Übernahme kennt JTL diese Angebote nicht: Der Bestand wird nicht abgeglichen. Am besten gleich nach dem Einstellen übernehmen.'),
+      h('ol', { class: 'plainlist jtlsteps' }, JTL_STEPS.map((t) => h('li', {}, t))),
+      h('table', { class: 'plain' }, h('tbody', {}, pending.map((l) => h('tr', {},
+        h('td', {}, h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer' }, l.item_id)),
+        h('td', {}, l.title), h('td', {}, `SKU ${l.sku}`), h('td', {}, money(l.price)),
+        h('td', {}, h('button', { class: 'btn small', onclick: guard(async () => { await api(`/api/ebay/listings/${l.item_id}/jtl`, { body: { state: 'imported' } }); toast('Als übernommen markiert'); render(); }) }, 'In JTL übernommen'))))))));
+  }
+
+  // Chancen für eBay
+  if (c.connected) root.append(h('div', { class: 'panel head' }, h('div', {}, h('strong', {}, 'Was auf eBay fehlt: '), 'Artikel, die sich im Shop verkaufen und auf eBay nach Gebühren Gewinn bringen, stehen unter Chancen.'),
+    h('span', { class: 'spacer' }), h('button', { class: 'btn', onclick: () => { opp.type = 'ebay_missing'; setTab('chancen'); } }, 'Fehlt auf eBay ansehen')));
+
+  // Eigene Angebote
+  if (o.listings.length) {
+    root.append(h('h3', { class: 'sechead' }, 'Eigene Angebote'),
+      h('div', { class: 'tablewrap kwwrap' }, h('table', { class: 'prices kwtable ebtable' },
+        h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Angebot'), ...['Preis', 'Menge', 'Verkauft', 'Günstigster auf eBay', 'Gewinn', 'Marge', 'Hinweis'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, o.listings.map((l) => h('tr', { tabindex: 0, onclick: () => l.product_id && openDrawer(l.product_id) },
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, l.title), h('div', { class: 'pmeta' }, [`SKU ${l.sku ?? '–'}`, l.name && l.name !== l.title ? l.name : null].filter(Boolean).join(' · ')), l.created_by_us ? h('span', { class: `tag ${l.jtl_state === 'pending' ? 'warn' : 'tier'}` }, l.jtl_state === 'pending' ? 'JTL-Übernahme offen' : 'über Preisradar eingestellt') : null),
+          h('td', { class: 'mcell', 'data-label': 'Preis' }, money(l.price)),
+          h('td', { class: 'mcell', 'data-label': 'Menge' }, String(l.quantity ?? '–')),
+          h('td', { class: 'mcell', 'data-label': 'Verkauft' }, String(l.sold ?? 0)),
+          h('td', { class: 'mcell', 'data-label': 'Günstigster auf eBay' }, l.market?.min_total != null ? [money(l.market.min_total), h('small', { class: 'pmeta kbest' }, `${l.market.min_seller} · ${l.market.offers} Angebote`)] : l.market?.error ? h('small', { class: 'pmeta' }, l.market.error) : '–'),
+          h('td', { class: `mcell ${l.calc?.profit < 0 ? 'warmtxt' : ''}`, 'data-label': 'Gewinn' }, money(l.calc?.profit)),
+          h('td', { class: 'mcell', 'data-label': 'Marge' }, pctTxt(l.calc?.margin)),
+          h('td', { class: 'mcell kurl', 'data-label': 'Hinweis' }, !l.product_id ? h('span', { class: 'warmtxt' }, 'SKU passt zu keinem Artikel') : l.calc?.profit != null && l.calc.profit < 0 ? h('span', { class: 'warmtxt' }, 'Verlust je Verkauf') : l.market?.min_total != null && l.price > l.market.min_total + 0.01 ? `${money(l.price - l.market.min_total)} über dem Günstigsten` : l.market?.min_total != null ? h('span', { class: 'goodtxt' }, 'günstigster') : '')))))));
+  } else if (c.connected) root.append(h('div', { class: 'panel empty' }, h('h3', {}, 'Keine eigenen Angebote gefunden'), h('p', {}, '„Angebote abgleichen“ liest die aktiven Angebote aus dem eBay-Konto.')));
+}
+
+// ---------- Angebot einstellen ----------
+async function openListingEditor(productId) {
+  const el = document.getElementById('drawer');
+  el.hidden = false;
+  document.body.classList.add('drawer-open');
+  const top = h('div', { class: 'drawer-top' }, h('button', { class: 'btn small close', onclick: closeDrawer, 'aria-label': 'Schließen' }, 'Schließen'));
+  el.replaceChildren(top, h('p', { class: 'pmeta' }, 'Angebot wird vorbereitet (Shopware-Daten, eBay-Kategorie) …'));
+  const d = await api(`/api/ebay/draft/${productId}`).catch((e) => { toast(e.message, true); return null; });
+  if (!d) return;
+  const df = d.defaults;
+  const ch = d.channel;
+  const vat = d.product.tax_rate ?? 19;
+  const cost = d.product.purchase_price;
+  const title = h('input', { type: 'text', value: df.title, maxlength: 80, class: 'kwtag wide', 'aria-label': 'Titel' });
+  const titleCount = h('small', { class: 'pmeta' });
+  const upCount = () => { titleCount.textContent = `${title.value.length} von 80 Zeichen`; };
+  title.oninput = upCount; upCount();
+  const price = h('input', { type: 'number', step: '0.01', min: 0, value: df.price ?? '', class: 'kwtag', 'aria-label': 'Preis' });
+  const qty = h('input', { type: 'number', min: 1, step: 1, value: df.quantity || 1, class: 'kwtag', 'aria-label': 'Menge' });
+  const ean = h('input', { type: 'text', value: df.ean, class: 'kwtag', 'aria-label': 'EAN' });
+  const cond = h('select', { class: 'kwtag', 'aria-label': 'Zustand' }, [[1000, 'Neu'], [1500, 'Neu: Sonstige']].map(([v, t]) => h('option', { value: v, selected: Number(df.condition) === v }, t)));
+  const calcOut = h('div', { class: 'pmeta calcout' });
+  const upCalc = () => {
+    const pv = Number(price.value);
+    const pr = chProfit(pv, cost, ch, vat);
+    calcOut.replaceChildren(cost > 0 ? h('span', { class: pr < 0 ? 'warmtxt' : '' }, `Gewinn je Verkauf ${money(pr)} · Marge ${pctTxt(chMargin(pv, cost, ch, vat))} · eBay-Gebühr ${money(r2c(pv * ch.fee_percent / 100 + ch.fee_fixed))}`) : 'Ohne Einkaufspreis keine Gewinnrechnung.',
+      d.calc?.floor != null ? h('span', {}, ` · Untergrenze ${money(d.calc.floor)}`) : null,
+      d.market?.min_total != null ? h('span', {}, ` · günstigstes eBay-Angebot ${money(d.market.min_total)} (${d.market.min_seller})`) : d.market?.offers === 0 ? h('span', {}, ' · auf eBay kein anderes Angebot') : null);
+  };
+  price.oninput = upCalc; upCalc();
+  const imgs = new Set(df.images);
+  const imgBox = h('div', { class: 'imgpick' }, df.images.length ? df.images.map((u) => { const cb = h('input', { type: 'checkbox', checked: true, onchange: (e) => (e.target.checked ? imgs.add(u) : imgs.delete(u)) }); return h('label', {}, cb, h('img', { src: u, alt: '', loading: 'lazy' })); }) : h('p', { class: 'pmeta' }, 'Keine Bilder (Shopware nicht verbunden oder Artikel ohne Bilder). Ohne Bild lehnt eBay das Angebot meist ab.'));
+  const desc = h('textarea', { rows: 6, class: 'desc', 'aria-label': 'Beschreibung (HTML)' }, df.description);
+  const descPrev = h('iframe', { class: 'descprev', sandbox: '', title: 'Vorschau der Beschreibung' });
+  const upDesc = () => { descPrev.srcdoc = `<style>body{font:14px/1.45 system-ui,sans-serif;margin:8px;color:#222}</style>${desc.value}`; };
+  desc.oninput = upDesc; upDesc();
+  // Kategorie und Merkmale
+  let catId = '';
+  const spec = { ...df.specifics };
+  const specBox = h('div', { class: 'specbox' }, h('p', { class: 'pmeta' }, 'Zuerst eine Kategorie wählen.'));
+  const loadAspects = async (id) => {
+    catId = id;
+    specBox.replaceChildren(h('p', { class: 'pmeta' }, 'Merkmale werden geladen …'));
+    const asp = await api(`/api/ebay/aspects?category=${encodeURIComponent(id)}`);
+    const known = new Set(asp.map((a) => a.name));
+    specBox.replaceChildren(h('div', { class: 'grid' }, asp.map((a) => {
+      const listId = `asp-${a.name.replace(/\W/g, '')}`;
+      return h('div', { class: 'field' }, h('label', {}, a.name, a.required ? h('b', { class: 'warmtxt' }, ' *') : null),
+        h('input', { type: 'text', value: spec[a.name] ?? '', list: a.values.length ? listId : null, oninput: (e) => { spec[a.name] = e.target.value; } }),
+        a.values.length ? h('datalist', { id: listId }, a.values.map((v) => h('option', { value: v }))) : null);
+    })), Object.keys(spec).filter((k) => !known.has(k) && spec[k]).length ? h('p', { class: 'pmeta' }, `Zusätzlich aus Shopware: ${Object.keys(spec).filter((k) => !known.has(k) && spec[k]).map((k) => `${k}: ${spec[k]}`).join(' · ')}`) : null);
+  };
+  const catList = h('div', { class: 'catlist' });
+  const catQ = h('input', { type: 'search', class: 'kwtag wide', value: d.product.name, 'aria-label': 'Kategorie suchen' });
+  const searchCats = guard(async () => {
+    catList.replaceChildren(h('p', { class: 'pmeta' }, 'Suche …'));
+    const cats = await api(`/api/ebay/categories?q=${encodeURIComponent(catQ.value)}`);
+    catList.replaceChildren(...cats.map((c, i) => h('label', { class: 'catopt' }, h('input', { type: 'radio', name: 'ebcat', value: c.id, checked: i === 0, onchange: () => loadAspects(c.id) }), h('span', {}, c.path, h('small', { class: 'pmeta' }, ` (${c.id})`)))));
+    if (cats[0]) loadAspects(cats[0].id);
+  });
+  catQ.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); searchCats(); } };
+  const result = h('div', {});
+  const body = () => ({ title: title.value, category_id: catId, price: price.value, quantity: qty.value, condition: cond.value, ean: ean.value, specifics: spec, images: [...imgs], description: desc.value });
+  el.replaceChildren(top,
+    h('h2', {}, 'Auf eBay einstellen'),
+    h('p', { class: 'pmeta' }, `${d.product.name} · Art.-Nr. ${d.product.number} · Bestand ${d.product.stock ?? '–'}`),
+    d.existing ? h('p', { class: 'note warn' }, `Für diese Artikelnummer läuft schon ein eBay-Angebot (${d.existing.item_id}). Ein zweites Angebot wird nicht angelegt.`) : null,
+    d.shopware_error ? h('p', { class: 'note' }, d.shopware_error) : null,
+    !d.policies_ok ? h('p', { class: 'note warn' }, 'Unter Einstellungen → eBay fehlen Versand-, Zahlungs- oder Rücknahmerichtlinie bzw. Artikelstandort.') : null,
+    h('p', { class: 'note' }, `SKU des Angebots: ${df.sku} (= Artikelnummer). Darüber ordnet JTL das Angebot beim Angebotsimport dem vorhandenen Artikel zu, es entsteht keine Dublette.`),
+    h('div', { class: 'field' }, h('label', {}, 'Titel'), h('div', { class: 'row' }, title, state.data.config.ai ? h('button', { class: 'btn small', onclick: guard(async (e) => { const b = e.currentTarget; b.disabled = true; try { const r = await api(`/api/ebay/texts/${productId}`, { body: { title: title.value, specifics: spec, only: 'title' } }); title.value = r.title; upCount(); } finally { b.disabled = false; } }) }, 'KI-Vorschlag') : null), titleCount),
+    h('div', { class: 'field' }, h('label', {}, 'eBay-Kategorie'), h('div', { class: 'row' }, catQ, h('button', { class: 'btn small', onclick: searchCats }, 'Suchen')), catList),
+    h('h3', { style: 'margin-top:14px' }, 'Artikelmerkmale'), specBox,
+    h('div', { class: 'grid', style: 'margin-top:10px' },
+      h('div', { class: 'field' }, h('label', {}, 'Preis (brutto)'), price),
+      h('div', { class: 'field' }, h('label', {}, 'Menge'), qty, h('span', { class: 'hint' }, 'Nach der Übernahme in JTL gleicht JTL den Bestand ab.')),
+      h('div', { class: 'field' }, h('label', {}, 'EAN'), ean),
+      h('div', { class: 'field' }, h('label', {}, 'Zustand'), cond)),
+    calcOut,
+    h('h3', { style: 'margin-top:14px' }, 'Bilder'), imgBox,
+    h('div', { class: 'row', style: 'margin-top:14px' }, h('h3', { style: 'margin:0' }, 'Beschreibung'), h('span', { class: 'spacer' }),
+      state.data.config.ai ? h('button', { class: 'btn small', onclick: guard(async (e) => {
+        const b = e.currentTarget; b.disabled = true; b.textContent = 'KI schreibt …';
+        try { const r = await api(`/api/ebay/texts/${productId}`, { body: { title: title.value, specifics: spec } }); title.value = r.title; upCount(); if (r.description_html) { desc.value = r.description_html; upDesc(); } toast('Titel und Beschreibung übernommen, bitte prüfen'); }
+        finally { b.disabled = false; b.textContent = 'Titel und Beschreibung von der KI'; }
+      }) }, 'Titel und Beschreibung von der KI') : null),
+    desc, descPrev,
+    h('div', { class: 'row', style: 'margin-top:14px' },
+      h('button', { class: 'btn', disabled: Boolean(d.existing), onclick: guard(async () => {
+        result.replaceChildren(h('p', { class: 'pmeta' }, 'eBay prüft das Angebot …'));
+        const r = await api(`/api/ebay/verify/${productId}`, { body: body() });
+        result.replaceChildren(h('div', { class: 'note' }, h('strong', {}, 'eBay würde das Angebot annehmen. '), `Einstellgebühren laut eBay: ${money(r.fees)}.`, r.warnings.length ? h('ul', {}, r.warnings.map((w) => h('li', {}, w))) : null));
+      }) }, 'Bei eBay prüfen'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', disabled: Boolean(d.existing) || !d.policies_ok, onclick: guard(async () => {
+        if (!confirm(`„${title.value}“ für ${money(Number(price.value))} auf eBay einstellen?`)) return;
+        const r = await api(`/api/ebay/list/${productId}`, { body: body() });
+        result.replaceChildren(h('div', { class: 'note good' }, h('strong', {}, `Eingestellt: Angebot ${r.item_id}. `), h('a', { href: `https://www.ebay.de/itm/${r.item_id}`, target: '_blank', rel: 'noopener noreferrer' }, 'bei eBay ansehen'),
+          h('p', {}, 'Jetzt in JTL übernehmen:'), h('ol', { class: 'plainlist jtlsteps' }, JTL_STEPS.map((t) => h('li', {}, t)))));
+        toast('Auf eBay eingestellt');
+      }) }, 'Auf eBay einstellen')),
+    result);
+  searchCats();
+}
+
+// ---------- Was-wäre-wenn-Rechner (aus dem Marktschreier) ----------
+const calcState = { product: null };
+async function whatIfPanel(prefill = null) {
+  const chans = (await api('/api/channels')).filter((c) => c.active);
+  const p = prefill ?? calcState.product;
+  const num = (v) => { const n = Number(String(v).replace(',', '.')); return Number.isFinite(n) ? n : 0; };
+  const mk = (val) => h('input', { type: 'text', inputmode: 'decimal', value: val, class: 'kwtag calcin' });
+  const now = { price: mk(p?.price ?? 99), cost: mk(p?.purchase_price ?? 50), units: mk(p?.units_30 ?? 10), ads: mk(0) };
+  const plan = { price: mk(p?.price ?? 99), cost: mk(p?.purchase_price ?? 50), units: mk(p?.units_30 ?? 10), ads: mk(0) };
+  const chSel = h('select', { class: 'kwtag', 'aria-label': 'Kanal' }, chans.map((c) => h('option', { value: c.key }, c.name)));
+  const vat = h('input', { type: 'text', inputmode: 'decimal', value: p?.tax_rate ?? 19, class: 'kwtag calcin', 'aria-label': 'MwSt' });
+  const target = h('input', { type: 'text', inputmode: 'decimal', value: 20, class: 'kwtag calcin', 'aria-label': 'Zielmarge' });
+  const out = h('div', { class: 'whatif-out' });
+  const calc = () => {
+    const ch = chans.find((c) => c.key === chSel.value);
+    const v = num(vat.value);
+    const col = (o) => {
+      const price = num(o.price.value), cost = num(o.cost.value), units = num(o.units.value), ads = num(o.ads.value);
+      const per = chProfit(price, cost, ch, v);
+      const month = per == null ? null : r2c(per * units - ads);
+      return { per, month, margin: chMargin(price, cost, ch, v), revenue: r2c(price * units), fees: r2c((price * ch.fee_percent / 100 + ch.fee_fixed) * units), breakeven: per > 0 ? Math.ceil(ads / per) : null };
+    };
+    const a = col(now), b = col(plan);
+    const tm = num(target.value);
+    const den = (1 - tm / 100) / (1 + num(vat.value) / 100) - ch.fee_percent / 100;
+    const tgt = den > 0.01 ? r2c((num(plan.cost.value) + ch.fee_fixed + ch.shipping_cost) / den) : null;
+    const diff = a.month != null && b.month != null ? r2c(b.month - a.month) : null;
+    const row = (label, x, y, fmt = money) => h('tr', {}, h('th', {}, label), h('td', {}, fmt(x)), h('td', {}, fmt(y)));
+    out.replaceChildren(h('table', { class: 'plain whatif' },
+      h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Heute'), h('th', {}, 'Plan'))),
+      h('tbody', {}, row('Gewinn je Verkauf', a.per, b.per), row('Marge', a.margin, b.margin, pctTxt), row('Umsatz im Monat', a.revenue, b.revenue), row('Gebühren im Monat', a.fees, b.fees), row('Gewinn im Monat', a.month, b.month),
+        row('Verkäufe bis Werbung bezahlt', a.breakeven, b.breakeven, (v2) => (v2 == null ? '–' : nf.format(v2))))),
+      h('p', { class: diff > 0 ? 'goodtxt' : diff < 0 ? 'warmtxt' : 'pmeta' }, diff == null ? 'Einkaufspreis fehlt.' : diff === 0 ? 'Plan und heute gleich.' : `Der Plan bringt ${diff > 0 ? '' : 'minus '}${money(Math.abs(diff))} ${diff > 0 ? 'mehr' : 'weniger'} Gewinn im Monat.`),
+      h('p', { class: 'pmeta' }, `Für ${nf1.format(tm)} % Marge auf ${ch.name} bräuchte der Plan einen Preis von ${money(tgt)}.`));
+  };
+  for (const x of [...Object.values(now), ...Object.values(plan), vat, target]) x.oninput = calc;
+  chSel.onchange = calc;
+  const line = (label, k, hint) => h('tr', {}, h('th', {}, label, hint ? h('small', { class: 'pmeta' }, ` ${hint}`) : null), h('td', {}, now[k]), h('td', {}, plan[k]));
+  const panel = h('section', { class: 'panel', id: 'whatif' },
+    h('h3', {}, 'Was-wäre-wenn-Rechner'),
+    h('p', { class: 'pmeta' }, p ? `Mit den Werten von ${p.name}. Stückzahl = Verkäufe der letzten 30 Tage.` : 'Preis, Einkauf, Stückzahl und Werbebudget durchspielen. Aus einem Artikel heraus („im Rechner öffnen“) mit dessen Werten.'),
+    h('div', { class: 'row' }, h('label', {}, 'Kanal ', chSel), h('label', {}, 'MwSt % ', vat), h('label', {}, 'Zielmarge % ', target)),
+    h('div', { class: 'whatif-grid' },
+      h('table', { class: 'plain whatif-in' }, h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Heute'), h('th', {}, 'Plan'))),
+        h('tbody', {}, line('Preis brutto €', 'price'), line('Einkauf netto €', 'cost'), line('Stück im Monat', 'units'), line('Werbung im Monat €', 'ads'))),
+      out));
+  calc();
+  return panel;
+}
+
+// ---------- Chancen ----------
+const opp = { type: '', data: null };
+async function renderChancen(root) {
+  const [o, calcPanel] = await Promise.all([api('/api/opportunities'), whatIfPanel()]);
+  opp.data = o;
+  const list = o.items.filter((i) => !opp.type || i.type === opp.type);
+  root.append(h('div', { class: 'pagehead' }, h('h2', {}, 'Chancen'), h('span', { class: 'spacer' }),
+    h('a', { class: 'btn', href: '/api/export/jtl.csv?channel=shop' }, 'Shop-Preise für JTL'),
+    h('a', { class: 'btn', href: '/api/export/jtl.csv?channel=ebay' }, 'eBay-Preise für JTL'),
+    h('a', { class: 'btn primary', href: '/api/export/jtl.csv' }, 'Alle Preisvorschläge für JTL')),
+    h('p', { class: 'sub' }, 'Wo du mehr verkaufen oder mehr verdienen kannst, nach geschätztem Wert sortiert. Die Preisvorschläge gibt es als Datei für die JTL-Ameise (Semikolon getrennt); in der Ameise die Spalte „Preis neu“ dem Brutto-VK bzw. dem eBay-Preis zuordnen. Preisradar ändert selbst keine Preise.'),
+    !o.has_sales ? h('p', { class: 'note' }, 'Ohne Verkaufsdaten aus Shopware fehlen die Chancen „Bald ausverkauft“, „Ladenhüter“ und „Fehlt auf eBay“ zum großen Teil.') : null,
+    h('div', { class: 'toolbar' }, h('div', { class: 'seg' },
+      h('button', { class: `chip${!opp.type ? ' on' : ''}`, onclick: () => { opp.type = ''; render(); } }, h('b', {}, String(o.items.length)), 'alle'),
+      Object.entries(o.types).map(([k, t]) => (o.counts[k] ? h('button', { class: `chip ${t.tone}${opp.type === k ? ' on' : ''}`, title: t.hint, onclick: () => { opp.type = k; render(); } }, h('b', {}, String(o.counts[k])), t.label) : null)))),
+    opp.type ? h('p', { class: 'pmeta' }, o.types[opp.type].hint) : null,
+    list.length ? h('div', { class: 'tablewrap kwwrap' }, h('table', { class: 'prices kwtable opptable' },
+      h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Artikel'), h('th', {}, 'Chance'), h('th', { class: 'kurl' }, 'Warum'), h('th', {}, 'Wert'), h('th', {}, 'Was tun'))),
+      h('tbody', {}, list.slice(0, 300).map((i) => h('tr', { tabindex: 0, onclick: () => openDrawer(i.product_id) },
+        h('td', { class: 'prod' }, h('div', { class: 'pname' }, i.name), h('div', { class: 'pmeta' }, [i.number, i.price != null ? money(i.price) : null, i.stock != null ? `Bestand ${i.stock}` : null].filter(Boolean).join(' · '))),
+        h('td', { class: 'mcell', 'data-label': 'Chance' }, h('span', { class: `ichip ${i.tone === 'bad' ? 'error' : i.tone === 'warn' ? 'warn' : 'ok'}` }, i.label)),
+        h('td', { class: 'mcell kurl', 'data-label': 'Warum' }, i.detail),
+        h('td', { class: 'mcell', 'data-label': 'Wert', title: 'Grobe Schätzung in Euro, nur zum Sortieren' }, i.value ? money(i.value) : '–'),
+        h('td', { class: 'mcell kurl', 'data-label': 'Was tun', onclick: (e) => i.type === 'ebay_missing' && e.stopPropagation() },
+          i.type === 'ebay_missing' && state.data.config.ebayConnected ? h('button', { class: 'btn small', onclick: () => openListingEditor(i.product_id) }, 'Auf eBay einstellen') : i.action)))))) : h('div', { class: 'panel empty' }, h('h3', {}, 'Keine Chancen in dieser Gruppe'), h('p', {}, 'Mit mehr Daten (Shopware-Verkäufe, Einkaufspreise, eBay) findet Preisradar mehr.')),
+    list.length > 300 ? h('p', { class: 'pmeta' }, `Die ersten 300 von ${list.length}.`) : null,
+    calcPanel);
+  if (calcState.product) { calcState.product = null; setTimeout(() => document.getElementById('whatif')?.scrollIntoView({ behavior: 'smooth' }), 300); }
+}
+
+// ---------- Einstellungen: Kanäle und eBay ----------
+async function channelSettingsPanel() {
+  const chans = await api('/api/channels');
+  const rows = chans.map((c) => {
+    const inp = (k, step = '0.01') => h('input', { type: 'number', step, min: 0, value: c[k], 'aria-label': `${c.name} ${k}`, 'data-k': k, class: 'chnum' });
+    return h('tr', { 'data-key': c.key },
+      h('td', {}, h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: Boolean(c.active), 'data-k': 'active' }), c.name)),
+      h('td', {}, inp('fee_percent', '0.1')), h('td', {}, inp('fee_fixed')), h('td', {}, inp('shipping_cost')), h('td', {}, inp('target_margin', '0.5')), h('td', {}, inp('min_profit')),
+      h('td', {}, h('select', { 'data-k': 'ending', 'aria-label': `${c.name} Preisendung` }, [['', 'keine'], ['99', ',99'], ['95', ',95'], ['90', ',90'], ['9', 'x,x9'], ['00', 'glatt']].map(([v, t]) => h('option', { value: v, selected: c.ending === v }, t)))));
+  });
+  const panel = h('div', { class: 'panel', id: 'channel-settings' },
+    h('h3', {}, 'Verkaufskanäle'),
+    h('p', { class: 'sub' }, 'Gebühren und Versand je Kanal für die Gewinnrechnung, Preisuntergrenzen und Vorschläge. Die Gebühr in Prozent gilt auf den Bruttopreis. Die eBay-Werte sind Standardwerte, bitte an Marcos Konditionen anpassen (Kategorie-Provision und Gebühr je Bestellung). Versand: was dich der Versand kostet, abzüglich dem, was der Kunde zahlt.'),
+    h('div', { class: 'tablewrap', style: 'max-height:none' }, h('table', { class: 'plain chset' },
+      h('thead', {}, h('tr', {}, ['Kanal', 'Gebühr %', 'Gebühr fest €', 'Versand €', 'Zielmarge %', 'Mindestgewinn €', 'Preisendung'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, rows))),
+    h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => {
+        for (const tr of rows) {
+          const b = {};
+          tr.querySelectorAll('[data-k]').forEach((e) => { b[e.dataset.k] = e.type === 'checkbox' ? e.checked : e.value; });
+          await api(`/api/channels/${tr.dataset.key}`, { method: 'PUT', body: b });
+        }
+        toast('Verkaufskanäle gespeichert');
+      }) }, 'Speichern')));
+  return panel;
+}
+
+function ebaySettingsPanel(cur, f) {
+  const e = cur.ebay;
+  const out = h('div', { class: 'result', hidden: true });
+  const polBox = h('div', {});
+  const sel = (label, name, opts, value) => h('div', { class: 'field' }, h('label', {}, label), h('select', { name }, h('option', { value: '' }, '– wählen –'), opts.map((o) => h('option', { value: o.id, selected: o.id === value }, o.name))));
+  const form = h('form', { class: 'panel', id: 'ebay-settings', onsubmit: (ev) => ev.preventDefault() },
+    h('h3', {}, 'eBay'),
+    h('p', { class: 'sub' }, 'Mitbewerberpreise auf eBay (Suche über die EAN), eigene Angebote und das Einstellen neuer Angebote. Bestehende Angebote ändert Preisradar nie; neue Angebote übernimmt JTL über den Angebotsimport.'),
+    h('details', { class: 'howto' }, h('summary', {}, 'So richtest du den Zugang ein'),
+      h('ol', { class: 'plainlist' },
+        h('li', {}, 'Auf developer.ebay.com ein kostenloses Entwicklerkonto anlegen und unter „Application Keys“ ein Schlüsselpaar für „Production“ erzeugen: App ID (Client ID) und Cert ID (Client Secret).'),
+        h('li', {}, 'Damit laufen schon die Mitbewerberpreise. Für eigene Angebote und das Einstellen unter „User Tokens → Get a Token from eBay via Your Application“ eine Weiterleitung (RuName) anlegen. Als „Auth accepted URL“ diese Adresse eintragen: ', h('code', {}, e.callback || '/api/ebay/callback')),
+        h('li', {}, 'Den RuName (sieht aus wie „Firma-App-PRD-…“) hier eintragen, speichern und „Mit eBay verbinden“ klicken. Marco meldet sich bei eBay an und stimmt zu.'),
+        h('li', {}, 'Im eBay-Konto müssen Rahmenbedingungen (Versand, Zahlung, Rücknahme) eingerichtet sein. Nach dem Verbinden hier auswählen.'))),
+    h('div', { class: 'grid' },
+      f('App ID (Client ID)', 'ebay_client_id', e.client_id),
+      f('Cert ID (Client Secret)', 'ebay_client_secret', '', { type: 'password', ph: e.secret_set ? 'gespeichert (leer lassen = behalten)' : '' }),
+      f('RuName', 'ebay_runame', e.runame),
+      f('Mitbewerber-Prüfungen pro Tag', 'ebay_browse_per_day', e.browse_per_day, { type: 'number', hint: 'eBay erlaubt standardmäßig 5000 Suchen am Tag. Wichtige Artikel täglich, übrige wöchentlich.' }),
+      f('Höchstmenge je neuem Angebot', 'ebay_max_qty', e.max_qty, { type: 'number', hint: 'Startmenge beim Einstellen, höchstens der Shopware-Bestand. Danach gleicht JTL ab.' }),
+      f('Artikelstandort', 'ebay_location', e.location, { ph: 'Ort' }),
+      f('Postleitzahl', 'ebay_postal_code', e.postal_code)),
+    polBox,
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
+        await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(form)) });
+        out.hidden = false; out.textContent = 'Verbindung wird geprüft …';
+        try { const r = await api('/api/ebay/test', { method: 'POST', body: {} }); out.textContent = `App-Schlüssel funktionieren.${r.connected ? ` Verbunden als ${r.username}.` : ' Verkäuferkonto noch nicht verbunden.'}`; await refresh(); } catch (er) { out.textContent = er.message; }
+      }) }, 'Speichern und testen'),
+      e.runame && e.client_id ? h('a', { class: 'btn', href: '/api/ebay/connect' }, e.connected ? 'Neu verbinden' : 'Mit eBay verbinden') : null,
+      e.connected ? h('button', { class: 'btn danger', type: 'button', onclick: guard(async () => { if (confirm('Verbindung zum eBay-Konto trennen?')) { await api('/api/ebay/disconnect', { body: {} }); toast('Getrennt'); render(); } }) }, 'Trennen') : null,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(form)) }); toast('eBay gespeichert'); await refresh(); }) }, 'Speichern')),
+    out,
+    e.connected ? h('p', { class: 'pmeta' }, `Verbunden als ${e.username ?? 'eBay-Konto'}.`) : null);
+  if (e.connected) {
+    polBox.replaceChildren(h('p', { class: 'pmeta' }, 'Rahmenbedingungen werden geladen …'));
+    api('/api/ebay/policies').then((pol) => polBox.replaceChildren(h('div', { class: 'grid' },
+      sel('Versand', 'ebay_fulfillment_policy', pol.fulfillment, e.fulfillment_policy), sel('Zahlung', 'ebay_payment_policy', pol.payment, e.payment_policy), sel('Rücknahme', 'ebay_return_policy', pol.return, e.return_policy))))
+      .catch((er) => polBox.replaceChildren(h('p', { class: 'note warn' }, er.message)));
+  }
+  return form;
+}
+
 // ---------- Seiten-Check (SEO der eigenen Produktseiten) ----------
 const sc = { issue: '', sev: '', q: '', important: false, rows: [], filtered: 0, poll: null };
 const SEV_LABEL = { error: 'Fehler', warn: 'Warnung', info: 'Hinweis' };
@@ -1621,6 +1982,7 @@ function renderHelp(root) {
     ['h-finden', 'Wie Preisradar deinen Artikel beim Mitbewerber findet'],
     ['h-status', 'Was die Angaben in der Preisliste bedeuten'],
     ['h-abruf', 'Wann und wie oft abgefragt wird'],
+    ['h-ebay', 'Verkaufskanäle, eBay und Chancen'],
     ['h-seitencheck', 'Seiten-Check: SEO der eigenen Produktseiten'],
     ['h-keywords', 'Keyword-Monitoring'],
     ['h-ki', 'Was die KI macht und was sie kostet'],
@@ -1672,6 +2034,12 @@ function renderHelp(root) {
       p('Neue Artikel werden zuerst einmal bei allen Mitbewerbern gesucht, die täglich geprüften vorneweg. Den Fortschritt siehst du im Lagebild unter „Betrieb“. Der Preisverlauf speichert einen Preis nur, wenn er sich ändert, und sonst einmal pro Woche; so bleibt die Datenbank auch bei vielen Artikeln schlank.'),
       p('Artikel, die bei einem Mitbewerber nicht gefunden wurden, werden dort einmal pro Woche erneut gesucht, nach vier erfolglosen Versuchen nur noch monatlich. Mit „Prüfen“ in der Preisliste fragst du einen Artikel jederzeit sofort bei allen Mitbewerbern ab. Einstellbar unter ', go('einstellungen', 'Einstellungen → Abrufplan'), '.'),
       p('Preisradar gibt sich offen als „PreisradarBot“ zu erkennen und hält sich an die Regeln, die jeder Shop in seiner robots.txt festlegt. Seiten, die ein Shop für Programme sperrt, werden nicht abgerufen.')),
+
+    sec('h-ebay', 'Verkaufskanäle, eBay und Chancen',
+      p(h('b', {}, 'Gewinn je Kanal: '), 'Unter ', go('einstellungen', 'Einstellungen → Verkaufskanäle'), ' stehen Gebühren und Versand für Shop, eBay und Amazon. Daraus rechnet Preisradar je Artikel den Gewinn, die Marge und die Preisuntergrenze (genau der Mindestgewinn nach Einkauf, Gebühren und Versand). Ein Preis, der im Shop gut ist, kann auf eBay Verlust bringen. Die Rechnung steht in der Detailansicht jedes Artikels unter „Preise je Kanal“.'),
+      p(h('b', {}, 'eBay: '), 'Mit einem kostenlosen eBay-Entwicklerschlüssel sucht Preisradar jeden Artikel über die EAN auf eBay und merkt sich das günstigste Angebot inklusive Versand (wichtige Artikel täglich, übrige wöchentlich). Mit der Verbindung zu deinem eBay-Konto kommen deine eigenen Angebote dazu, und du kannst neue Angebote einstellen: Titel und Beschreibung auf Wunsch von der KI, Bilder und Merkmale aus Shopware, Kategorie und Pflichtmerkmale von eBay, Preis aus dem Kanal-Rechner.'),
+      p(h('b', {}, 'Zusammenspiel mit JTL: '), 'Preisradar setzt die eBay-SKU immer auf die Artikelnummer. Im Angebotsimport von JTL („Plattformen → eBay → Angebotsimport“) ordnet JTL das Angebot darüber automatisch dem vorhandenen Artikel zu, es entsteht keine Dublette. Wichtig: dort „Bestand beibehalten“ wählen und nie „Artikel aus Angebot neu erstellen“. Ab der Übernahme kümmert sich JTL um Bestand, Preis und Aufträge; Preisradar ändert bestehende eBay-Angebote nie.'),
+      p(h('b', {}, 'Chancen: '), 'Unter ', go('chancen', 'Chancen'), ' sammelt Preisradar, wo du mehr verkaufen oder verdienen kannst: Mitbewerber ausverkauft, fehlt auf eBay, eBay-Angebot zu teuer, bald ausverkauft, zu wenig Gewinn, Ladenhüter. Die Preisvorschläge gibt es als Datei für die JTL-Ameise. Dazu kommt ein Was-wäre-wenn-Rechner für Preis, Einkauf, Stückzahl und Werbung.')),
 
     sec('h-seitencheck', 'Seiten-Check: SEO der eigenen Produktseiten',
       p('Der ', go('seitencheck', 'Seiten-Check'), ' ruft deine Produktseiten im Hintergrund ab und prüft, was Google braucht: Seitentitel und Meta-Beschreibung (fehlt, zu lang, doppelt), Hauptüberschrift, ob die Seite für Google gesperrt ist (noindex) oder auf eine andere zeigt (Canonical), die strukturierten Produktdaten mit Preis, Lieferbarkeit, EAN und Marke, den Umfang des Produkttexts, gleiche Texte auf mehreren Seiten, Bilder ohne Alternativtext und die Antwortzeit.'),
@@ -2164,7 +2532,7 @@ async function renderSettings(root) {
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/auth/password', { body: Object.fromEntries(new FormData(pw)) }); pw.reset(); toast('Passwort geändert'); }) }, 'Passwort ändern')));
   const up = h('div', { id: 'userpanel' }, await userPanel());
-  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, mail, ki, gsc, merchant, kwPanel, mcp, up, pw));
+  root.append(h('div', { class: 'settings' }, h('h2', {}, 'Einstellungen'), form, plan, await channelSettingsPanel(), ebaySettingsPanel(cur, f), mail, ki, gsc, merchant, kwPanel, mcp, up, pw));
 }
 
 // ---------- Laufleiste ----------
@@ -2233,7 +2601,7 @@ function render() {
     if (sameTab) { main.scrollTop = keepMain; window.scrollTo(0, keepWin); } else { main.scrollTop = 0; window.scrollTo(0, 0); }
   };
   const fail = (e) => { if (!(e instanceof AuthError)) toast(e.message, true); };
-  const asyncTabs = { start: renderStart, analyse: renderAnalysis, sichtbarkeit: renderSeo, keywords: renderKeywords, seitencheck: renderSeoCheck, einstellungen: renderSettings, import: renderImport };
+  const asyncTabs = { start: renderStart, analyse: renderAnalysis, sichtbarkeit: renderSeo, keywords: renderKeywords, seitencheck: renderSeoCheck, ebay: renderEbay, chancen: renderChancen, einstellungen: renderSettings, import: renderImport };
   const fn = asyncTabs[state.tab] ?? (state.tab === 'mitbewerber' ? null : asyncTabs.import);
   if (state.tab === 'preise' || state.tab === 'hilfe' || state.tab === 'mitbewerber') {
     main.replaceChildren();

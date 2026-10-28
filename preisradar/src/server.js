@@ -6,8 +6,8 @@ import { openDb, upsertProducts, tx } from './db.js';
 import { parseCsv, pick, parsePrice, csvEscape } from './util.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { fetchText, robotsAllows } from './fetcher.js';
-import { fetchShopwareProducts, shopwareConfig, testShopware, syncShopware } from './shopware.js';
-import { aiConfig, testAi, DEFAULT_MODEL } from './ai.js';
+import { fetchShopwareProducts, shopwareConfig, testShopware, syncShopware, productDetails } from './shopware.js';
+import { aiConfig, testAi, chatJson, DEFAULT_MODEL } from './ai.js';
 import { analyse, RULES } from './analysis.js';
 import { autoSetup, detectSearchLink } from './autosetup.js';
 import { startOwnImport, ownImportState } from './ownimport.js';
@@ -24,6 +24,9 @@ import { seoOverview, seoStatus, productSeo } from './seo.js';
 import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from './digest.js';
 import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
 import { computeTiers, tierConfig, tierStatus } from './tiers.js';
+import { listChannels, updateChannel, channelView } from './channels.js';
+import { ebayConfig, authorizeUrl, exchangeCode, disconnect as ebayDisconnect, ebayTest, syncListings, startMarketJob, marketJob, marketCheck, ebayTick, suggestCategories, aspects as ebayAspects, policies as ebayPolicies, draft as ebayDraft, createListing, ebayOverview, resetAppToken, cleanDescription } from './ebay.js';
+import { findOpportunities, jtlExport } from './opportunities.js';
 import { auditOverview, auditOf, auditProduct, startAudit, auditJob, auditTick, auditConfig, suggestMeta } from './seoaudit.js';
 import { kwConfig, kwTest, addKeywords, postChecks, collectChecks, refreshVolumes, kwOverview, kwDetail, suggestions, startSuggestionJob, kwTick, kwJob, MAX_KEYWORDS, normKeyword } from './keywords.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
@@ -91,6 +94,14 @@ export function createApp(db, { dataDir = null } = {}) {
 
   // Ab hier nur mit Anmeldung
   app.use('/api', (req, _res, next) => { if (req.method !== 'GET') invalidatePriceList(); next(); });
+  // eBay-Rücksprung nach der Zustimmung (Browser-Weiterleitung von eBay, daher Umleitung statt JSON)
+  app.get('/api/ebay/callback', (req, res) => {
+    if (!currentUser(db, req)) return res.redirect('/?ebay=login');
+    if (req.query.error) return res.redirect(`/?ebay=error&msg=${encodeURIComponent(String(req.query.error_description || req.query.error))}`);
+    exchangeCode(db, String(req.query.code || ''), String(req.query.state || ''))
+      .then(() => res.redirect('/?ebay=connected'))
+      .catch((e) => res.redirect(`/?ebay=error&msg=${encodeURIComponent(e.message)}`));
+  });
   app.use('/api', (req, res, next) => (req.headers['x-internal-mcp'] === internalKey || currentUser(db, req) ? next() : res.status(401).json({ error: 'Nicht angemeldet' })));
   // Adresse der App für Links in der E-Mail (vom ersten angemeldeten Aufruf übernommen)
   app.use('/api/overview', (req, _res, next) => { if (!getSetting(db, 'app_url') && !/^(localhost|127\.)/.test(req.hostname)) setSetting(db, 'app_url', `${req.protocol}://${req.get('host')}`); next(); });
@@ -114,7 +125,7 @@ export function createApp(db, { dataDir = null } = {}) {
       tiers: tierStatus(db),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -135,6 +146,70 @@ export function createApp(db, { dataDir = null } = {}) {
   }));
 
   // --- Google Merchant Center ---
+  // --- Verkaufskanäle (Gebühren, Marge) ---
+  app.get('/api/channels', wrap((_req, res) => res.json(listChannels(db))));
+  app.put('/api/channels/:key', wrap((req, res) => res.json(updateChannel(db, req.params.key, req.body ?? {}))));
+  app.get('/api/products/:id/channels', wrap((req, res) => {
+    const p = db.prepare('SELECT * FROM products WHERE id=?').get(Number(req.params.id));
+    if (!p) throw bad('Artikel nicht gefunden', 404);
+    const l = db.prepare("SELECT item_id, price, url, quantity, sold, created_by_us, jtl_state FROM ebay_listings WHERE status='active' AND product_id=? LIMIT 1").get(p.id) ?? null;
+    const m = db.prepare('SELECT * FROM ebay_market WHERE product_id=?').get(p.id) ?? null;
+    const shopMin = db.prepare("SELECT MIN(m.price) AS v FROM matches m JOIN competitors c ON c.id=m.competitor_id WHERE c.enabled=1 AND m.product_id=? AND m.status='ok' AND m.price IS NOT NULL AND COALESCE(m.availability,'') <> 'out_of_stock'").get(p.id).v;
+    res.json({ channels: channelView(db, p, { prices: { shop: p.price, ebay: l?.price ?? null }, market: { shop: shopMin ?? null, ebay: m?.min_total ?? null } }), ebay: { listing: l, market: m }, purchase_price: p.purchase_price ?? null });
+  }));
+
+  // --- eBay ---
+  app.get('/api/ebay', wrap((_req, res) => res.json(ebayOverview(db))));
+  app.get('/api/ebay/connect', wrap((_req, res) => res.redirect(authorizeUrl(db))));
+  app.post('/api/ebay/disconnect', wrap((_req, res) => { ebayDisconnect(db); res.json({ ok: true }); }));
+  app.post('/api/ebay/test', wrap(async (_req, res) => res.json(await ebayTest(db))));
+  app.post('/api/ebay/sync', wrap(async (_req, res) => res.json(await syncListings(db))));
+  app.post('/api/ebay/market', wrap(async (req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
+    if (ids?.length === 1) { const p = db.prepare('SELECT id, ean FROM products WHERE id=?').get(ids[0]); return res.json({ result: p ? await marketCheck(db, p) : null }); }
+    if (!startMarketJob(db, { ids: ids?.length ? ids : null, manual: true })) throw bad(marketJob.running ? 'Es läuft bereits eine eBay-Prüfung' : 'Keine Artikel fällig (oder eBay-App-Schlüssel fehlen)', 409);
+    res.json({ ok: true, job: { ...marketJob } });
+  }));
+  app.get('/api/ebay/policies', wrap(async (_req, res) => res.json(await ebayPolicies(db))));
+  app.get('/api/ebay/categories', wrap(async (req, res) => res.json(await suggestCategories(db, String(req.query.q || '')))));
+  app.get('/api/ebay/aspects', wrap(async (req, res) => res.json(await ebayAspects(db, String(req.query.category || '')))));
+  app.get('/api/ebay/draft/:id', wrap(async (req, res) => res.json(await ebayDraft(db, Number(req.params.id)))));
+  app.post('/api/ebay/verify/:id', wrap(async (req, res) => res.json(await createListing(db, Number(req.params.id), req.body ?? {}, { verify: true }))));
+  app.post('/api/ebay/list/:id', wrap(async (req, res) => res.json(await createListing(db, Number(req.params.id), req.body ?? {}))));
+  app.post('/api/ebay/texts/:id', wrap(async (req, res) => {
+    const p = db.prepare('SELECT * FROM products WHERE id=?').get(Number(req.params.id));
+    if (!p) throw bad('Artikel nicht gefunden', 404);
+    const cfg = aiConfig(db);
+    if (!cfg.key) throw bad('KI ist nicht eingerichtet (Einstellungen → KI)');
+    const d = await productDetails(db, { swId: p.sw_id, number: p.number }).catch(() => null);
+    const facts = {
+      Titel: d?.name || p.name, Marke: d?.manufacturer || p.manufacturer, Herstellernummer: d?.mpn || p.mpn, EAN: d?.ean || p.ean,
+      Beschreibung: String(d?.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000),
+      Merkmale: { ...(d?.properties ?? {}), ...(req.body?.specifics ?? {}) },
+      Maße: d?.dims ? `${d.dims.length} × ${d.dims.width} × ${d.dims.height} mm` : null, Gewicht: d?.weight ? `${d.weight} kg` : null,
+    };
+    const onlyTitle = req.body?.only === 'title';
+    const { data } = await chatJson(cfg,
+      'Du schreibst verkaufsstarke, sachliche Texte für eBay.de für einen deutschen Fachhändler für Badausstattung. Titel höchstens 80 Zeichen: Marke zuerst, dann Serie/Modell, Produktart und wichtigste Merkmale (Farbe, Maß, Ausführung), die wichtigsten Suchwörter vorne; keine Sonderzeichen wie ! oder *, keine Wörter wie „TOP“, „NEU“ oder „günstig“. Beschreibung als einfaches HTML mit <h3>, <p> und <ul>: kurzer Einstieg mit Nutzen, dann die Merkmale als Liste, dann Lieferumfang nur wenn bekannt; ohne Links, ohne Bilder, ohne Skripte, ohne Preise und ohne Versand- oder Lieferversprechen. Nutze ausschließlich die gegebenen Angaben, erfinde keine Eigenschaften, Maße, Materialien oder Zertifikate. Keine Gedankenstriche. Antwort: {"title": "...", "description_html": "..."}',
+      { angaben: facts, aktueller_titel: String(req.body?.title ?? '').slice(0, 200), nur_titel: onlyTitle }, { timeout: 90000 });
+    const t = String(data.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!t) throw bad('Die KI hat keinen Titel geliefert');
+    res.json({ title: t, description_html: onlyTitle ? null : cleanDescription(String(data.description_html ?? '')) });
+  }));
+  app.post('/api/ebay/listings/:itemId/jtl', wrap((req, res) => {
+    const st = req.body?.state === 'imported' ? 'imported' : 'pending';
+    db.prepare('UPDATE ebay_listings SET jtl_state=? WHERE item_id=? AND created_by_us=1').run(st, String(req.params.itemId));
+    res.json({ ok: true });
+  }));
+
+  // --- Chancen und JTL-Export ---
+  app.get('/api/opportunities', wrap((_req, res) => res.json(findOpportunities(db))));
+  app.get('/api/export/jtl.csv', wrap((req, res) => {
+    const r = jtlExport(db, { channel: ['shop', 'ebay'].includes(req.query.channel) ? req.query.channel : null });
+    res.set({ 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="preisvorschlaege-jtl-${new Date().toISOString().slice(0, 10)}.csv"` });
+    res.send(r.csv);
+  }));
+
   // --- SEO-Prüfung der eigenen Produktseiten ---
   app.get('/api/seo-audit', wrap((req, res) => {
     const q = req.query;
@@ -518,6 +593,7 @@ export function createApp(db, { dataDir = null } = {}) {
       merchant: (() => { const m = merchantConfig(db); return { account: m.account, country: m.country, categories: m.categories.join(', '), configured: m.configured, synced_at: getSetting(db, 'mc_synced_at') }; })(),
       mail: (() => { const m = mailConfig(db); return { enabled: m.enabled, host: m.host, port: m.port, secure: m.secure, user: m.user, pass_set: Boolean(m.pass), from: m.from, to: m.to.join(', '), hour: m.hour, last_sent: getSetting(db, 'mail_last_sent') }; })(),
       min_margin: Number(getSetting(db, 'min_margin') ?? 10),
+      ebay: (() => { const e = ebayConfig(db); return { client_id: e.clientId, secret_set: Boolean(e.clientSecret), runame: e.runame, sandbox: e.sandbox, connected: e.connected, username: e.username, fulfillment_policy: e.policies.fulfillment, payment_policy: e.policies.payment, return_policy: e.policies.return, location: e.location, postal_code: e.postalCode, condition: e.condition, max_qty: e.maxQty, browse_per_day: e.perDay, callback: `${getSetting(db, 'app_url') || ''}/api/ebay/callback` }; })(),
       seo_pages_per_day: auditConfig(db).perDay,
       keywords: (() => { const k = kwConfig(db); return { login: k.login, password_set: Boolean(k.password), configured: k.configured, device: k.device, depth: k.depth, hour: k.hour, every_days: k.everyDays, own_host: k.ownHost, from_env: !getSetting(db, 'dfs_login') && Boolean(process.env.DATAFORSEO_LOGIN) }; })(),
       sw_synced_at: getSetting(db, 'sw_synced_at'),
@@ -563,6 +639,15 @@ export function createApp(db, { dataDir = null } = {}) {
       const n = Number(b.seo_pages_per_day);
       if (!Number.isInteger(n) || n < 0 || n > 20000) throw bad('Seiten pro Tag: 0 bis 20000');
       setSetting(db, 'seo_pages_per_day', String(n));
+    }
+    for (const k of ['ebay_client_id', 'ebay_runame', 'ebay_fulfillment_policy', 'ebay_payment_policy', 'ebay_return_policy', 'ebay_location', 'ebay_postal_code']) if (typeof b[k] === 'string') setSetting(db, k, b[k].trim());
+    if (b.ebay_client_secret) { setSetting(db, 'ebay_client_secret', String(b.ebay_client_secret).trim(), { secret: true }); resetAppToken(); }
+    if (b.ebay_sandbox !== undefined) setSetting(db, 'ebay_sandbox', b.ebay_sandbox === true || b.ebay_sandbox === '1' || b.ebay_sandbox === 'on' ? '1' : '0');
+    for (const [k, lo, hi, label] of [['ebay_condition', 1000, 1500, 'Zustand'], ['ebay_max_qty', 1, 999, 'Menge je Angebot: 1 bis 999'], ['ebay_browse_per_day', 0, 5000, 'eBay-Prüfungen pro Tag: 0 bis 5000']]) {
+      if (b[k] === undefined || b[k] === '') continue;
+      const n = Number(b[k]);
+      if (!Number.isInteger(n) || n < lo || n > hi) throw bad(label);
+      setSetting(db, k, String(n));
     }
     if (typeof b.dfs_login === 'string') setSetting(db, 'dfs_login', b.dfs_login.trim());
     if (b.dfs_password) setSetting(db, 'dfs_password', String(b.dfs_password).trim(), { secret: true });
@@ -755,6 +840,8 @@ export function startScheduler(db) {
       }
       // Keyword-Monitoring: Aufträge abgeben und fertige abholen
       kwTick(db);
+      // eBay: Mitbewerberpreise und eigene Angebote
+      ebayTick(db);
       // SEO-Prüfung der eigenen Seiten, schonend verteilt
       if (!ownImportState.running) auditTick(db);
       // Tägliche Zusammenfassung per E-Mail
