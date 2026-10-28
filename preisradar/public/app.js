@@ -172,7 +172,7 @@ function renderPrices(root) {
   const reload = () => loadRows(true);
   let typingTimer;
   const typed = (key) => (e) => { state[key] = e.target.value; clearTimeout(typingTimer); typingTimer = setTimeout(reload, 250); };
-  const hasGoogle = Boolean(d.config.gsc || d.config.merchant);
+  const hasGoogle = Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit);
   const gview = hasGoogle && state.view === 'google';
   const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'tierA'].includes(state.filter) ? 1 : 0);
   const reset = () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '', impMin: '', posMax: '' }); render(); };
@@ -253,6 +253,7 @@ function renderChips() {
     gc.gsc ? gchip('gLowCtr', 'wenig geklickt', 'warn', 'Viel gesehen, aber weniger als halb so oft geklickt wie für diese Position üblich') : null,
     gc.gsc ? gchip('gDemand', 'gefragt bei Google', 'good', 'Mindestens 100 Impressionen in den letzten 28 Tagen') : null,
     gc.merchant ? gchip('gSuggest', 'Google-Preisvorschlag', '', 'Google empfiehlt einen anderen Preis (Merchant Center)') : null,
+    gchip('gSeo', 'SEO-Fehler', 'bad', 'Der Seiten-Check hat auf der Produktseite Fehler gefunden (z. B. noindex, fehlende Produktdaten, Preis in den Produktdaten weicht ab)'),
     gc.gsc ? gchip('gSoldHidden', 'verkauft, kaum sichtbar', '', 'In den letzten 90 Tagen verkauft, aber unter 20 Impressionen bei Google') : null,
     gc.gsc ? gchip('gInvisible', 'nicht bei Google', '', 'Keine Impressionen in den letzten 28 Tagen') : null);
   const sel = document.getElementById('brandsel');
@@ -282,7 +283,7 @@ function buildTable() {
   const wrap = document.getElementById('tablewrap');
   if (!wrap) return;
   const has = d.competitors.length > 0;
-  const gview = state.view === 'google' && Boolean(d.config.gsc || d.config.merchant);
+  const gview = state.view === 'google' && Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit);
   const table = gview ? h('table', { class: 'prices gview' },
     h('thead', {}, h('tr', {},
       h('th', { title: 'Beobachten: wird bei Mitbewerbern abgeglichen' }, '👁'),
@@ -322,7 +323,7 @@ async function loadRows(reset, { keep = false } = {}) {
     if (r.scope !== state.scope) state.scope = r.scope;
     const tbody = document.getElementById('rows');
     if (!tbody) return;
-    const els = r.rows.map((p) => (state.view === 'google' && (state.data.config.gsc || state.data.config.merchant) ? googleRowEl(p) : rowEl(p)));
+    const els = r.rows.map((p) => (state.view === 'google' && (state.data.config.gsc || state.data.config.merchant || state.data.config.seoAudit) ? googleRowEl(p) : rowEl(p)));
     tbody.classList.toggle('still', Boolean(keep)); // beim Aktualisieren nicht erneut animieren
     if (reset) { list.rows = r.rows; tbody.replaceChildren(...els); if (!keep) document.getElementById('tablewrap').scrollTop = 0; }
     else { list.rows.push(...r.rows); tbody.append(...els); }
@@ -487,7 +488,7 @@ async function pinFiltered(pin) {
 function replaceRow(p) {
   const i = list.rows.findIndex((x) => x.id === p.id);
   if (i >= 0) list.rows[i] = p;
-  const nr = state.view === 'google' && (state.data.config.gsc || state.data.config.merchant) ? googleRowEl(p) : rowEl(p);
+  const nr = state.view === 'google' && (state.data.config.gsc || state.data.config.merchant || state.data.config.seoAudit) ? googleRowEl(p) : rowEl(p);
   nr.classList.add('flash');
   document.querySelector(`#rows tr[data-id="${p.id}"]`)?.replaceWith(nr);
 }
@@ -567,6 +568,7 @@ async function openDrawer(id, given = null) {
     p.google?.suggested && Math.abs(p.google.suggested - p.price) >= 0.01 ? h('p', { class: 'note' }, `Google-Preisvorschlag: ${eur.format(p.google.suggested)}${p.google.conversions_change != null ? `, erwartet ${p.google.conversions_change > 0 ? '+' : ''}${Math.round(p.google.conversions_change * 100)} % Verkäufe in Shopping` : ''}.`) : null,
     h('h3', { style: 'margin-top:18px' }, 'Preisverlauf'), histBox,
     h('h3', { style: 'margin-top:22px' }, 'Bei Google (letzte 28 Tage)'), seoDrawerBox(p.id),
+    p.url ? [h('h3', { style: 'margin-top:22px' }, 'Seiten-Check (SEO)'), seoAuditBox(p.id)] : null,
     h('h3', { style: 'margin-top:22px' }, 'Mitbewerber'),
     ...a.cells.map(({ c, m }) => {
       const input = h('input', { type: 'url', placeholder: 'https://… (Produktseite beim Mitbewerber)', value: m?.url ?? '', 'aria-label': `Produkt-URL bei ${c.name}` });
@@ -1190,6 +1192,140 @@ function seoDrawerBox(id) {
   return box;
 }
 
+// ---------- Seiten-Check (SEO der eigenen Produktseiten) ----------
+const sc = { issue: '', sev: '', q: '', important: false, rows: [], filtered: 0, poll: null };
+const SEV_LABEL = { error: 'Fehler', warn: 'Warnung', info: 'Hinweis' };
+
+/** Vorschau, wie die Seite im Google-Suchergebnis erscheint. */
+function snippetPreview(title, url, desc, { price, availability } = {}) {
+  const cut = (s, n) => (s && s.length > n ? `${s.slice(0, n - 1).replace(/\s+\S*$/, '')} …` : s);
+  let crumb = '';
+  try { const u = new URL(url); crumb = [u.hostname.replace(/^www\./, ''), ...decodeURIComponent(u.pathname).split('/').filter(Boolean).slice(0, 2)].join(' › '); } catch { crumb = url ?? ''; }
+  return h('div', { class: 'snippet' },
+    h('div', { class: 'sn-url' }, crumb),
+    h('div', { class: `sn-title${title ? '' : ' none'}` }, title ? cut(title, 62) : 'kein Seitentitel'),
+    price != null || availability ? h('div', { class: 'sn-rich' }, [price != null ? eur.format(price) : null, availability ? (/InStock/i.test(availability) ? 'Auf Lager' : /OutOfStock/i.test(availability) ? 'Nicht auf Lager' : availability) : null].filter(Boolean).join(' · ')) : null,
+    h('div', { class: `sn-desc${desc ? '' : ' none'}` }, desc ? cut(desc, 158) : 'keine Meta-Beschreibung, Google wählt selbst einen Textausschnitt'));
+}
+const issueChip = (i) => h('span', { class: `ichip ${i.sev}`, title: i.detail ?? '' }, i.label, i.detail && i.detail.length < 24 ? h('small', {}, ` ${i.detail}`) : null);
+
+async function renderSeoCheck(root) {
+  const qs2 = () => new URLSearchParams(Object.entries({ issue: sc.issue, sev: sc.sev, q: sc.q, important: sc.important ? '1' : '', limit: 100 }).filter(([, v]) => v !== '')).toString();
+  const o = await api(`/api/seo-audit?${qs2()}`);
+  sc.rows = o.pages; sc.filtered = o.filtered;
+  if (o.job.running && o.job.manual && !sc.poll) {
+    sc.poll = setInterval(guard(async () => {
+      const x = await api('/api/seo-audit?limit=1');
+      const bar = document.getElementById('scprog');
+      if (bar) bar.textContent = `Prüfung läuft: ${x.job.done} von ${x.job.total}`;
+      if (!x.job.running) { clearInterval(sc.poll); sc.poll = null; if (state.tab === 'seitencheck') render(); toast(`Seiten-Check fertig: ${x.job.done} Seiten geprüft`); }
+    }), 4000);
+  }
+  const pct = o.total ? Math.round((o.checked / o.total) * 100) : 0;
+  root.append(h('div', { class: 'pagehead' }, h('h2', {}, 'Seiten-Check'),
+    h('span', { class: 'pmeta' }, `${nf.format(o.checked)} von ${nf.format(o.total)} Produktseiten geprüft`),
+    h('span', { class: 'spacer' }),
+    o.job.running
+      ? [h('span', { class: 'pmeta', id: 'scprog' }, o.job.manual ? `Prüfung läuft: ${o.job.done} von ${o.job.total}` : 'prüft im Hintergrund …'),
+        o.job.manual ? h('button', { class: 'btn', onclick: guard(async () => { await api('/api/seo-audit/stop', { method: 'POST', body: {} }); toast('Wird angehalten'); }) }, 'Anhalten') : null]
+      : h('button', { class: 'btn primary', onclick: guard(async () => { const r = await api('/api/seo-audit/start', { body: {} }); toast(`${r.job.total} Seiten werden geprüft`); render(); }) }, 'Fällige Seiten jetzt prüfen')),
+    h('p', { class: 'sub' }, `Prüft Titel, Beschreibung, Überschrift, Indexierung, die Produktdaten für Google (Preis, Lieferbarkeit, EAN, Marke), Textumfang, doppelte Inhalte und Ladezeit. ${o.config.perDay ? `Läuft im Hintergrund mit ${nf.format(o.config.perDay)} Seiten am Tag` : 'Die Hintergrundprüfung ist ausgeschaltet (Einstellungen → Abrufplan)'}; wichtige Artikel (täglich geprüft, verkauft, gefragt) kommen zuerst und werden wöchentlich erneut geprüft, alle anderen monatlich.`));
+
+  if (!o.checked) {
+    root.append(h('div', { class: 'panel empty' }, h('h3', {}, 'Noch keine Seite geprüft'),
+      h('p', {}, o.total ? 'Die Prüfung startet automatisch im Hintergrund. Mit „Fällige Seiten jetzt prüfen“ geht es sofort los, die wichtigsten Artikel zuerst.' : 'Für die Prüfung braucht Preisradar die Shop-URLs der Artikel, zum Beispiel aus dem Sitemap-Import.')));
+    return;
+  }
+  root.append(h('div', { class: 'kpis' },
+    kpiTile('SEO-Wert', o.score == null ? '–' : `${o.score} %`, 'Seiten ohne Fehler und Warnungen', o.score >= 80 ? 'cool' : 'warm'),
+    kpiTile('Mit Fehlern', h('span', { 'data-count': o.counts.error }, nf.format(o.counts.error)), 'kosten Sichtbarkeit', o.counts.error ? 'warm' : ''),
+    kpiTile('Mit Warnungen', h('span', { 'data-count': o.counts.warn }, nf.format(o.counts.warn)), 'sollten behoben werden'),
+    kpiTile('Produktdaten für Google', o.schema_share == null ? '–' : `${o.schema_share} %`, 'der Seiten haben strukturierte Daten'),
+    kpiTile('Geprüft', `${pct} %`, o.last ? `zuletzt ${dt.format(new Date(o.last))}` : 'der Produktseiten')));
+
+  // Befunde nach Art
+  root.append(h('section', { class: 'panel' }, h('h3', {}, 'Befunde'), h('p', { class: 'pmeta' }, '„wichtig“ = Artikel, die sich verkaufen oder täglich geprüft werden. Klick zeigt die betroffenen Seiten.'),
+    h('div', { class: 'issuelist' }, o.issues.map((i) => h('button', { class: `issuerow${sc.issue === i.code ? ' on' : ''}`, onclick: () => { sc.issue = sc.issue === i.code ? '' : i.code; render(); } },
+      h('span', { class: `sevdot ${i.sev}`, title: SEV_LABEL[i.sev] }),
+      h('span', { class: 'ilabel' }, h('b', {}, i.label), h('small', {}, i.hint)),
+      h('span', { class: 'icount' }, h('b', {}, nf.format(i.count)), i.important ? h('small', {}, `${nf.format(i.important)} wichtig`) : null))))));
+
+  // Seitenliste
+  let tmr;
+  const active = sc.issue ? o.issues.find((i) => i.code === sc.issue) : null;
+  const tbody = h('tbody', {}, sc.rows.map(scRow));
+  const more = h('button', { class: 'btn', hidden: sc.rows.length >= sc.filtered, onclick: guard(async () => {
+    const x = await api(`/api/seo-audit?${qs2()}&offset=${sc.rows.length}`);
+    sc.rows.push(...x.pages); tbody.append(...x.pages.map(scRow)); more.hidden = sc.rows.length >= sc.filtered;
+  }) }, 'Weitere laden');
+  root.append(h('h3', { class: 'sechead' }, 'Seiten, wichtigste zuerst'),
+    h('div', { class: 'toolbar' },
+      h('input', { type: 'search', placeholder: 'Artikel oder Titel suchen', value: sc.q, 'aria-label': 'Suchen', oninput: (e) => { sc.q = e.target.value; clearTimeout(tmr); tmr = setTimeout(render, 300); } }),
+      h('div', { class: 'seg' }, [['', 'alle'], ['error', 'mit Fehlern'], ['warn', 'mit Warnungen'], ['info', 'nur Hinweise'], ['ok', 'ohne Befund']].map(([v, l]) => h('button', { class: `chip${sc.sev === v ? ' on' : ''}`, onclick: () => { sc.sev = v; render(); } }, l))),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.important, onchange: (e) => { sc.important = e.target.checked; render(); } }), 'nur wichtige Artikel'),
+      active ? h('button', { class: 'chip on', onclick: () => { sc.issue = ''; render(); } }, `${active.label} ✕`) : null,
+      h('span', { class: 'pmeta' }, `${nf.format(o.filtered)} Seiten`)),
+    h('div', { class: 'tablewrap kwwrap' }, h('table', { class: 'prices kwtable sctable' },
+      h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Artikel'), h('th', { class: 'snh' }, 'So sieht Google die Seite'), h('th', { class: 'kurl' }, 'Befunde'), h('th', {}, ''))),
+      tbody)),
+    h('div', { class: 'row', style: 'justify-content:center;margin-top:12px' }, more));
+}
+
+function scRow(p) {
+  return h('tr', { tabindex: 0, onclick: () => openDrawer(p.product_id), onkeydown: (e) => e.key === 'Enter' && openDrawer(p.product_id) },
+    h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name),
+      h('div', { class: 'pmeta' }, [p.number, p.units_90 ? `${p.units_90} verkauft (90 T)` : null, p.gsc ? `${nf.format(p.gsc.impressions)} Impr. · Pos. ${nf1.format(p.gsc.position)}` : null].filter(Boolean).join(' · ')),
+      p.tier === 'A' ? h('span', { class: 'tag tier' }, 'wichtig') : null),
+    h('td', { class: 'mcell sncell', 'data-label': 'Google-Vorschau' }, snippetPreview(p.title, p.url, p.description, { price: p.schema?.price, availability: p.schema?.availability })),
+    h('td', { class: 'mcell kurl', 'data-label': 'Befunde' }, p.error && !p.issues.length ? h('span', { class: 'pmeta' }, p.error) : p.issues.length ? h('div', { class: 'ichips' }, p.issues.slice(0, 6).map(issueChip), p.issues.length > 6 ? h('small', { class: 'pmeta' }, ` +${p.issues.length - 6}`) : null) : h('span', { class: 'ichip ok' }, 'alles in Ordnung')),
+    h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('button', { class: 'btn small', onclick: guard(async (e) => {
+      const b = e.currentTarget; b.disabled = true; b.textContent = 'prüft …';
+      try { const r = await api(`/api/products/${p.product_id}/seo-audit`, { body: {} }); if (r.audit) e.target.closest('tr').replaceWith(Object.assign(scRow(r.audit), { className: 'flash' })); toast('Neu geprüft'); }
+      finally { b.disabled = false; b.textContent = 'Neu prüfen'; }
+    }) }, 'Neu prüfen')));
+}
+
+/** SEO-Abschnitt in der Detailansicht eines Artikels. */
+function seoAuditBox(id) {
+  const box = h('div', { class: 'seoaudit' }, h('p', { class: 'pmeta' }, 'Wird geladen …'));
+  const show = (r) => {
+    const a = r.audit;
+    if (!a) {
+      box.replaceChildren(h('p', { class: 'pmeta' }, 'Diese Seite wurde noch nicht geprüft.'),
+        h('button', { class: 'btn small', onclick: guard(async () => { box.replaceChildren(h('p', { class: 'pmeta' }, 'Seite wird geprüft …')); show(await api(`/api/products/${id}/seo-audit`, { body: {} })); }) }, 'Jetzt prüfen'));
+      return;
+    }
+    const sug = h('div', {});
+    const aiShow = (x) => sug.replaceChildren(h('div', { class: 'aisug' },
+      h('div', { class: 'pmeta' }, 'KI-Vorschlag (zum Übernehmen in Shopware bzw. JTL):'),
+      snippetPreview(x.title, a.url, x.description),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(x.title).then(() => toast('Titel kopiert')) }, `Titel kopieren (${x.title.length} Zeichen)`),
+        h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(x.description).then(() => toast('Beschreibung kopiert')) }, `Beschreibung kopieren (${x.description.length} Zeichen)`)),
+      x.notes ? h('p', { class: 'pmeta' }, x.notes) : null));
+    if (r.ai) aiShow(r.ai);
+    box.replaceChildren(
+      snippetPreview(a.title, a.url, a.description, { price: a.schema?.price, availability: a.schema?.availability }),
+      a.issues.length ? h('ul', { class: 'auditlist' }, a.issues.map((i) => h('li', { class: i.sev },
+        h('b', {}, i.label), i.detail ? h('span', { class: 'pmeta' }, ` (${i.detail})`) : null, h('div', { class: 'pmeta' }, r.issues[i.code]?.hint ?? ''))))
+        : h('p', { class: 'goodtxt' }, a.error ?? 'Keine Befunde.'),
+      h('dl', { class: 'facts' },
+        h('dt', {}, 'Produktdaten'), h('dd', {}, a.schema ? [a.schema.price != null ? eur.format(a.schema.price) : 'ohne Preis', a.schema.availability, a.schema.gtin ? `EAN ${a.schema.gtin}` : 'ohne EAN', a.schema.brand].filter(Boolean).join(' · ') : 'keine'),
+        h('dt', {}, 'Text'), h('dd', {}, `${a.words ?? 0} Wörter Beschreibung`),
+        h('dt', {}, 'Antwortzeit'), h('dd', {}, a.ms == null ? '–' : a.ms < 1000 ? `${nf.format(a.ms)} ms` : `${nf1.format(a.ms / 1000)} s`),
+        h('dt', {}, 'Geprüft'), h('dd', {}, dt.format(new Date(a.checked_at)))),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn small', onclick: guard(async () => { box.replaceChildren(h('p', { class: 'pmeta' }, 'Seite wird geprüft …')); show(await api(`/api/products/${id}/seo-audit`, { body: {} })); }) }, 'Neu prüfen'),
+        state.data.config.ai ? h('button', { class: 'btn small', onclick: guard(async (e) => {
+          const b = e.currentTarget; b.disabled = true; b.textContent = 'KI schreibt …';
+          try { aiShow(await api(`/api/products/${id}/seo-suggest`, { body: {} })); } finally { b.disabled = false; b.textContent = 'Titel und Beschreibung von der KI'; }
+        }) }, r.ai ? 'Neuen KI-Vorschlag' : 'Titel und Beschreibung von der KI') : null),
+      sug);
+  };
+  api(`/api/products/${id}/seo-audit`).then(show).catch((e) => box.replaceChildren(h('p', { class: 'pmeta' }, e.message)));
+  return box;
+}
+
 // ---------- Keywords ----------
 const kw = { data: null, filter: 'all', q: '', tag: '', sort: 'position', dir: 'asc', view: 'list', sug: null, sugSrc: 'all', picked: new Set(), poll: null };
 const KW_OUT = 51; // „nicht in den Top 50“ im Diagramm
@@ -1469,6 +1605,7 @@ function renderHelp(root) {
     ['h-finden', 'Wie Preisradar deinen Artikel beim Mitbewerber findet'],
     ['h-status', 'Was die Angaben in der Preisliste bedeuten'],
     ['h-abruf', 'Wann und wie oft abgefragt wird'],
+    ['h-seitencheck', 'Seiten-Check: SEO der eigenen Produktseiten'],
     ['h-keywords', 'Keyword-Monitoring'],
     ['h-ki', 'Was die KI macht und was sie kostet'],
     ['h-google', 'Google-Daten und tägliche E-Mail'],
@@ -1519,6 +1656,12 @@ function renderHelp(root) {
       p('Neue Artikel werden zuerst einmal bei allen Mitbewerbern gesucht, die täglich geprüften vorneweg. Den Fortschritt siehst du im Lagebild unter „Betrieb“. Der Preisverlauf speichert einen Preis nur, wenn er sich ändert, und sonst einmal pro Woche; so bleibt die Datenbank auch bei vielen Artikeln schlank.'),
       p('Artikel, die bei einem Mitbewerber nicht gefunden wurden, werden dort einmal pro Woche erneut gesucht, nach vier erfolglosen Versuchen nur noch monatlich. Mit „Prüfen“ in der Preisliste fragst du einen Artikel jederzeit sofort bei allen Mitbewerbern ab. Einstellbar unter ', go('einstellungen', 'Einstellungen → Abrufplan'), '.'),
       p('Preisradar gibt sich offen als „PreisradarBot“ zu erkennen und hält sich an die Regeln, die jeder Shop in seiner robots.txt festlegt. Seiten, die ein Shop für Programme sperrt, werden nicht abgerufen.')),
+
+    sec('h-seitencheck', 'Seiten-Check: SEO der eigenen Produktseiten',
+      p('Der ', go('seitencheck', 'Seiten-Check'), ' ruft deine Produktseiten im Hintergrund ab und prüft, was Google braucht: Seitentitel und Meta-Beschreibung (fehlt, zu lang, doppelt), Hauptüberschrift, ob die Seite für Google gesperrt ist (noindex) oder auf eine andere zeigt (Canonical), die strukturierten Produktdaten mit Preis, Lieferbarkeit, EAN und Marke, den Umfang des Produkttexts, gleiche Texte auf mehreren Seiten, Bilder ohne Alternativtext und die Antwortzeit.'),
+      p(h('b', {}, 'Wichtigstes zuerst: '), 'Befunde sind nach Schwere (Fehler, Warnung, Hinweis) und nach Wichtigkeit des Artikels sortiert. Ein fehlender Preis in den Produktdaten bei einem Bestseller steht also vor einem zu langen Titel bei einem Artikel, der nie gesucht wird. Besonders teuer sind Abweichungen zwischen dem Preis in den Produktdaten und dem Shop-Preis: Das Merchant Center lehnt solche Angebote ab.'),
+      p(h('b', {}, 'Vorschläge der KI: '), 'In der Detailansicht eines Artikels schreibt die KI auf Wunsch einen neuen Seitentitel und eine Meta-Beschreibung, mit den Suchbegriffen, über die Kunden die Seite bei Google finden. Preisradar ändert nichts im Shop; du kopierst den Text und trägst ihn in JTL bzw. Shopware ein.'),
+      p('Geprüft werden standardmäßig 3000 Seiten am Tag, schonend verteilt; wichtige Artikel wöchentlich, alle anderen monatlich. Einstellbar unter ', go('einstellungen', 'Einstellungen → Abrufplan'), '. In der Preisliste findest du Artikel mit Fehlern über den Filter „SEO-Fehler“.')),
 
     sec('h-keywords', 'Keyword-Monitoring',
       p('Unter ', go('keywords', 'Keywords'), ' beobachtest du bis zu 200 Suchbegriffe. Preisradar prüft regelmäßig, auf welchem Platz deine Seite bei Google steht, bis Platz 50, und wo deine Mitbewerber stehen. Die Ergebnisse kommen von DataForSEO, einem Anbieter für Suchergebnis-Daten. Google selbst fragt Preisradar nicht ab, weil Google das für Programme sperrt.'),
@@ -1848,8 +1991,10 @@ async function renderSettings(root) {
       f('Mindestabstand je Artikel (Stunden)', 'refresh', sch.refresh, { type: 'number', hint: 'Mindestens 8. Jeder Artikel wird höchstens zweimal am Tag automatisch abgefragt.' }),
       f('Täglich geprüfte Artikel', 'tier_a_size', sch.tier_a_size, { type: 'number', hint: 'Die wichtigsten Artikel nach Verkäufen, Preisbewegung und Google-Nachfrage. Von Hand gesetzte kommen dazu.' }),
       f('Übrige Artikel alle … Tage', 'tier_b_days', sch.tier_b_days, { type: 'number', hint: 'Nicht gefundene Artikel werden wöchentlich erneut gesucht, nach vier erfolglosen Versuchen monatlich.' })),
+    h('div', { class: 'grid', style: 'margin-top:8px' },
+      f('Seiten-Check: eigene Seiten pro Tag', 'seo_pages_per_day', cur.seo_pages_per_day, { type: 'number', hint: '0 schaltet die Hintergrundprüfung ab. 3000 am Tag heißt etwa eine Seite alle 30 Sekunden, das merkt der Shop nicht.' })),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('span', { class: 'spacer' }),
-      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: { schedule: Object.fromEntries(new FormData(plan)) } }); toast('Abrufplan gespeichert'); await refresh(); }) }, 'Speichern')));
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { const fd = Object.fromEntries(new FormData(plan)); const { seo_pages_per_day, ...schedule } = fd; await api('/api/settings', { method: 'PUT', body: { schedule, seo_pages_per_day } }); toast('Abrufplan gespeichert'); await refresh(); }) }, 'Speichern')));
 
   const mcpOut = h('div', {});
   const mcpUrl = `${location.origin}/mcp`;
@@ -2072,7 +2217,7 @@ function render() {
     if (sameTab) { main.scrollTop = keepMain; window.scrollTo(0, keepWin); } else { main.scrollTop = 0; window.scrollTo(0, 0); }
   };
   const fail = (e) => { if (!(e instanceof AuthError)) toast(e.message, true); };
-  const asyncTabs = { start: renderStart, analyse: renderAnalysis, sichtbarkeit: renderSeo, keywords: renderKeywords, einstellungen: renderSettings, import: renderImport };
+  const asyncTabs = { start: renderStart, analyse: renderAnalysis, sichtbarkeit: renderSeo, keywords: renderKeywords, seitencheck: renderSeoCheck, einstellungen: renderSettings, import: renderImport };
   const fn = asyncTabs[state.tab] ?? (state.tab === 'mitbewerber' ? null : asyncTabs.import);
   if (state.tab === 'preise' || state.tab === 'hilfe' || state.tab === 'mitbewerber') {
     main.replaceChildren();

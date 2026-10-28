@@ -24,6 +24,7 @@ import { seoOverview, seoStatus, productSeo } from './seo.js';
 import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from './digest.js';
 import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
 import { computeTiers, tierConfig, tierStatus } from './tiers.js';
+import { auditOverview, auditOf, auditProduct, startAudit, auditJob, auditTick, auditConfig, suggestMeta } from './seoaudit.js';
 import { kwConfig, kwTest, addKeywords, postChecks, collectChecks, refreshVolumes, kwOverview, kwDetail, suggestions, startSuggestionJob, kwTick, kwJob, MAX_KEYWORDS, normKeyword } from './keywords.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
 
@@ -113,7 +114,7 @@ export function createApp(db, { dataDir = null } = {}) {
       tiers: tierStatus(db),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -134,6 +135,28 @@ export function createApp(db, { dataDir = null } = {}) {
   }));
 
   // --- Google Merchant Center ---
+  // --- SEO-Prüfung der eigenen Produktseiten ---
+  app.get('/api/seo-audit', wrap((req, res) => {
+    const q = req.query;
+    res.json(auditOverview(db, { issue: q.issue || null, sev: q.sev || null, q: q.q || '', important: q.important === '1', offset: Math.max(0, Number(q.offset) || 0), limit: Math.min(500, Math.max(1, Number(q.limit) || 100)) }));
+  }));
+  app.post('/api/seo-audit/start', wrap((req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
+    if (!startAudit(db, { ids: ids?.length ? ids : null, manual: true, limit: ids?.length ? ids.length : Math.min(2000, Number(req.body?.limit) || 500) })) {
+      throw bad(auditJob.running ? 'Es läuft bereits eine Prüfung' : 'Keine Seiten fällig (alle kürzlich geprüft)', 409);
+    }
+    res.json({ ok: true, job: { ...auditJob } });
+  }));
+  app.post('/api/seo-audit/stop', (_req, res) => { auditJob.stop = true; res.json({ ok: true }); });
+  app.get('/api/products/:id/seo-audit', wrap((req, res) => res.json(auditOf(db, Number(req.params.id)))));
+  app.post('/api/products/:id/seo-audit', wrap(async (req, res) => {
+    const p = db.prepare('SELECT id, url, price, ean FROM products WHERE id=?').get(Number(req.params.id));
+    if (!p?.url) throw bad('Für diesen Artikel ist keine Shop-URL bekannt');
+    await auditProduct(db, p);
+    res.json(auditOf(db, p.id));
+  }));
+  app.post('/api/products/:id/seo-suggest', wrap(async (req, res) => res.json(await suggestMeta(db, Number(req.params.id)))));
+
   // --- Keyword-Monitoring ---
   app.get('/api/keywords', wrap((_req, res) => res.json({ ...kwOverview(db), job: { posting: kwJob.posting, collecting: kwJob.collecting } })));
   app.get('/api/keywords/suggestions', wrap((_req, res) => res.json({ suggestions: suggestions(db) })));
@@ -495,6 +518,7 @@ export function createApp(db, { dataDir = null } = {}) {
       merchant: (() => { const m = merchantConfig(db); return { account: m.account, country: m.country, categories: m.categories.join(', '), configured: m.configured, synced_at: getSetting(db, 'mc_synced_at') }; })(),
       mail: (() => { const m = mailConfig(db); return { enabled: m.enabled, host: m.host, port: m.port, secure: m.secure, user: m.user, pass_set: Boolean(m.pass), from: m.from, to: m.to.join(', '), hour: m.hour, last_sent: getSetting(db, 'mail_last_sent') }; })(),
       min_margin: Number(getSetting(db, 'min_margin') ?? 10),
+      seo_pages_per_day: auditConfig(db).perDay,
       keywords: (() => { const k = kwConfig(db); return { login: k.login, password_set: Boolean(k.password), configured: k.configured, device: k.device, depth: k.depth, hour: k.hour, every_days: k.everyDays, own_host: k.ownHost, from_env: !getSetting(db, 'dfs_login') && Boolean(process.env.DATAFORSEO_LOGIN) }; })(),
       sw_synced_at: getSetting(db, 'sw_synced_at'),
       openai_key_set: Boolean(aiConfig(db).key),
@@ -535,6 +559,11 @@ export function createApp(db, { dataDir = null } = {}) {
     // E-Mail
     for (const k of ['mail_host', 'mail_user', 'mail_from', 'mail_to']) if (typeof b[k] === 'string') setSetting(db, k, b[k].trim());
     if (b.mail_pass) setSetting(db, 'mail_pass', String(b.mail_pass), { secret: true });
+    if (b.seo_pages_per_day !== undefined && b.seo_pages_per_day !== '') {
+      const n = Number(b.seo_pages_per_day);
+      if (!Number.isInteger(n) || n < 0 || n > 20000) throw bad('Seiten pro Tag: 0 bis 20000');
+      setSetting(db, 'seo_pages_per_day', String(n));
+    }
     if (typeof b.dfs_login === 'string') setSetting(db, 'dfs_login', b.dfs_login.trim());
     if (b.dfs_password) setSetting(db, 'dfs_password', String(b.dfs_password).trim(), { secret: true });
     if (b.dfs_remove === true) { setSetting(db, 'dfs_login', ''); setSetting(db, 'dfs_password', ''); }
@@ -726,6 +755,8 @@ export function startScheduler(db) {
       }
       // Keyword-Monitoring: Aufträge abgeben und fertige abholen
       kwTick(db);
+      // SEO-Prüfung der eigenen Seiten, schonend verteilt
+      if (!ownImportState.running) auditTick(db);
       // Tägliche Zusammenfassung per E-Mail
       maybeSendDigest(db).then((r) => r && console.log(`Zusammenfassung an ${r.to.join(', ')} gesendet`)).catch((e) => console.error('E-Mail:', e.message));
       // Shopware täglich (Verkäufe, Einkaufspreise, Bestand)

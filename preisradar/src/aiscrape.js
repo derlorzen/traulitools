@@ -38,6 +38,7 @@ function spend() {
   writeSetting('ai_calls_count', budget.calls);
 }
 export const resetAiBudget = () => {}; // früher je Lauf, jetzt Tagesgrenze
+export const spendAi = () => spend();
 
 const SKIP_PATH = /(login|anmeld|konto|account|warenkorb|cart|checkout|merkzettel|wishlist|impressum|agb|datenschutz|kontakt|versand|widerruf|newsletter|blog|ratgeber)/i;
 

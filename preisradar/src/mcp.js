@@ -4,6 +4,7 @@ import { startScrape, scrapeState } from './scraper.js';
 import { getSetting, setSetting } from './settings.js';
 import { tx } from './db.js';
 import { listProducts } from './pricelist.js';
+import { auditOverview, auditOf } from './seoaudit.js';
 import { kwOverview, addKeywords, suggestions, postChecks, refreshVolumes, kwConfig, kwJob } from './keywords.js';
 
 /**
@@ -109,6 +110,8 @@ const TOOLS = [
     description: 'Artikel nach Google-Sichtbarkeit (Search Console, Merchant Center): Position, Impressionen, Klicks, Klickpotenzial und Hinweise. Filter: demandDear (gefragt, aber teurer), aboveBench (über Google-Vergleichspreis), striking (Platz 4–20), lowCtr (wenig geklickt), demand, suggest, soldHidden, invisible, advice (mit Handlungsbedarf). query sucht auch in Google-Suchanfragen.',
     inputSchema: obj({ filter: { type: 'string', enum: ['advice', 'demandDear', 'aboveBench', 'striking', 'lowCtr', 'demand', 'suggest', 'soldHidden', 'invisible'] }, query: { type: 'string' }, sort: { type: 'string', enum: ['potential', 'impressions', 'clicks', 'position', 'benchmark'] }, limit: { type: 'integer', minimum: 1, maximum: 100 } }),
   },
+  { name: 'seo_audit_overview', description: 'Seiten-Check der eigenen Produktseiten: SEO-Wert, Befunde nach Art (Fehler, Warnungen, Hinweise) und die wichtigsten betroffenen Seiten. Filter: issue (Befund-Code), sev (error, warn, info, ok), important (nur verkaufte/täglich geprüfte Artikel).', inputSchema: obj({ issue: { type: 'string' }, sev: { type: 'string', enum: ['error', 'warn', 'info', 'ok'] }, important: { type: 'boolean' }, limit: { type: 'integer', minimum: 1, maximum: 100 } }) },
+  { name: 'seo_audit_page', description: 'Seiten-Check eines Artikels: Titel, Beschreibung, Produktdaten, Befunde mit Erklärung und ggf. KI-Vorschlag.', inputSchema: obj({ id: { type: 'integer' } }, ['id']) },
   { name: 'keywords_overview', description: 'Keyword-Monitoring: Google-Platzierung (Top 50) je beobachtetem Keyword mit Veränderung, Suchvolumen, Search-Console-Daten und Mitbewerber-Positionen sowie Kennzahlen.', inputSchema: obj({ filter: { type: 'string', enum: ['all', 'top10', 'out', 'up', 'down', 'comp'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }) },
   { name: 'keyword_suggestions', description: 'Vorschläge für neue Keywords (Search Console, Bestseller, DataForSEO-Daten zu eigenem Shop und Mitbewerbern) mit Begründung.', inputSchema: obj({ limit: { type: 'integer', minimum: 1, maximum: 150 } }) },
   { name: 'add_keywords', description: 'Keywords zum Monitoring hinzufügen (höchstens 200 insgesamt). Sie werden sofort geprüft, wenn DataForSEO verbunden ist.', inputSchema: obj({ keywords: { type: 'array', items: { type: 'string' } }, tag: { type: 'string' } }, ['keywords']) },
@@ -131,6 +134,11 @@ function handlers(db, ownName, schedule, call) {
   const slim = (p, by) => ({ id: p.id, number: p.number, name: p.name, brand: p.manufacturer, ean: p.ean, price: p.price, tracked: Boolean(p.tracked), offline_seit: p.offline_since ?? null, competitors: by.get(p.id) ?? [] });
   return {
     merchant_overview: () => call('GET', '/api/merchant'),
+    seo_audit_overview: ({ issue = null, sev = null, important = false, limit = 30 } = {}) => {
+      const o = auditOverview(db, { issue, sev, important, limit });
+      return { geprueft: o.checked, seiten_gesamt: o.total, seo_wert_prozent: o.score, anzahl: o.counts, produktdaten_prozent: o.schema_share, befunde: o.issues.map((i) => ({ code: i.code, schwere: i.sev, befund: i.label, seiten: i.count, wichtig: i.important, tipp: i.hint })), seiten: o.pages.map((p) => ({ id: p.product_id, name: p.name, url: p.url, titel: p.title, beschreibung: p.description, befunde: p.issues.map((i) => `${i.label}${i.detail ? ` (${i.detail})` : ''}`) })) };
+    },
+    seo_audit_page: ({ id } = {}) => auditOf(db, Number(id)),
     keywords_overview: ({ filter = 'all', limit = 200 } = {}) => {
       const o = kwOverview(db);
       const f = { all: () => true, top10: (k) => k.position != null && k.position <= 10, out: (k) => k.position === null, up: (k) => k.change1 > 0, down: (k) => k.change1 < 0, comp: (k) => k.better > 0 }[filter] ?? (() => true);

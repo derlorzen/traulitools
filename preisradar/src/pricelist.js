@@ -2,6 +2,8 @@
  * Preisliste für die Oberfläche: Auswertung je Artikel, Filter, Sortierung und seitenweise Ausgabe.
  * Die Auswertung aller Artikel wird kurz zwischengespeichert, damit das Nachladen beim Scrollen schnell bleibt.
  */
+import { auditFlags } from './seoaudit.js';
+
 let cache = null; // { key, at, rows }
 const TTL = 60000;
 export const invalidatePriceList = () => { cache = null; };
@@ -22,11 +24,12 @@ function build(db, scope) {
   const sales = salesMap(db);
   const mc = mcMap(db);
   const qs = queriesMap(db);
+  const audit = auditFlags(db);
   return products.map((p) => {
     const matches = byProduct.get(p.id) ?? {};
     const page = p.url ? keyOf(p.url) : null;
     const queries = page ? qs.get(page) ?? [] : [];
-    const r = { ...p, matches, seo: seoOf(seo, p.url), sales: sales.get(p.id) ?? null, google: mc.get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches) };
+    const r = { ...p, matches, seo: seoOf(seo, p.url), sales: sales.get(p.id) ?? null, google: mc.get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: audit.get(p.id) ?? null };
     if (r.seo && queries.length) r.seo.top = { query: queries[0].query, position: Math.round(queries[0].position * 10) / 10 };
     r.g = googleSignals(r);
     Object.defineProperty(r, 'qtext', { value: queries.map((q) => q.query.toLowerCase()), enumerable: false });
@@ -70,6 +73,7 @@ export function googleSignals(r) {
   if (out.flags.includes('lowCtr')) out.advice.push({ kind: 'snippet', text: `Wenig geklickt für Platz ${String(Math.round(s.position * 10) / 10).replace('.', ',')}: Titel, Beschreibung und Preisanzeige bei Google prüfen` });
   if (out.flags.includes('striking')) out.advice.push({ kind: 'content', text: s.position <= 10 ? `Platz ${String(Math.round(s.position * 10) / 10).replace('.', ',')}: mit besserer Produktseite in die Top 3` : `Platz ${String(Math.round(s.position * 10) / 10).replace('.', ',')}: knapp hinter Seite 1, Seite stärken` });
   if (out.flags.includes('soldHidden')) out.advice.push({ kind: 'content', text: 'Verkauft sich, wird bei Google aber kaum gefunden' });
+  if (r.audit?.errors) { out.flags.push('seoErrors'); out.advice.push({ kind: 'snippet', text: `${r.audit.errors} SEO-Fehler auf der Seite (Seiten-Check)` }); }
   if (out.flags.includes('suggest')) out.advice.push({ kind: 'price', text: `Google schlägt ${g.suggested.toFixed(2).replace('.', ',')} € vor` });
   return out;
 }
@@ -140,6 +144,7 @@ const CHIPS = {
   gSoldHidden: (r) => r.g.flags.includes('soldHidden'),
   gInvisible: (r) => r.g.flags.includes('invisible'),
   gAdvice: (r) => r.g.advice.length > 0,
+  gSeo: (r) => r.g.flags.includes('seoErrors'),
 };
 
 const num = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -205,7 +210,7 @@ export function listProducts(db, q = {}) {
   const scope = q.scope === 'all' || (q.scope !== 'tracked' && !counts.tracked) ? 'all' : 'tracked';
   // Datenstand: ändert sich bei jedem Abruf, Import oder jeder Zuordnung
   const v = db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(last_checked),'') || ':' || COALESCE(SUM(LENGTH(COALESCE(url,'')) + LENGTH(status)),0) FROM matches) || '|' ||
-    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) AS v`).get().v;
+    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM seo_audit) AS v`).get().v;
   const key = `${scope}#${v}`;
   if (!cache || cache.key !== key || Date.now() - cache.at > TTL) cache = { key, at: Date.now(), rows: build(db, scope) };
   const all = cache.rows;
@@ -234,7 +239,7 @@ export function getProduct(db, id) {
     const prev = db.prepare('SELECT price FROM price_history WHERE match_id=? ORDER BY at DESC LIMIT 1 OFFSET 1').get(m.id);
     matches[m.competitor_id] = matchView(m, prev?.price);
   }
-  const r = { ...p, matches, seo: seoOf(seoMap(db), p.url), sales: salesMap(db).get(p.id) ?? null, google: mcMap(db).get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches) };
+  const r = { ...p, matches, seo: seoOf(seoMap(db), p.url), sales: salesMap(db).get(p.id) ?? null, google: mcMap(db).get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: auditFlags(db).get(p.id) ?? null };
   const q = r.seo ? db.prepare('SELECT query, position FROM seo_queries WHERE page=? ORDER BY clicks DESC, impressions DESC LIMIT 1').get(keyOf(p.url)) : null;
   if (q) r.seo.top = { query: q.query, position: Math.round(q.position * 10) / 10 };
   r.g = googleSignals(r);

@@ -725,3 +725,42 @@ input.kwtag { border: 1px solid var(--line); background: var(--surface); color: 
   /* Karten kompakt halten: Details stehen in der Detailansicht */
   .kwwrap .kwtable:not(.sugtable) td[data-label="7 Tage"], .kwwrap .kwtable:not(.sugtable) td[data-label="Search Console"], .kwwrap .kwtable:not(.sugtable) td[data-label="Rankende Seite"] { display: none; }
 }
+
+/* Seiten-Check */
+.snippet { max-width: 520px; text-align: left; white-space: normal; font-family: Arial, Helvetica, sans-serif; line-height: 1.35; }
+.sn-url { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sn-title { font-size: 17px; color: #1a0dab; margin: 2px 0; }
+.sn-rich { font-size: 12.5px; color: var(--muted); }
+.sn-desc { font-size: 13px; color: var(--ink); opacity: .85; }
+.sn-title.none, .sn-desc.none { color: var(--bad); font-style: italic; font-size: 13px; }
+@media (prefers-color-scheme: dark) { .sn-title { color: #8ab4f8; } }
+.sctable { min-width: 1000px; }
+.sctable td.sncell { text-align: left; min-width: 380px; }
+.sctable th.snh { text-align: left; }
+.ichips { display: flex; flex-wrap: wrap; gap: 4px; }
+.ichip { display: inline-block; font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--sunk); color: var(--muted); font-weight: 600; }
+.ichip.error { background: var(--bad-bg); color: var(--bad); }
+.ichip.warn { background: var(--warn-bg); color: var(--warn); }
+.ichip.ok { background: var(--good-bg); color: var(--good); }
+.ichip small { font-weight: 400; }
+.issuelist { display: grid; gap: 2px; margin-top: 8px; }
+.issuerow { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 12px; align-items: center; text-align: left; background: none; border: 1px solid transparent; border-radius: 8px; padding: 8px 10px; cursor: pointer; color: inherit; font: inherit; }
+.issuerow:hover { background: var(--sunk); }
+.issuerow.on { background: var(--petrol-soft); border-color: var(--petrol); }
+.issuerow .ilabel small { display: block; color: var(--muted); font-size: 12.5px; }
+.issuerow .icount { text-align: right; }
+.issuerow .icount small { display: block; color: var(--muted); font-size: 11.5px; }
+.sevdot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.sevdot.error { background: var(--bad); } .sevdot.warn { background: var(--warn); } .sevdot.info { background: var(--cool); }
+label.chk { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+ul.auditlist { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 6px; }
+ul.auditlist li { padding: 6px 10px 6px 12px; border-left: 3px solid var(--muted); background: var(--sunk); border-radius: 0 8px 8px 0; font-size: 13.5px; }
+ul.auditlist li.error { border-color: var(--bad); } ul.auditlist li.warn { border-color: var(--warn); } ul.auditlist li.info { border-color: var(--cool); }
+.goodtxt { color: var(--good); }
+.aisug { margin-top: 12px; padding: 12px; border: 1px dashed var(--petrol); border-radius: 10px; display: grid; gap: 8px; }
+.seoaudit .snippet { margin: 4px 0 8px; }
+@media (max-width: 760px) {
+  .sctable td.sncell { min-width: 0; display: block !important; }
+  .sctable td.sncell::before { display: block; margin-bottom: 6px; }
+  .issuerow { grid-template-columns: 12px minmax(0, 1fr) auto; }
+}

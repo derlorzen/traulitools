@@ -107,6 +107,9 @@ CREATE TABLE IF NOT EXISTS keyword_serp (keyword_id INTEGER NOT NULL REFERENCES 
 CREATE TABLE IF NOT EXISTS kw_tasks (task_id TEXT PRIMARY KEY, keyword_id INTEGER NOT NULL, posted_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kw_dismissed (keyword TEXT PRIMARY KEY COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS kw_suggestions (keyword TEXT NOT NULL COLLATE NOCASE, source TEXT NOT NULL, domain TEXT, position INTEGER, volume INTEGER, url TEXT, fetched_at TEXT, PRIMARY KEY (keyword, source, domain));
+CREATE TABLE IF NOT EXISTS seo_audit (product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, url TEXT, checked_at TEXT NOT NULL, http_status INTEGER, final_url TEXT, ms INTEGER, bytes INTEGER,
+  title TEXT, description TEXT, h1 TEXT, h1_count INTEGER, canonical TEXT, robots TEXT, schema TEXT, words INTEGER, text_hash TEXT, images INTEGER, images_no_alt INTEGER, og INTEGER, issues TEXT NOT NULL DEFAULT '[]', error TEXT);
+CREATE TABLE IF NOT EXISTS seo_ai (product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, title TEXT, description TEXT, notes TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT NOT NULL,
