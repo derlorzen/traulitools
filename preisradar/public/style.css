@@ -792,3 +792,23 @@ iframe.descprev { width: 100%; height: 220px; border: 1px solid var(--line); bor
 .row label input.calcin { width: 70px; }
 .whatif th { text-align: left; font-weight: 500; }
 @media (max-width: 760px) { .whatif-grid { grid-template-columns: 1fr; } .whatif-in input.calcin { width: 90px; } }
+
+/* Signale aus allen Bereichen */
+.sigs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+button.sig { font-family: inherit; font-size: 11px; font-weight: 600; line-height: 1.4; padding: 1px 8px; border-radius: 999px; border: 1px solid transparent; background: var(--sunk); color: var(--muted); cursor: pointer; white-space: nowrap; }
+button.sig:hover { border-color: currentColor; }
+button.sig:focus-visible { outline: 2px solid var(--petrol); outline-offset: 1px; }
+button.sig.good { background: var(--good-bg); color: var(--good); }
+button.sig.bad { background: var(--bad-bg); color: var(--bad); }
+button.sig.warn { background: var(--warn-bg); color: var(--warn); }
+button.sig.cool { background: var(--cool-bg); color: var(--cool); }
+.sechd { display: flex; align-items: baseline; gap: 12px; margin-top: 22px; scroll-margin-top: 12px; }
+.sechd h3 { margin: 0 0 6px; }
+.sechd .linkbtn { margin-left: auto; font-size: 13px; }
+.ctxbox .sigs { margin: 8px 0 4px; }
+.note.chancen { scroll-margin-top: 12px; }
+.prices td.prod .sigs { max-width: 340px; }
+.list.wide { margin-top: 18px; }
+.list.wide ol { columns: 2; column-gap: 28px; }
+.list.wide li { break-inside: avoid; }
+@media (max-width: 900px) { .list.wide ol { columns: 1; } }

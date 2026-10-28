@@ -366,6 +366,7 @@ function rowEl(p) {
       h('div', { class: 'pmeta' }, [p.manufacturer, p.number, p.mpn && p.mpn !== p.number ? `HAN ${p.mpn}` : null].filter(Boolean).join(' · ')),
       econLine(p),
       hitLine(p),
+      sigChips(p.id, p.sig, { omit: ['price', 'sales', 'gsc'] }),
       p.seo ? h('div', { class: 'seoline', title: `Google, letzte 28 Tage: ${p.seo.clicks} Klicks, ${p.seo.impressions} Impressionen, Ø Position ${p.seo.position}` }, `${nf.format(p.seo.impressions)} Impr. · ${nf.format(p.seo.clicks)} Klicks · Pos. ${nf1.format(p.seo.position)}`) : null,
       tierTag(p),
       p.offline_since ? h('span', { class: 'tag warn', title: `Seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar` }, 'bei dir offline') : null),
@@ -403,6 +404,7 @@ function googleRowEl(p) {
       hitLine(p),
       sx?.top ? h('div', { class: 'topq', title: 'Suchanfrage mit den meisten Klicks auf diese Seite' }, 'Top-Suche „', h('b', {}, sx.top.query), `“ · Platz ${nf1.format(sx.top.position)}`) : null,
       p.sales?.units_90 ? h('div', { class: 'pmeta' }, `${nf.format(p.sales.units_90)} verkauft (90 T)`) : null,
+      sigChips(p.id, p.sig, { omit: ['price', 'sales', 'gsc'] }),
       tierTag(p)),
     d.config.gsc ? [
       h('td', { class: 'mcell gpos', 'data-label': 'Google-Position' }, sx ? h('div', { class: 'gposbox', title: `Ø Position ${nf1.format(sx.position)} in den letzten 28 Tagen` },
@@ -550,7 +552,7 @@ function chart(hist) {
   return h('div', {}, svg, legend);
 }
 
-async function openDrawer(id, given = null) {
+async function openDrawer(id, given = null, section = null) {
   state.selected = id;
   const d = state.data;
   const el = document.getElementById('drawer');
@@ -581,12 +583,14 @@ async function openDrawer(id, given = null) {
       ? `Abfrage bei Mitbewerbern: täglich, weil ${p.tier_reason || 'von Hand gesetzt'}.`
       : `Abfrage bei Mitbewerbern: alle ${state.data.tiers?.bDays ?? 4} Tage (keine Verkäufe, Preisbewegung oder Google-Nachfrage erfasst).`) : null,
     p.g?.advice.length ? h('div', { class: 'note gnote' }, h('strong', {}, 'Bei Google: '), h('ul', { class: 'todo' }, p.g.advice.map((x) => h('li', { class: x.kind }, x.text)))) : null,
+    contextBox(p.id),
     p.google?.suggested && Math.abs(p.google.suggested - p.price) >= 0.01 ? h('p', { class: 'note' }, `Google-Preisvorschlag: ${eur.format(p.google.suggested)}${p.google.conversions_change != null ? `, erwartet ${p.google.conversions_change > 0 ? '+' : ''}${Math.round(p.google.conversions_change * 100)} % Verkäufe in Shopping` : ''}.`) : null,
-    h('h3', { style: 'margin-top:18px' }, 'Preisverlauf'), histBox,
-    h('h3', { style: 'margin-top:22px' }, 'Bei Google (letzte 28 Tage)'), seoDrawerBox(p.id),
-    h('h3', { style: 'margin-top:22px' }, 'Preise je Kanal'), channelBox(p),
-    p.url ? [h('h3', { style: 'margin-top:22px' }, 'Seiten-Check (SEO)'), seoAuditBox(p.id)] : null,
-    h('h3', { style: 'margin-top:22px' }, 'Mitbewerber'),
+    secHead('preise', 'Preisverlauf'), histBox,
+    secHead('kanal', 'Preise je Kanal', d.config.ebay ? ['eBay', 'ebay'] : null), channelBox(p),
+    secHead('google', 'Bei Google (letzte 28 Tage)', d.config.gsc ? ['Sichtbarkeit', 'sichtbarkeit'] : null), seoDrawerBox(p.id),
+    secHead('keywords', 'Keywords', ['Keyword-Monitoring', 'keywords']), keywordBox(p),
+    p.url ? [secHead('seo', 'Seiten-Check (SEO)', ['Seiten-Check', 'seitencheck']), seoAuditBox(p.id)] : null,
+    secHead('mitbewerber', 'Mitbewerber'),
     ...a.cells.map(({ c, m }) => {
       const input = h('input', { type: 'url', placeholder: 'https://… (Produktseite beim Mitbewerber)', value: m?.url ?? '', 'aria-label': `Produkt-URL bei ${c.name}` });
       const missing = !m || !['ok', 'review'].includes(m.status);
@@ -617,12 +621,81 @@ async function openDrawer(id, given = null) {
             await reloadDrawer();
           }) }, input.value ? 'Link speichern' : 'Link speichern')));
     }));
+  if (section) setTimeout(() => document.getElementById(`sec-${section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 350);
   try {
     histBox.replaceChildren(chart(await api(`/api/products/${id}/history`)));
   } catch (e) {
     histBox.replaceChildren(h('p', { class: 'pmeta' }, e.message));
   }
 }
+/** Überschrift eines Abschnitts in der Detailansicht, mit Sprung in den passenden Bereich. */
+function secHead(key, title, link = null) {
+  return h('div', { class: 'sechd', id: `sec-${key}` }, h('h3', {}, title),
+    link ? h('button', { class: 'linkbtn', onclick: () => setTab(link[1]) }, `${link[0]} öffnen`) : null);
+}
+
+const fmtPos = (v) => nf1.format(v);
+/**
+ * Signale eines Artikels aus allen Bereichen als kleine Chips. Ein Klick öffnet die Detailansicht direkt beim
+ * passenden Abschnitt. omit: Signale, die in der jeweiligen Liste schon als Spalte stehen.
+ */
+function sigChips(id, sig, { omit = [] } = {}) {
+  if (!sig) return null;
+  const go = (sec) => (e) => { e.stopPropagation(); openDrawer(id, null, sec); };
+  const chip = (cls, text, sec, title = '') => h('button', { class: `sig ${cls}`, title, onclick: go(sec) }, text);
+  const out = [];
+  const pr = sig.price;
+  if (!omit.includes('price') && pr) {
+    if (pr.kind === 'cheapest') out.push(chip('good', 'günstigster', 'mitbewerber', pr.competitor ? `Günstigster vor ${pr.competitor}` : ''));
+    else if (pr.kind === 'undercut') out.push(chip('bad', `+${nf1.format(pr.gap_pct)} % Preis`, 'mitbewerber', `${pr.competitor} ist günstiger (${eur.format(pr.min)})`));
+    if (pr.oos) out.push(chip('good', `${pr.oos}× Mitbewerber ausverkauft`, 'mitbewerber'));
+  }
+  if (!omit.includes('sales') && sig.sales) out.push(chip('', `${nf.format(sig.sales.units_90)} verkauft`, 'kanal', 'Verkäufe der letzten 90 Tage (Shopware)'));
+  if (!omit.includes('gsc') && sig.gsc) out.push(chip(sig.gsc.position <= 3 ? 'good' : sig.gsc.position <= 10 ? 'cool' : 'warn', `Google ${fmtPos(sig.gsc.position)} · ${nf.format(sig.gsc.impressions)} Impr.`, 'google', 'Ø Position und Impressionen der letzten 28 Tage'));
+  if (!omit.includes('keywords') && sig.keywords) out.push(chip(sig.keywords.best <= 3 ? 'good' : sig.keywords.best <= 10 ? 'cool' : 'warn', `${sig.keywords.count} Keyword${sig.keywords.count > 1 ? 's' : ''} · bester Platz ${sig.keywords.best}`, 'keywords', `Bestes Keyword: ${sig.keywords.best_keyword}`));
+  if (!omit.includes('audit') && sig.audit) out.push(sig.audit.errors ? chip('bad', `${sig.audit.errors} SEO-Fehler`, 'seo', sig.audit.top ?? '') : sig.audit.warns ? chip('warn', `${sig.audit.warns} SEO-Warnung${sig.audit.warns > 1 ? 'en' : ''}`, 'seo', sig.audit.top ?? '') : chip('good', 'SEO ok', 'seo'));
+  if (!omit.includes('ebay') && sig.ebay) {
+    const e = sig.ebay;
+    if (e.listed) out.push(chip(e.market_min != null && e.price > e.market_min + 0.01 ? 'warn' : 'good', `eBay ${eur.format(e.price)}${e.market_min != null && e.price > e.market_min + 0.01 ? ` (ab ${eur.format(e.market_min)})` : ''}`, 'kanal'));
+    else if (e.market_min != null) out.push(chip('', `eBay ab ${eur.format(e.market_min)}`, 'kanal', `${e.offers} Angebote auf eBay, du bist dort nicht`));
+    if (e.pending_jtl) out.push(chip('warn', 'JTL-Übernahme offen', 'kanal'));
+  }
+  return out.length ? h('div', { class: 'sigs' }, out) : null;
+}
+
+/** Auf einen Blick und Chancen eines Artikels (aus allen Bereichen). */
+function contextBox(id) {
+  const box = h('div', { class: 'ctxbox' });
+  api(`/api/products/${id}/context`).then((r) => {
+    box.replaceChildren(
+      sigChips(id, r.signals),
+      r.opportunities.length ? h('div', { class: 'note chancen', id: 'sec-chancen' }, h('strong', {}, 'Chancen: '),
+        h('ul', { class: 'todo' }, r.opportunities.map((o) => h('li', { class: o.tone === 'bad' ? 'price' : o.tone === 'warn' ? 'snippet' : 'content' }, h('b', {}, o.label), `: ${o.detail}. `, h('span', { class: 'pmeta' }, o.action),
+          o.type === 'ebay_missing' && state.data.config.ebayConnected ? [' ', h('button', { class: 'linkbtn', onclick: () => openListingEditor(id) }, 'einstellen')] : null)))) : null);
+  }).catch(() => box.replaceChildren());
+  return box;
+}
+
+/** Keywords, mit denen die Seite rankt, und Suchanfragen aus der Search Console zum Übernehmen. */
+function keywordBox(p) {
+  const box = h('div', { class: 'kwbox' }, h('p', { class: 'pmeta' }, 'Wird geladen …'));
+  Promise.all([api(`/api/products/${p.id}/context`), p.url ? api(`/api/products/${p.id}/seo`) : Promise.resolve({ queries: [] })]).then(([ctx, seo]) => {
+    const tracked = new Set(ctx.keywords.map((k) => k.keyword.toLowerCase()));
+    const cand = (seo.queries ?? []).filter((q) => !tracked.has(q.query.toLowerCase())).slice(0, 5);
+    box.replaceChildren(
+      ctx.keywords.length ? h('table', { class: 'plain' }, h('thead', {}, h('tr', {}, ['Keyword', 'Platz', 'Suchvolumen'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, ctx.keywords.map((k) => h('tr', {}, h('td', {}, k.keyword), h('td', {}, h('span', { class: `gpill ${gTone(k.position)}` }, String(k.position))), h('td', {}, k.volume != null ? nf.format(k.volume) : '–')))))
+        : h('p', { class: 'pmeta' }, 'Kein beobachtetes Keyword rankt mit dieser Seite.'),
+      cand.length ? h('div', { style: 'margin-top:8px' }, h('span', { class: 'pmeta' }, 'Aus der Search Console beobachten: '),
+        cand.map((q) => h('button', { class: 'chip', title: `${nf.format(q.impressions)} Impressionen, Ø Platz ${nf1.format(q.position)}`, onclick: guard(async (e) => {
+          const r = await api('/api/keywords', { body: { keywords: q.query, source: 'suggestion' } });
+          toast(r.added ? `„${q.query}“ wird beobachtet` : 'Schon beobachtet');
+          e.target.closest('button').disabled = true;
+        }) }, `+ ${q.query}`))) : null);
+  }).catch((e) => box.replaceChildren(h('p', { class: 'pmeta' }, e.message)));
+  return box;
+}
+
 function closeDrawer() { state.selected = null; document.getElementById('drawer').hidden = true; document.body.classList.remove('drawer-open'); }
 document.addEventListener('keydown', (e) => e.key === 'Escape' && closeDrawer());
 
@@ -950,7 +1023,7 @@ async function renderStart(root) {
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => setTab('einstellungen') }, 'Eigene Sitemap hinterlegen'), h('button', { class: 'btn', onclick: () => setTab('import') }, 'CSV oder Shopware'))));
     return;
   }
-  const [a, imp] = await Promise.all([api('/api/analysis'), api('/api/import/sitemap/status').catch(() => null)]);
+  const [a, imp, opps] = await Promise.all([api('/api/analysis'), api('/api/import/sitemap/status').catch(() => null), api('/api/opportunities').catch(() => null)]);
   lastAnalysis = a;
   const k = a.kpi;
   const real = a.rows.filter((r) => !r.warning);
@@ -989,7 +1062,7 @@ async function renderStart(root) {
     h('ul', { class: 'gauge-legend' }, parts.map(([key, label, n, fn]) =>
       h('li', {}, h('button', { class: 'linkbtn', onclick: fn, disabled: !n }, h('i', { class: `sw ${key}` }), h('b', {}, String(n)), ` ${label}`, h('small', {}, ` ${Math.round((n / total) * 100)} %`))))));
 
-  const item = (r, main, side) => h('li', { tabindex: 0, onclick: () => { state.tab = 'preise'; render(); openDrawer(r.id); }, onkeydown: (e) => e.key === 'Enter' && e.currentTarget.click() },
+  const item = (r, main, side) => h('li', { tabindex: 0, onclick: () => openDrawer(r.id), onkeydown: (e) => e.key === 'Enter' && e.currentTarget.click() },
     h('div', { class: 'li-main' }, h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, main)), h('div', { class: 'li-side' }, side));
   const down = a.rows.filter((r) => r.action === 'senken').sort((x, y) => y.diff - x.diff).slice(0, 6);
   const up = a.rows.filter((r) => r.action === 'erhöhen').sort((x, y) => (y.suggested_price - y.own_price) - (x.suggested_price - x.own_price)).slice(0, 6);
@@ -1024,9 +1097,20 @@ async function renderStart(root) {
           `${d.config.aiUsage.today.toLocaleString('de-DE')} von ${d.config.aiUsage.limit.toLocaleString('de-DE')} Anfragen heute${d.config.aiUsage.today >= d.config.aiUsage.limit ? ' (Grenze erreicht, weiter ohne KI)' : ''}`]
         : 'nicht eingerichtet (Regeln und Sitemaps arbeiten trotzdem)')));
 
+  // Wichtigste Chancen aus allen Bereichen (Preis, Google, Seiten-Check, Keywords, eBay, Lager)
+  const items = opps?.items ?? [];
+  const firstOfType = items.filter((i, n) => items.findIndex((x) => x.type === i.type) === n); // je Art die wertvollste
+  const top = [...firstOfType, ...items.filter((i) => !firstOfType.includes(i))].slice(0, 6).sort((x, y) => (y.value ?? 0) - (x.value ?? 0));
+  const chancen = opps?.items?.length ? h('section', { class: 'list wide' },
+    h('div', { class: 'list-h' }, h('h3', {}, 'Wichtigste Chancen'), h('button', { class: 'linkbtn', onclick: () => setTab('chancen') }, `alle ${nf.format(opps.total ?? opps.items.length)}`)),
+    h('p', { class: 'pmeta' }, 'Aus Preisen, Google, Seiten-Check, Keywords, eBay und Lager, nach geschätztem Wert.'),
+    h('ol', {}, top.map((i) => h('li', { tabindex: 0, onclick: () => openDrawer(i.product_id, null, 'chancen'), onkeydown: (e) => e.key === 'Enter' && e.currentTarget.click() },
+      h('div', { class: 'li-main' }, h('div', { class: 'pname' }, i.name), h('div', { class: 'pmeta' }, i.detail)),
+      h('div', { class: 'li-side' }, h('span', { class: `ichip ${i.tone === 'bad' ? 'error' : i.tone === 'warn' ? 'warn' : 'ok'}` }, i.label)))))) : null;
+
   root.append(hero, gauge,
     a.hints.length ? h('ul', { class: 'hints' }, a.hints.slice(0, 4).map((x) => h('li', { class: x.level }, x.text))) : null,
-    lists, h('div', { class: 'cols two' }, comps, ops));
+    chancen, lists, h('div', { class: 'cols two' }, comps, ops));
 }
 
 // ---------- Sichtbarkeit (Google Search Console) ----------
@@ -1127,7 +1211,7 @@ function renderMerchant(root, mc) {
     kpiTile('Mit Google-Vergleichspreis', h('span', { 'data-count': b.total }, nf.format(b.total)), 'Artikel, für die Google einen Marktpreis kennt'),
     kpiTile('Über dem Vergleichspreis', h('span', { 'data-count': b.above }, nf.format(b.above)), 'mehr als 2 % teurer', b.above ? 'warm' : ''),
     kpiTile('Unter dem Vergleichspreis', h('span', { 'data-count': b.below }, nf.format(b.below)), 'mehr als 2 % günstiger', 'cool')));
-  const open = (id) => () => { state.tab = 'preise'; render(); openDrawer(id); };
+  const open = (id) => () => openDrawer(id);
   root.append(h('div', { class: 'grid2 eq' },
     h('div', { class: 'panel flush' },
       h('div', { class: 'panelhead' }, h('h3', {}, 'Über dem Google-Vergleichspreis'), h('p', { class: 'pmeta' }, 'Google vergleicht mit allen Händlern, die dasselbe Produkt in Shopping anbieten, auch mit solchen, die du noch nicht beobachtest.')),
@@ -1168,8 +1252,8 @@ function renderGsc(root, o) {
       h('div', { class: 'cols four' }, op.groups.map((g) => h('section', { class: `list opp ${g.tone}` },
         h('div', { class: 'list-h' }, h('h3', {}, g.title), h('span', { class: 'pmeta' }, String(g.items.length))),
         h('p', { class: 'pmeta' }, g.hint),
-        g.items.length ? h('ol', {}, g.items.slice(0, 8).map((r) => h('li', { tabindex: 0, onclick: () => { state.tab = 'preise'; render(); openDrawer(r.id); }, onkeydown: (e) => e.key === 'Enter' && e.currentTarget.click() },
-          h('div', { class: 'li-main' }, h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, r.why)),
+        g.items.length ? h('ol', {}, g.items.slice(0, 8).map((r) => h('li', { tabindex: 0, onclick: () => openDrawer(r.id), onkeydown: (e) => e.key === 'Enter' && e.currentTarget.click() },
+          h('div', { class: 'li-main' }, h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, r.why), sigChips(r.id, r.sig, { omit: ['gsc', 'price'] })),
           h('div', { class: 'li-side' }, h('div', { class: `fig ${r.gap_percent > 2 ? 'warm' : r.gap_percent <= 0 ? 'cool' : ''}` }, fmtPct(r.gap_percent)), h('div', { class: 'pmeta' }, eur.format(r.own_price))))))
           : h('p', { class: 'list-empty' }, 'Derzeit nichts.')))));
   } else root.append(h('p', { class: 'pmeta' }, 'Chancen erscheinen, sobald Suchdaten zu beobachteten Artikeln mit Vergleichspreisen vorliegen. Dafür brauchen deine Artikel eine Shop-URL (eigene Sitemap unter Einstellungen).'));
@@ -1180,15 +1264,17 @@ function renderGsc(root, o) {
       h('div', { class: 'panelhead' }, h('h3', {}, 'Produktseiten'), h('p', { class: 'pmeta' }, 'Nach Klicks. Klick öffnet den Artikel.')),
       h('div', { class: 'tablewrap', style: 'max-height:560px' }, h('table', { class: 'prices', style: 'min-width:0' },
         h('thead', {}, h('tr', {}, ['Artikel', 'Klicks', 'Impr.', 'CTR', 'Pos.'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
-        h('tbody', {}, o.pages.map((p) => h('tr', { onclick: () => { state.tab = 'preise'; render(); openDrawer(p.product.id); } },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.product.name), h('div', { class: 'pmeta' }, [p.product.price != null ? eur.format(p.product.price) : null, p.product.offline ? 'bei dir offline' : null].filter(Boolean).join(' · '))),
+        h('tbody', {}, o.pages.map((p) => h('tr', { onclick: () => openDrawer(p.product.id) },
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.product.name), h('div', { class: 'pmeta' }, [p.product.price != null ? eur.format(p.product.price) : null, p.product.offline ? 'bei dir offline' : null].filter(Boolean).join(' · ')), sigChips(p.product.id, p.product.sig, { omit: ['gsc'] })),
           h('td', {}, nf.format(p.clicks)), h('td', {}, nf.format(p.impressions)), h('td', {}, `${nf1.format(p.ctr * 100)} %`), h('td', {}, posBadge(p.position)))))))),
     h('div', { class: 'panel flush' },
       h('div', { class: 'panelhead' }, h('h3', {}, 'Suchanfragen'), h('p', { class: 'pmeta' }, 'Womit deine Produktseiten gefunden werden, nach Klicks.')),
       h('div', { class: 'tablewrap', style: 'max-height:560px' }, h('table', { class: 'prices', style: 'min-width:0' },
         h('thead', {}, h('tr', {}, ['Suchanfrage', 'Klicks', 'Impr.', 'Pos.'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
         h('tbody', {}, o.queries.map((q) => h('tr', { class: 'nolink' },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, q.query)),
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, q.query), h('div', { class: 'sigs' },
+            h('button', { class: 'sig', title: 'Artikel zeigen, deren Seite mit dieser Suchanfrage gefunden wird', onclick: () => { Object.assign(state, { q: q.query, filter: 'all', view: 'google' }); setTab('preise'); } }, 'Artikel zeigen'),
+            h('button', { class: 'sig cool', title: 'Im Keyword-Monitoring täglich beobachten', onclick: guard(async (e) => { const r = await api('/api/keywords', { body: { keywords: q.query, source: 'suggestion' } }); toast(r.added ? `„${q.query}“ wird beobachtet` : 'Schon beobachtet'); e.target.disabled = true; }) }, '+ Keyword'))),
           h('td', {}, nf.format(q.clicks)), h('td', {}, nf.format(q.impressions)), h('td', {}, q.position != null ? posBadge(q.position) : '–')))))))));
 }
 
@@ -1301,7 +1387,7 @@ async function renderEbay(root) {
       h('div', { class: 'tablewrap kwwrap' }, h('table', { class: 'prices kwtable ebtable' },
         h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Angebot'), ...['Preis', 'Menge', 'Verkauft', 'Günstigster auf eBay', 'Gewinn', 'Marge', 'Hinweis'].map((t) => h('th', {}, t)))),
         h('tbody', {}, o.listings.map((l) => h('tr', { tabindex: 0, onclick: () => l.product_id && openDrawer(l.product_id) },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, l.title), h('div', { class: 'pmeta' }, [`SKU ${l.sku ?? '–'}`, l.name && l.name !== l.title ? l.name : null].filter(Boolean).join(' · ')), l.created_by_us ? h('span', { class: `tag ${l.jtl_state === 'pending' ? 'warn' : 'tier'}` }, l.jtl_state === 'pending' ? 'JTL-Übernahme offen' : 'über Preisradar eingestellt') : null),
+          h('td', { class: 'prod' }, h('div', { class: 'pname' }, l.title), h('div', { class: 'pmeta' }, [`SKU ${l.sku ?? '–'}`, l.name && l.name !== l.title ? l.name : null].filter(Boolean).join(' · ')), l.created_by_us ? h('span', { class: `tag ${l.jtl_state === 'pending' ? 'warn' : 'tier'}` }, l.jtl_state === 'pending' ? 'JTL-Übernahme offen' : 'über Preisradar eingestellt') : null, l.product_id ? sigChips(l.product_id, l.sig, { omit: ['ebay'] }) : null),
           h('td', { class: 'mcell', 'data-label': 'Preis' }, money(l.price)),
           h('td', { class: 'mcell', 'data-label': 'Menge' }, String(l.quantity ?? '–')),
           h('td', { class: 'mcell', 'data-label': 'Verkauft' }, String(l.sold ?? 0)),
@@ -1480,13 +1566,13 @@ async function renderChancen(root) {
     h('p', { class: 'sub' }, 'Wo du mehr verkaufen oder mehr verdienen kannst, nach geschätztem Wert sortiert. Die Preisvorschläge gibt es als Datei für die JTL-Ameise (Semikolon getrennt); in der Ameise die Spalte „Preis neu“ dem Brutto-VK bzw. dem eBay-Preis zuordnen. Preisradar ändert selbst keine Preise.'),
     !o.has_sales ? h('p', { class: 'note' }, 'Ohne Verkaufsdaten aus Shopware fehlen die Chancen „Bald ausverkauft“, „Ladenhüter“ und „Fehlt auf eBay“ zum großen Teil.') : null,
     h('div', { class: 'toolbar' }, h('div', { class: 'seg' },
-      h('button', { class: `chip${!opp.type ? ' on' : ''}`, onclick: () => { opp.type = ''; render(); } }, h('b', {}, String(o.items.length)), 'alle'),
+      h('button', { class: `chip${!opp.type ? ' on' : ''}`, onclick: () => { opp.type = ''; render(); } }, h('b', {}, String(o.total ?? o.items.length)), 'alle'),
       Object.entries(o.types).map(([k, t]) => (o.counts[k] ? h('button', { class: `chip ${t.tone}${opp.type === k ? ' on' : ''}`, title: t.hint, onclick: () => { opp.type = k; render(); } }, h('b', {}, String(o.counts[k])), t.label) : null)))),
     opp.type ? h('p', { class: 'pmeta' }, o.types[opp.type].hint) : null,
     list.length ? h('div', { class: 'tablewrap kwwrap' }, h('table', { class: 'prices kwtable opptable' },
       h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Artikel'), h('th', {}, 'Chance'), h('th', { class: 'kurl' }, 'Warum'), h('th', {}, 'Wert'), h('th', {}, 'Was tun'))),
       h('tbody', {}, list.slice(0, 300).map((i) => h('tr', { tabindex: 0, onclick: () => openDrawer(i.product_id) },
-        h('td', { class: 'prod' }, h('div', { class: 'pname' }, i.name), h('div', { class: 'pmeta' }, [i.number, i.price != null ? money(i.price) : null, i.stock != null ? `Bestand ${i.stock}` : null].filter(Boolean).join(' · '))),
+        h('td', { class: 'prod' }, h('div', { class: 'pname' }, i.name), h('div', { class: 'pmeta' }, [i.number, i.price != null ? money(i.price) : null, i.stock != null ? `Bestand ${i.stock}` : null].filter(Boolean).join(' · ')), sigChips(i.product_id, i.sig)),
         h('td', { class: 'mcell', 'data-label': 'Chance' }, h('span', { class: `ichip ${i.tone === 'bad' ? 'error' : i.tone === 'warn' ? 'warn' : 'ok'}` }, i.label)),
         h('td', { class: 'mcell kurl', 'data-label': 'Warum' }, i.detail),
         h('td', { class: 'mcell', 'data-label': 'Wert', title: 'Grobe Schätzung in Euro, nur zum Sortieren' }, i.value ? money(i.value) : '–'),
@@ -1652,7 +1738,8 @@ function scRow(p) {
   return h('tr', { tabindex: 0, onclick: () => openDrawer(p.product_id), onkeydown: (e) => e.key === 'Enter' && openDrawer(p.product_id) },
     h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.name),
       h('div', { class: 'pmeta' }, [p.number, p.units_90 ? `${p.units_90} verkauft (90 T)` : null, p.gsc ? `${nf.format(p.gsc.impressions)} Impr. · Pos. ${nf1.format(p.gsc.position)}` : null].filter(Boolean).join(' · ')),
-      p.tier === 'A' ? h('span', { class: 'tag tier' }, 'wichtig') : null),
+      p.tier === 'A' ? h('span', { class: 'tag tier' }, 'wichtig') : null,
+      sigChips(p.product_id, p.sig, { omit: ['audit', 'sales', 'gsc'] })),
     h('td', { class: 'mcell sncell', 'data-label': 'Google-Vorschau' }, snippetPreview(p.title, p.url, p.description, { price: p.schema?.price, availability: p.schema?.availability })),
     h('td', { class: 'mcell kurl', 'data-label': 'Befunde' }, p.error && !p.issues.length ? h('span', { class: 'pmeta' }, p.error) : p.issues.length ? h('div', { class: 'ichips' }, p.issues.slice(0, 6).map(issueChip), p.issues.length > 6 ? h('small', { class: 'pmeta' }, ` +${p.issues.length - 6}`) : null) : h('span', { class: 'ichip ok' }, 'alles in Ordnung')),
     h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('button', { class: 'btn small', onclick: guard(async (e) => {
@@ -1880,7 +1967,7 @@ function kwRow(k, o) {
     h('td', { class: 'mcell', 'data-label': 'Suchvolumen' }, k.volume != null ? nf.format(k.volume) : '–'),
     h('td', { class: 'mcell', 'data-label': 'Search Console', title: k.gsc ? `Ø Platz ${k.gsc.position} in den letzten 28 Tagen, ${k.gsc.impressions} Impressionen, ${k.gsc.clicks} Klicks` : 'keine Daten aus der Search Console' }, k.gsc ? [`Ø ${nf1.format(k.gsc.position)}`, h('small', { class: 'pmeta kbest' }, `${nf.format(k.gsc.impressions)} Impr.`)] : '–'),
     h('td', { class: 'mcell kcomp', 'data-label': 'Mitbewerber' }, comps.length ? h('div', { class: 'kcomps' }, comps.map((c) => h('span', { class: `kc${k.position == null || c.position < k.position ? ' ahead' : ''}`, title: `${c.domain} auf Platz ${c.position}` }, c.domain.replace(/\.(de|com|at|ch|eu|net)$/, ''), h('b', {}, String(c.position))))) : h('span', { class: 'tag mute' }, k.comps.length ? 'nicht in den Top ' + o.depth : '–')),
-    h('td', { class: 'mcell kurl', 'data-label': 'Rankende Seite' }, k.product ? h('span', { title: k.url }, k.product.name) : k.url ? h('span', { title: k.url }, shortUrl(k.url)) : '–'),
+    h('td', { class: 'mcell kurl', 'data-label': 'Rankende Seite', onclick: (e) => k.product && e.stopPropagation() }, k.product ? [h('button', { class: 'linkbtn', title: k.url, onclick: () => openDrawer(k.product.id, null, 'keywords') }, k.product.name), sigChips(k.product.id, k.product.sig, { omit: ['keywords', 'sales'] })] : k.url ? h('span', { title: k.url }, shortUrl(k.url)) : '–'),
     h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('button', { class: 'btn small', title: 'Keyword entfernen', 'aria-label': `${k.keyword} entfernen`, onclick: guard(async () => { if (!confirm(`„${k.keyword}“ mit Verlauf entfernen?`)) return; await api(`/api/keywords/${k.id}`, { method: 'DELETE' }); toast('Entfernt'); render(); }) }, 'Entfernen')));
 }
 
@@ -1982,6 +2069,7 @@ function renderHelp(root) {
     ['h-finden', 'Wie Preisradar deinen Artikel beim Mitbewerber findet'],
     ['h-status', 'Was die Angaben in der Preisliste bedeuten'],
     ['h-abruf', 'Wann und wie oft abgefragt wird'],
+    ['h-zusammen', 'Wie alles zusammenhängt'],
     ['h-ebay', 'Verkaufskanäle, eBay und Chancen'],
     ['h-seitencheck', 'Seiten-Check: SEO der eigenen Produktseiten'],
     ['h-keywords', 'Keyword-Monitoring'],
@@ -2034,6 +2122,10 @@ function renderHelp(root) {
       p('Neue Artikel werden zuerst einmal bei allen Mitbewerbern gesucht, die täglich geprüften vorneweg. Den Fortschritt siehst du im Lagebild unter „Betrieb“. Der Preisverlauf speichert einen Preis nur, wenn er sich ändert, und sonst einmal pro Woche; so bleibt die Datenbank auch bei vielen Artikeln schlank.'),
       p('Artikel, die bei einem Mitbewerber nicht gefunden wurden, werden dort einmal pro Woche erneut gesucht, nach vier erfolglosen Versuchen nur noch monatlich. Mit „Prüfen“ in der Preisliste fragst du einen Artikel jederzeit sofort bei allen Mitbewerbern ab. Einstellbar unter ', go('einstellungen', 'Einstellungen → Abrufplan'), '.'),
       p('Preisradar gibt sich offen als „PreisradarBot“ zu erkennen und hält sich an die Regeln, die jeder Shop in seiner robots.txt festlegt. Seiten, die ein Shop für Programme sperrt, werden nicht abgerufen.')),
+
+    sec('h-zusammen', 'Wie alles zusammenhängt',
+      p('Jeder Artikel hat eine Detailansicht, egal von wo du ihn öffnest: Preise und Mitbewerber, Preise je Kanal, Google, Keywords, Seiten-Check und die Chancen für genau diesen Artikel. Oben stehen alle Signale als kleine Marken, etwa „+9 % Preis“, „Google 8,2“, „2 SEO-Fehler“, „1 Keyword · bester Platz 4“ oder „eBay ab 85 €“. Dieselben Marken erscheinen in allen Listen (Preise, Sichtbarkeit, Keywords, Seiten-Check, eBay, Chancen); ein Klick öffnet die Detailansicht direkt beim passenden Abschnitt.'),
+      p('Die Bereiche speisen sich gegenseitig: Verkäufe und Google-Nachfrage bestimmen, welche Artikel täglich geprüft werden und welche Seiten der Seiten-Check zuerst ansieht. Suchanfragen aus der Search Console werden zu Keyword-Vorschlägen und machen Artikel in der Preisliste auffindbar. Die Chancen sammeln alles an einer Stelle: Preis, Google, Seiten-Check, Keywords, eBay und Lager, und das Lagebild zeigt die wichtigsten davon.')),
 
     sec('h-ebay', 'Verkaufskanäle, eBay und Chancen',
       p(h('b', {}, 'Gewinn je Kanal: '), 'Unter ', go('einstellungen', 'Einstellungen → Verkaufskanäle'), ' stehen Gebühren und Versand für Shop, eBay und Amazon. Daraus rechnet Preisradar je Artikel den Gewinn, die Marge und die Preisuntergrenze (genau der Mindestgewinn nach Einkauf, Gebühren und Versand). Ein Preis, der im Shop gut ist, kann auf eBay Verlust bringen. Die Rechnung steht in der Detailansicht jedes Artikels unter „Preise je Kanal“.'),
@@ -2164,7 +2256,7 @@ function movesPanel(a) {
     h('div', { class: 'panelhead' }, h('h3', {}, `Preisbewegungen der letzten ${a.rules.moveDays} Tage`), h('p', { class: 'pmeta' }, 'Änderungen bei bestätigten Mitbewerberpreisen, größte zuerst.')),
     h('div', { class: 'tablewrap', style: 'max-height:340px' }, h('table', { class: 'prices', style: 'min-width:0' },
       h('thead', {}, h('tr', {}, ['Artikel', 'Mitbewerber', 'vorher', 'jetzt', 'Änderung', 'Mein Preis'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
-      h('tbody', {}, a.moves.map((m) => h('tr', { onclick: () => { state.tab = 'preise'; render(); openDrawer(m.id); } },
+      h('tbody', {}, a.moves.map((m) => h('tr', { onclick: () => openDrawer(m.id) },
         h('td', { class: 'prod' }, h('div', { class: 'pname' }, m.name), h('div', { class: 'pmeta' }, m.number)),
         h('td', {}, m.competitor), h('td', {}, eur.format(m.from)), h('td', {}, eur.format(m.to)),
         h('td', {}, h('span', { class: `delta ${m.pct < 0 ? 'cheaper' : 'dearer'}` }, fmtPct(m.pct))),
@@ -2198,7 +2290,7 @@ function recommendations(a) {
       h('thead', {}, h('tr', {}, ['Artikel', 'Aktion', 'Mein Preis', 'Günstigster', 'Abstand', 'Vorschlag', 'Begründung'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '', style: i === 6 ? 'text-align:left' : '' }, t)))),
       h('tbody', {}, rows.slice(0, 300).map((x) => {
         const [label, cls] = ACTION_TAG[x.action] ?? [x.action, ''];
-        return h('tr', { tabindex: 0, onclick: () => { state.tab = 'preise'; render(); openDrawer(x.id); } },
+        return h('tr', { tabindex: 0, onclick: () => openDrawer(x.id) },
           h('td', { class: 'prod' }, h('div', { class: 'pname' }, x.name), h('div', { class: 'pmeta' }, [x.brand, x.number, x.units_30 != null ? `${nf.format(x.units_30)} verkauft (30 T)` : null, x.margin_percent != null ? `Marge ${nf1.format(x.margin_percent)} %` : null, x.impressions != null ? `${nf.format(x.impressions)} Impr. bei Google` : null].filter(Boolean).join(' · '))),
           h('td', {}, h('span', { class: `tag ${cls}` }, label)),
           h('td', {}, eur.format(x.own_price)),

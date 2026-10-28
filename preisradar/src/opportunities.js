@@ -1,5 +1,8 @@
 import { analyse } from './analysis.js';
 import { channel, profit, margin, floorPrice, channelView } from './channels.js';
+import { pageKey } from './gsc.js';
+import { ISSUES } from './seoaudit.js';
+import { expectedCtr } from './pricelist.js';
 
 /**
  * Chancenfinder (Regeln aus dem Marktschreier, angepasst an Shopware/JTL): Wo Marco mehr verkaufen oder mehr
@@ -14,6 +17,10 @@ export const TYPES = {
   ebay_cheaper: { label: 'eBay-Angebot zu teuer', tone: 'warn', hint: 'Auf eBay gibt es dasselbe Produkt günstiger, und ein niedrigerer Preis bringt noch Gewinn. Preis in JTL anpassen.' },
   stockout: { label: 'Bald ausverkauft', tone: 'warn', hint: 'Beim aktuellen Absatz reicht der Bestand keine zwei Wochen. Nachbestellen und nicht billiger werden.' },
   low_profit: { label: 'Zu wenig Gewinn', tone: 'bad', hint: 'Nach Gebühren und Versand bleibt weniger als der Mindestgewinn. Preis prüfen oder Einkauf verhandeln.' },
+  search_dear: { label: 'Gefragt, aber teurer', tone: 'bad', hint: 'Viele sehen die Seite bei Google, aber ein Mitbewerber ist günstiger. Hier kostet der Preis am meisten Umsatz.' },
+  search_near: { label: 'Knapp vor den Top 3', tone: 'warn', hint: 'Die Seite steht bei Google auf Platz 4 bis 20 und wird gesucht. Wenige Plätze mehr bringen deutlich mehr Klicks: Titel, Beschreibung, Text und interne Links verbessern.' },
+  seo_error: { label: 'SEO-Fehler bei wichtigem Artikel', tone: 'bad', hint: 'Der Seiten-Check hat auf der Seite eines Artikels, der sich verkauft oder gesucht wird, Fehler gefunden (z. B. Preis in den Produktdaten falsch, noindex, keine Produktdaten).' },
+  keyword_drop: { label: 'Keyword verloren', tone: 'bad', hint: 'Ein beobachtetes Keyword ist in den letzten 7 Tagen deutlich abgerutscht. Seite und Preis prüfen, oft hat ein Mitbewerber nachgelegt.' },
   slow_mover: { label: 'Ladenhüter', tone: 'bad', hint: 'Bestand ohne Verkauf in 90 Tagen. Geld liegt im Lager: auf eBay anbieten, Preis senken oder als Aktion bewerben.' },
 };
 
@@ -75,8 +82,41 @@ export function findOpportunities(db) {
       }
     }
   }
-  // Mitbewerber ausverkauft (aus der Preisanalyse)
+  // Google: gefragt aber teurer, knapp vor den Top 3; Seiten-Check; Keywords
+  const gsc = new Map(db.prepare('SELECT page, clicks, impressions, position FROM seo_pages').all().map((r) => [r.page, r]));
+  const audits = new Map(db.prepare('SELECT product_id, issues FROM seo_audit').all().map((a) => [a.product_id, JSON.parse(a.issues || '[]')]));
   const a = analyse(db);
+  const rowBy = new Map(a.rows.map((r) => [r.id, r]));
+  for (const p of prods) {
+    const g = p.url ? gsc.get(pageKey(p.url)) : null;
+    const row = rowBy.get(p.id);
+    const important = p.units_90 > 0 || p.tier === 'A' || (g?.impressions ?? 0) >= 100;
+    if (g && row && row.gap_percent > a.rules.tolerance && g.impressions >= 100) {
+      add('search_dear', p, { detail: `${Math.round(g.impressions).toLocaleString('de-DE')} Impressionen bei Google, ${String(row.gap_percent).replace('.', ',')} % teurer als ${row.cheapest_competitor} (${eur(row.cheapest)})`, value: r2(g.impressions * 0.02 * 0.03 * (p.price ?? 0)), action: row.suggested_price ? `Preis auf ${eur(row.suggested_price)} prüfen` : 'Preis prüfen', channel: 'shop', suggested_price: row.action === 'senken' ? row.suggested_price : null });
+    }
+    if (g && g.position > 3 && g.position <= 20 && g.impressions >= 100) {
+      const extra = Math.max(0, Math.round(g.impressions * expectedCtr(3) - g.clicks));
+      if (extra >= 5) add('search_near', p, { detail: `Platz ${String(Math.round(g.position * 10) / 10).replace('.', ',')}, ${Math.round(g.impressions).toLocaleString('de-DE')} Impressionen, etwa ${extra} Klicks mehr in 28 Tagen unter den ersten drei`, value: r2(extra * 0.03 * (p.price ?? 0) * 0.2), action: 'Seite verbessern (Seiten-Check, KI-Titel)' });
+    }
+    const issues = audits.get(p.id);
+    const errs = issues?.filter((i) => ISSUES[i.code]?.sev === 'error') ?? [];
+    if (errs.length && important) {
+      add('seo_error', p, { detail: errs.map((i) => `${ISSUES[i.code].label}${i.detail ? ` (${i.detail})` : ''}`).join(', '), value: r2(Math.max(20, (p.revenue_90 ?? 0) * 0.05)), action: 'Im Seiten-Check ansehen und im Shop beheben' });
+    }
+  }
+  const since = new Date(Date.now() - 8 * 86400e3).toISOString().slice(0, 10);
+  const prodByPage = new Map(prods.filter((p) => p.url).map((p) => [pageKey(p.url), p]));
+  for (const k of db.prepare('SELECT id, keyword, position, url, volume FROM keywords WHERE last_checked IS NOT NULL').all()) {
+    const old = db.prepare('SELECT position, url FROM keyword_ranks WHERE keyword_id=? AND date <= ? ORDER BY date DESC LIMIT 1').get(k.id, since);
+    if (!old || old.position == null) continue;
+    const now = k.position ?? 51;
+    if (now - old.position >= 3 && old.position <= 20) {
+      const p = prodByPage.get(pageKey(k.url || old.url || ''));
+      if (!p) continue;
+      add('keyword_drop', p, { detail: `„${k.keyword}“ von Platz ${old.position} auf ${k.position ?? 'über 50'}${k.volume ? ` (${k.volume.toLocaleString('de-DE')} Suchen/Monat)` : ''}`, value: r2((k.volume ?? 100) * (expectedCtr(old.position) - expectedCtr(Math.min(now, 30))) * 0.03 * (p.price ?? 0)), action: 'Seite und Preis prüfen, Mitbewerber vergleichen' });
+    }
+  }
+  // Mitbewerber ausverkauft (aus der Preisanalyse)
   const okBy = new Map();
   for (const r of db.prepare(`SELECT m.product_id, m.price, m.availability, c.name FROM matches m JOIN competitors c ON c.id=m.competitor_id WHERE c.enabled=1 AND m.status='ok' AND m.price IS NOT NULL`).all()) {
     if (!okBy.has(r.product_id)) okBy.set(r.product_id, []);
@@ -109,6 +149,14 @@ export function findOpportunities(db) {
  * Shop-Vorschläge aus der Preisanalyse (senken/erhöhen), eBay- und Shop-Vorschläge aus dem Chancenfinder.
  * Spalten werden in der Ameise frei zugeordnet (z. B. Brutto-VK bzw. Plattformpreis eBay).
  */
+let cache = null; // { at, data }
+/** Chancen eines Artikels (für die Detailansicht), Ergebnis 60 Sekunden zwischengespeichert. */
+export function productOpportunities(db, productId) {
+  if (!cache || Date.now() - cache.at > 60000) cache = { at: Date.now(), data: findOpportunities(db) };
+  return cache.data.items.filter((i) => i.product_id === productId);
+}
+export const invalidateOpportunities = () => { cache = null; };
+
 export function jtlExport(db, { channel: only = null } = {}) {
   const a = analyse(db);
   const rows = [];

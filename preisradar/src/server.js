@@ -19,14 +19,15 @@ import { hashPassword, verifyPassword, createSession, destroySession, currentUse
 import { startScrape, scrapeState, closeStaleRuns, checkProductNow } from './scraper.js';
 import { listProducts, getProduct, invalidatePriceList } from './pricelist.js';
 import { loadTemplates, removeTemplate } from './templates.js';
-import { gscSites, syncGsc, saveServiceAccount, gscConfig } from './gsc.js';
+import { gscSites, syncGsc, saveServiceAccount, gscConfig, pageKey as pageKeyOf } from './gsc.js';
 import { seoOverview, seoStatus, productSeo } from './seo.js';
 import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from './digest.js';
 import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
 import { computeTiers, tierConfig, tierStatus } from './tiers.js';
 import { listChannels, updateChannel, channelView } from './channels.js';
 import { ebayConfig, authorizeUrl, exchangeCode, disconnect as ebayDisconnect, ebayTest, syncListings, startMarketJob, marketJob, marketCheck, ebayTick, suggestCategories, aspects as ebayAspects, policies as ebayPolicies, draft as ebayDraft, createListing, ebayOverview, resetAppToken, cleanDescription } from './ebay.js';
-import { findOpportunities, jtlExport } from './opportunities.js';
+import { findOpportunities, jtlExport, productOpportunities } from './opportunities.js';
+import { productSignals, withSignals } from './signals.js';
 import { auditOverview, auditOf, auditProduct, startAudit, auditJob, auditTick, auditConfig, suggestMeta } from './seoaudit.js';
 import { kwConfig, kwTest, addKeywords, postChecks, collectChecks, refreshVolumes, kwOverview, kwDetail, suggestions, startSuggestionJob, kwTick, kwJob, MAX_KEYWORDS, normKeyword } from './keywords.js';
 import { mountMcp, mcpEnabled, createMcpToken, revokeMcpToken } from './mcp.js';
@@ -130,7 +131,7 @@ export function createApp(db, { dataDir = null } = {}) {
   }));
 
   // --- Preisliste: seitenweise, gefiltert und sortiert ---
-  app.get('/api/products', wrap((req, res) => res.json(listProducts(db, req.query))));
+  app.get('/api/products', wrap((req, res) => { const r = listProducts(db, req.query); res.json({ ...r, rows: withSignals(db, r.rows) }); }));
   app.get('/api/products/:id', wrap((req, res) => {
     const p = getProduct(db, Number(req.params.id));
     if (!p) throw bad('Artikel nicht gefunden', 404);
@@ -159,7 +160,7 @@ export function createApp(db, { dataDir = null } = {}) {
   }));
 
   // --- eBay ---
-  app.get('/api/ebay', wrap((_req, res) => res.json(ebayOverview(db))));
+  app.get('/api/ebay', wrap((_req, res) => { const o = ebayOverview(db); res.json({ ...o, listings: withSignals(db, o.listings, 'product_id') }); }));
   app.get('/api/ebay/connect', wrap((_req, res) => res.redirect(authorizeUrl(db))));
   app.post('/api/ebay/disconnect', wrap((_req, res) => { ebayDisconnect(db); res.json({ ok: true }); }));
   app.post('/api/ebay/test', wrap(async (_req, res) => res.json(await ebayTest(db))));
@@ -203,7 +204,7 @@ export function createApp(db, { dataDir = null } = {}) {
   }));
 
   // --- Chancen und JTL-Export ---
-  app.get('/api/opportunities', wrap((_req, res) => res.json(findOpportunities(db))));
+  app.get('/api/opportunities', wrap((_req, res) => { const o = findOpportunities(db); res.json({ ...o, items: withSignals(db, o.items.slice(0, 1000), 'product_id'), total: o.items.length }); }));
   app.get('/api/export/jtl.csv', wrap((req, res) => {
     const r = jtlExport(db, { channel: ['shop', 'ebay'].includes(req.query.channel) ? req.query.channel : null });
     res.set({ 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="preisvorschlaege-jtl-${new Date().toISOString().slice(0, 10)}.csv"` });
@@ -213,7 +214,8 @@ export function createApp(db, { dataDir = null } = {}) {
   // --- SEO-Prüfung der eigenen Produktseiten ---
   app.get('/api/seo-audit', wrap((req, res) => {
     const q = req.query;
-    res.json(auditOverview(db, { issue: q.issue || null, sev: q.sev || null, q: q.q || '', important: q.important === '1', offset: Math.max(0, Number(q.offset) || 0), limit: Math.min(500, Math.max(1, Number(q.limit) || 100)) }));
+    const o = auditOverview(db, { issue: q.issue || null, sev: q.sev || null, q: q.q || '', important: q.important === '1', offset: Math.max(0, Number(q.offset) || 0), limit: Math.min(500, Math.max(1, Number(q.limit) || 100)) });
+    res.json({ ...o, pages: withSignals(db, o.pages, 'product_id') });
   }));
   app.post('/api/seo-audit/start', wrap((req, res) => {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
@@ -233,7 +235,11 @@ export function createApp(db, { dataDir = null } = {}) {
   app.post('/api/products/:id/seo-suggest', wrap(async (req, res) => res.json(await suggestMeta(db, Number(req.params.id)))));
 
   // --- Keyword-Monitoring ---
-  app.get('/api/keywords', wrap((_req, res) => res.json({ ...kwOverview(db), job: { posting: kwJob.posting, collecting: kwJob.collecting } })));
+  app.get('/api/keywords', wrap((_req, res) => {
+    const o = kwOverview(db);
+    const sig = productSignals(db, [...new Set(o.keywords.map((k) => k.product?.id).filter(Boolean))]);
+    res.json({ ...o, keywords: o.keywords.map((k) => (k.product && sig.has(k.product.id) ? { ...k, product: { ...k.product, sig: sig.get(k.product.id) } } : k)), job: { posting: kwJob.posting, collecting: kwJob.collecting } });
+  }));
   app.get('/api/keywords/suggestions', wrap((_req, res) => res.json({ suggestions: suggestions(db) })));
   app.post('/api/keywords', wrap(async (req, res) => {
     const r = addKeywords(db, req.body?.keywords ?? '', { tag: req.body?.tag, source: req.body?.source === 'suggestion' ? 'suggestion' : 'manual' });
@@ -309,7 +315,23 @@ export function createApp(db, { dataDir = null } = {}) {
   app.get('/api/products/:id/seo', wrap((req, res) => res.json(productSeo(db, Number(req.params.id)))));
 
   // --- Sichtbarkeit: Google Search Console ---
-  app.get('/api/seo', wrap((_req, res) => res.json({ ...seoOverview(db), job: { ...seoJob } })));
+  app.get('/api/seo', wrap((_req, res) => {
+    const o = seoOverview(db);
+    const ids = [...new Set([...o.pages.map((p) => p.product?.id), ...o.opportunities.groups.flatMap((g) => g.items.map((i) => i.id))].filter(Boolean))];
+    const sig = productSignals(db, ids);
+    const pages = o.pages.map((p) => (p.product && sig.has(p.product.id) ? { ...p, product: { ...p.product, sig: sig.get(p.product.id) } } : p));
+    const groups = o.opportunities.groups.map((g) => ({ ...g, items: g.items.map((i) => ({ ...i, sig: sig.get(i.id) ?? null })) }));
+    res.json({ ...o, pages, opportunities: { ...o.opportunities, groups }, job: { ...seoJob } });
+  }));
+  // Alles zu einem Artikel aus den übrigen Bereichen: Keywords, Chancen, Signale
+  app.get('/api/products/:id/context', wrap((req, res) => {
+    const id = Number(req.params.id);
+    const p = db.prepare('SELECT id, url FROM products WHERE id=?').get(id);
+    if (!p) throw bad('Artikel nicht gefunden', 404);
+    const key = p.url ? pageKeyOf(p.url) : null;
+    const kws = key ? db.prepare('SELECT id, keyword, position, url, volume, last_checked FROM keywords WHERE url IS NOT NULL').all().filter((k) => pageKeyOf(k.url) === key).sort((a, b) => a.position - b.position) : [];
+    res.json({ signals: productSignals(db, [id]).get(id) ?? null, keywords: kws, opportunities: productOpportunities(db, id) });
+  }));
   app.post('/api/seo/gsc/test', wrap(async (_req, res) => res.json({ sites: await gscSites(db), email: gscConfig(db).email })));
   app.post('/api/seo/gsc/sync', wrap((_req, res) => {
     if (!startSeoJob(db)) throw bad('Es läuft bereits ein Abgleich', 409);
