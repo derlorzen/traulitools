@@ -14,7 +14,7 @@
    "sitemap_url": [
     "https://www.unidomo.de/sitemap/Sitemap_item.xml"
    ],
-   "delay_ms": 3000,
+   "delay_ms": 2000,
    "ai_mode": "fallback",
    "manual_search_url": "https://www.unidomo.de/search/?query={q}"
   },
@@ -24,7 +24,7 @@
    "sitemap_url": [
     "https://www.hardys24.de/sitemap.xml"
    ],
-   "delay_ms": 3000,
+   "delay_ms": 2000,
    "ai_mode": "fallback",
    "manual_search_url": "https://www.hardys24.de/search?search={q}"
   }

@@ -102,27 +102,41 @@ export function clearRobotsCache() {
  * robots.txt. Antwortet ein Shop mit 429/503 oder gar nicht, wird der Abstand verdoppelt (bis 16-fach) und ein
  * Retry-After beachtet; danach nähert er sich mit jedem erfolgreichen Abruf wieder dem eingestellten Wert.
  */
-const pace = new Map(); // host -> { factor, until, ok, slow }
+const pace = new Map(); // host -> { factor, until, ok, slow, speed, streak }
+const FAST_MS = 1500; // Antwortzeit, unter der ein Shop als entspannt gilt
 const hostOf = (url) => { try { return new URL(url).host; } catch { return ''; } };
 export function crawlDelayMs(url) { return (robotsCache.get(hostOf(url))?.crawlDelay ?? 0) * 1000; }
+/*
+ * Automatisches Tempo: Antwortet ein Shop 20-mal hintereinander schnell und ohne Ablehnung, wird der Abstand um
+ * 10 % kürzer, höchstens bis auf die Hälfte des eingestellten Werts und nie unter 1,5 Sekunden (und nie unter dem
+ * Crawl-delay). Bei der ersten Ablehnung oder Zeitüberschreitung gilt sofort wieder der eingestellte Abstand plus Bremse.
+ */
 export function pacingMs(url, baseMs) {
   const p = pace.get(hostOf(url));
-  const base = Math.max(baseMs, crawlDelayMs(url));
+  const floor = Math.min(baseMs, Math.max(1500, baseMs * 0.5));
+  const base = Math.max(Math.max(floor, baseMs * (p?.speed ?? 1)), crawlDelayMs(url));
   const wait = p?.until && p.until > Date.now() ? p.until - Date.now() : 0;
   return Math.round(Math.max(base * (p?.factor ?? 1), wait));
 }
-export function notePace(url, { status = 200, error = false, retryAfter = null } = {}) {
+export function notePace(url, { status = 200, error = false, retryAfter = null, ms = null } = {}) {
   const h = hostOf(url);
-  const p = pace.get(h) ?? { factor: 1, until: 0, ok: 0, slow: 0 };
+  const p = pace.get(h) ?? { factor: 1, until: 0, ok: 0, slow: 0, speed: 1, streak: 0 };
   if (error || status === 429 || status === 503) {
     p.factor = Math.min(16, p.factor * 2);
+    p.speed = 1; p.streak = 0;
     p.slow++;
     const ra = Number(retryAfter);
     if (Number.isFinite(ra) && ra > 0) p.until = Date.now() + Math.min(ra, 600) * 1000;
   } else {
     p.ok++;
     p.factor = Math.max(1, p.factor * 0.85);
+    if (ms != null && ms < FAST_MS && p.factor === 1) {
+      if (++p.streak >= 20) { p.speed = Math.max(0.5, p.speed * 0.9); p.streak = 0; }
+    } else if (ms != null && ms >= FAST_MS * 2) { p.speed = Math.min(1, p.speed / 0.9); p.streak = 0; } // langsamer Shop: wieder vorsichtiger
   }
   pace.set(h, p);
 }
-export function paceInfo(url) { const p = pace.get(hostOf(url)); return { factor: Math.round((p?.factor ?? 1) * 10) / 10, slowdowns: p?.slow ?? 0, crawl_delay_s: crawlDelayMs(url) / 1000 }; }
+export function paceInfo(url, baseMs = null) {
+  const p = pace.get(hostOf(url));
+  return { factor: Math.round((p?.factor ?? 1) * 10) / 10, speed: Math.round((p?.speed ?? 1) * 100) / 100, slowdowns: p?.slow ?? 0, crawl_delay_s: crawlDelayMs(url) / 1000, effective_ms: baseMs != null ? pacingMs(url, baseMs) : null };
+}

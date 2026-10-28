@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS competitors (
   search_url TEXT,
   result_selector TEXT,
   price_selector TEXT,
-  delay_ms INTEGER NOT NULL DEFAULT 3000,
+  delay_ms INTEGER NOT NULL DEFAULT 2000,
   enabled INTEGER NOT NULL DEFAULT 1,
   ai_mode TEXT NOT NULL DEFAULT 'fallback',
   sitemap_url TEXT,
@@ -161,6 +161,12 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   if (!compCols2.includes('templates')) db.exec('ALTER TABLE competitors ADD COLUMN templates TEXT');
   if (!compCols2.includes('manual_search_url')) db.exec('ALTER TABLE competitors ADD COLUMN manual_search_url TEXT');
   if (!db.prepare('PRAGMA table_info(runs)').all().some((c) => c.name === 'heartbeat')) db.exec('ALTER TABLE runs ADD COLUMN heartbeat TEXT');
+  // Einmalig: Standardabstand von 3 auf 2 Sekunden (nur bei unverändertem Standardwert); das automatische Tempo
+  // geht bei entspannten Shops bis 1,5 Sekunden, bremst bei Ablehnung sofort.
+  if (!db.prepare("SELECT 1 FROM settings WHERE key='migr_delay_2000'").get()) {
+    db.prepare('UPDATE competitors SET delay_ms=2000 WHERE delay_ms=3000').run();
+    db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES ('migr_delay_2000', '1')").run();
+  }
   ensureChannels(db);
   return db;
 }

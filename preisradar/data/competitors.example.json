@@ -5,7 +5,7 @@
     "search_url": "https://www.beispiel-shop.de/search?search={q}",
     "result_selector": "",
     "price_selector": "",
-    "delay_ms": 3000,
+    "delay_ms": 2000,
     "enabled": true
   }
 ]

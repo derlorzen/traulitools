@@ -765,13 +765,15 @@ function ownImportControls() {
 
 /** Tempo eines Mitbewerbers: Prüfungen in 24 Stunden, Bremse durch robots.txt oder Überlastung, Schätzung pro Stunde. */
 function tempoHint(c) {
-  if (!c) return 'Wartezeit zwischen zwei Seitenaufrufen beim selben Shop. Kürzer = schneller, aber mehr Last für den Shop. Mindestens 1000.';
+  if (!c) return 'Wartezeit zwischen zwei Seitenaufrufen beim selben Shop. Kürzer = schneller, aber mehr Last für den Shop. Mindestens 1000. Bei schnellen Antworten passt Preisradar das Tempo automatisch an (bis zur Hälfte, mindestens 1,5 s).';
   const pace = c.pace ?? {};
-  const eff = Math.max(c.delay_ms, (pace.crawl_delay_s ?? 0) * 1000) * (pace.factor ?? 1);
+  const eff = pace.effective_ms ?? Math.max(c.delay_ms, (pace.crawl_delay_s ?? 0) * 1000) * (pace.factor ?? 1);
   const perHour = Math.round(3600 / (eff * 1.25 / 1000 + 1.2)); // Pause mit Streuung plus typische Ladezeit
   return [
     `Etwa ${nf.format(perHour)} Seitenaufrufe pro Stunde${c.checked_24h != null ? `, in den letzten 24 Stunden ${nf.format(c.checked_24h)} Artikel geprüft` : ''}.`,
     pace.crawl_delay_s ? `Der Shop verlangt in seiner robots.txt mindestens ${nf1.format(pace.crawl_delay_s)} s Abstand, daran hält sich Preisradar.` : null,
+    pace.speed < 1 && !(pace.factor > 1) ? `Der Shop antwortet schnell, Preisradar fragt deshalb gerade mit ${nf1.format((pace.effective_ms ?? c.delay_ms) / 1000)} s Abstand ab.` : null,
+    'Automatisches Tempo: Bei schnellen Antworten wird der Abstand nach und nach bis auf die Hälfte (mindestens 1,5 s) kürzer, bei der ersten Ablehnung sofort wieder länger.',
     pace.factor > 1 ? `Gerade gebremst (${nf1.format(pace.factor)}-facher Abstand), weil der Shop überlastet war oder abgelehnt hat.` : null,
   ].filter(Boolean).join(' ');
 }
@@ -782,7 +784,7 @@ function competitorPanel(c) {
   const out = h('div', { class: 'result', hidden: true });
   const val = () => {
     const fd = Object.fromEntries(new FormData(form));
-    return { ...fd, delay_ms: Number(fd.delay_ms) || 3000, enabled: form.elements.enabled.checked };
+    return { ...fd, delay_ms: Number(fd.delay_ms) || 2000, enabled: form.elements.enabled.checked };
   };
   const sm = h('span', { class: 'hint' }, c?.sitemap_count ? `${c.sitemap_count.toLocaleString('de-DE')} URLs eingelesen` : '');
   const show = (nodes) => { out.hidden = false; out.replaceChildren(...[].concat(nodes)); };
@@ -812,7 +814,7 @@ function competitorPanel(c) {
         }) }, 'Suchlink erkennen')) : null),
       f('Ergebnis-Selektor (optional)', 'result_selector', c?.result_selector, { ph: 'a.product-name', hint: 'CSS-Selektor der Produktlinks auf der Suchseite' }),
       f('Preis-Selektor (optional)', 'price_selector', c?.price_selector, { ph: '.product-detail-price', hint: 'Nur nötig, wenn der Preis nicht automatisch erkannt wird' }),
-      f('Pause zwischen Abrufen (ms)', 'delay_ms', c?.delay_ms ?? 3000, { type: 'number', hint: tempoHint(c) }),
+      f('Pause zwischen Abrufen (ms)', 'delay_ms', c?.delay_ms ?? 2000, { type: 'number', hint: tempoHint(c) }),
       h('div', { class: 'field', style: 'grid-column:1/-1' }, h('label', {}, 'Sitemap-URLs (optional, eine pro Zeile)'),
         h('textarea', { name: 'sitemap_url', rows: 2, placeholder: 'https://www.beispiel-shop.de/sitemap/Sitemap_item.xml' }, c?.sitemap_url ?? ''),
         h('span', { class: 'hint' }, 'Für Shops, deren Suche gesperrt oder nicht auslesbar ist: Produkte werden über die URLs der Sitemap (Marke und Name) gefunden. Die Sitemap wird wöchentlich neu eingelesen.'),

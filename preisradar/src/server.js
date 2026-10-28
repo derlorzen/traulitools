@@ -115,7 +115,7 @@ export function createApp(db, { dataDir = null } = {}) {
     const since24 = new Date(Date.now() - 86400e3).toISOString();
     const competitors = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM sitemap_urls s WHERE s.competitor_id=c.id) AS sitemap_count,
       (SELECT COUNT(*) FROM matches m WHERE m.competitor_id=c.id AND m.last_checked >= ?) AS checked_24h FROM competitors c ORDER BY position, id`).all(since24)
-      .map((c) => ({ ...c, pace: { ...paceInfo(c.base_url), live: scrapeState.comps?.[c.id] ?? null } }));
+      .map((c) => ({ ...c, pace: { ...paceInfo(c.base_url, c.delay_ms), live: scrapeState.comps?.[c.id] ?? null } }));
     const counts = db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get();
     // scope: tracked = beobachtete Artikel, all = komplette Artikelbasis; ohne Angabe beobachtete, sofern vorhanden
     const scope = req.query.scope === 'all' || (req.query.scope !== 'tracked' && !counts.tracked) ? 'all' : 'tracked';
@@ -302,7 +302,7 @@ export function createApp(db, { dataDir = null } = {}) {
     const sitemaps = (await discoverSitemaps(base).catch(() => [])).filter((x) => { try { return new URL(x.url).hostname.replace(/^www\./, '') === host && !/(magazin|blog|document|news|ratgeber)/i.test(x.url); } catch { return false; } });
     const pick = sitemaps.filter((x) => x.kind === 'index').slice(0, 1).concat(sitemaps.filter((x) => x.kind === 'urlset')).slice(0, 3).map((x) => x.url);
     const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
-    const ins = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(...compFields({ name: host, base_url: base, delay_ms: 3000, ai_mode: 'fallback', sitemap_url: pick.join('\n') }), pos);
+    const ins = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(...compFields({ name: host, base_url: base, delay_ms: 2000, ai_mode: 'fallback', sitemap_url: pick.join('\n') }), pos);
     const link = await detectSearchLink(base).catch(() => null);
     if (link) db.prepare('UPDATE competitors SET manual_search_url=? WHERE id=?').run(link, Number(ins.lastInsertRowid));
     res.json({ id: Number(ins.lastInsertRowid), name: host, sitemaps: pick, search_link: link });
@@ -367,7 +367,7 @@ export function createApp(db, { dataDir = null } = {}) {
     try { base = new URL(b.base_url).origin; } catch { throw bad('Basis-URL ungültig (mit https:// angeben)'); }
     return [
       b.name.trim(), base, b.search_url?.trim() || null, b.result_selector?.trim() || null, b.price_selector?.trim() || null,
-      Math.max(Number(process.env.MIN_DELAY_MS ?? 1000), Number(b.delay_ms) || 3000), b.enabled === false || b.enabled === 0 ? 0 : 1,
+      Math.max(Number(process.env.MIN_DELAY_MS ?? 1000), Number(b.delay_ms) || 2000), b.enabled === false || b.enabled === 0 ? 0 : 1,
       ['off', 'fallback', 'always'].includes(b.ai_mode) ? b.ai_mode : 'fallback',
       sitemapField(b.sitemap_url),
     ];
@@ -419,7 +419,7 @@ export function createApp(db, { dataDir = null } = {}) {
       if (!r.product && !r.search_url && !r.sitemaps.length) throw bad('Der Shop lässt sich nicht automatisch einrichten: ' + r.notes.join(' '));
       const name = String(req.body?.name || r.name).trim();
       const body = {
-        name, base_url: r.base_url, search_url: r.search_url, delay_ms: 3000, ai_mode: r.ai_mode, enabled: true,
+        name, base_url: r.base_url, search_url: r.search_url, delay_ms: 2000, ai_mode: r.ai_mode, enabled: true,
         sitemap_url: r.search_url ? '' : r.sitemaps.map((s) => s.url).join('\n'),
       };
       const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
@@ -921,7 +921,7 @@ export function seedCompetitors(db, file = process.env.COMPETITORS_FILE || './da
     if (!c?.name || !c?.base_url) continue;
     const base = new URL(c.base_url).origin;
     const row = db.prepare('SELECT id FROM competitors WHERE name=?').get(c.name);
-    const vals = [base, c.search_url ?? null, c.result_selector ?? null, c.price_selector ?? null, Number(c.delay_ms) || 3000, c.enabled === false ? 0 : 1, ['off', 'fallback', 'always'].includes(c.ai_mode) ? c.ai_mode : 'fallback', c.sitemap_url ? [].concat(c.sitemap_url).join('\n') : null];
+    const vals = [base, c.search_url ?? null, c.result_selector ?? null, c.price_selector ?? null, Number(c.delay_ms) || 2000, c.enabled === false ? 0 : 1, ['off', 'fallback', 'always'].includes(c.ai_mode) ? c.ai_mode : 'fallback', c.sitemap_url ? [].concat(c.sitemap_url).join('\n') : null];
     if (row) db.prepare('UPDATE competitors SET base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=?, sitemap_url=? WHERE id=?').run(...vals, row.id);
     else db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(c.name, ...vals, 100 + n);
     n++;
@@ -957,7 +957,7 @@ export async function applyBootstrap(db, file = process.env.BOOTSTRAP_FILE || '.
     }
     const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
     db.prepare('INSERT INTO competitors(name, base_url, search_url, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,1,?,?,?)')
-      .run(c.name, new URL(c.base_url).origin, c.search_url ?? null, Number(c.delay_ms) || 3000, ['off', 'fallback', 'always'].includes(c.ai_mode) ? c.ai_mode : 'fallback', c.sitemap_url ? [].concat(c.sitemap_url).join('\n') : null, pos);
+      .run(c.name, new URL(c.base_url).origin, c.search_url ?? null, Number(c.delay_ms) || 2000, ['off', 'fallback', 'always'].includes(c.ai_mode) ? c.ai_mode : 'fallback', c.sitemap_url ? [].concat(c.sitemap_url).join('\n') : null, pos);
     if (c.manual_search_url) db.prepare('UPDATE competitors SET manual_search_url=? WHERE name=?').run(c.manual_search_url, c.name);
     console.log(`Bootstrap: Mitbewerber ${c.name} angelegt`);
   }

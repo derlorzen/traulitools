@@ -56,12 +56,14 @@ function recordPrice(db, matchId, price, now) {
 
 async function loadPage(url) {
   if (!(await robotsAllows(url))) return { blocked: true };
+  const t0 = Date.now();
   const r = await fetchText(url);
+  const ms = Date.now() - t0;
   // Auch das Ziel einer Weiterleitung muss laut robots.txt erlaubt sein
   if (r.finalUrl && r.finalUrl !== url && !(await robotsAllows(r.finalUrl))) return { blocked: true };
-  if (r.status === 404 || r.status === 410) { notePace(url); return { gone: true }; }
+  if (r.status === 404 || r.status === 410) { notePace(url, { ms }); return { gone: true }; }
   if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
-  notePace(url);
+  notePace(url, { ms });
   return { r };
 }
 
@@ -389,7 +391,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
     await Promise.all(
       queues.map(async ({ comp, items }) => {
         const seen = new Set();
-        const st = (scrapeState.comps[comp.id] = { name: comp.name, done: 0, ms: 0, avg_s: null, ...paceInfo(comp.base_url) });
+        const st = (scrapeState.comps[comp.id] = { name: comp.name, done: 0, ms: 0, avg_s: null, ...paceInfo(comp.base_url, comp.delay_ms) });
         let queue = items;
         while (queue.length) {
           for (const { p, m } of queue) {
@@ -403,7 +405,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
             if (r.found) scrapeState.found++;
             if (r.error) scrapeState.errors++;
             await sleep(pacingMs(comp.base_url, comp.delay_ms) * (1 + Math.random() * 0.5)); // Pausen leicht streuen
-            st.done++; st.ms += Date.now() - t; st.avg_s = Math.round(st.ms / st.done / 100) / 10; Object.assign(st, paceInfo(comp.base_url));
+            st.done++; st.ms += Date.now() - t; st.avg_s = Math.round(st.ms / st.done / 100) / 10; Object.assign(st, paceInfo(comp.base_url, comp.delay_ms));
           }
           if (!continuous || scrapeState.stop) break;
           if (Date.now() - t0 > RUN_MAX_MS) { scrapeState.backlog = true; break; }
