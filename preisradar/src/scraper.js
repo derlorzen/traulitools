@@ -1,4 +1,4 @@
-import { fetchText, robotsAllows } from './fetcher.js';
+import { fetchText, robotsAllows, pacingMs, notePace, paceInfo } from './fetcher.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { normId, sleep, tokens, jaccard } from './util.js';
 import { aiConfig } from './ai.js';
@@ -18,7 +18,10 @@ export const scrapeState = {
   errors: 0,
   startedAt: null,
   current: null,
+  backlog: false, // Lauf endete wegen der Zeitgrenze, es ist noch mehr fällig
+  comps: {}, // je Mitbewerber: geprüft, Ø Sekunden je Prüfung, Tempo-Faktor
 };
+const RUN_MAX_MS = Number(process.env.RUN_MAX_MIN ?? 25) * 60000; // ein Lauf arbeitet höchstens so lange am Stück
 
 const HOUR = 3600 * 1000;
 const MIN_INTERVAL_H = Number(process.env.MIN_INTERVAL_HOURS || 10);
@@ -56,8 +59,9 @@ async function loadPage(url) {
   const r = await fetchText(url);
   // Auch das Ziel einer Weiterleitung muss laut robots.txt erlaubt sein
   if (r.finalUrl && r.finalUrl !== url && !(await robotsAllows(r.finalUrl))) return { blocked: true };
-  if (r.status === 404 || r.status === 410) return { gone: true };
+  if (r.status === 404 || r.status === 410) { notePace(url); return { gone: true }; }
   if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
+  notePace(url);
   return { r };
 }
 
@@ -198,7 +202,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
         try { cp = await loadPage(c.url); } catch { continue; }
         pages++;
         tried.add(c.url);
-        await sleep(comp.delay_ms);
+        await sleep(pacingMs(comp.base_url, comp.delay_ms));
         if (cp.blocked) { sawBlocked = true; continue; }
         if (cp.gone) continue;
         tried.add(cp.r.finalUrl);
@@ -217,7 +221,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
           if (pick && pick.confidence >= 0.5) {
             const cp = await loadPage(pick.url);
             pages++;
-            await sleep(comp.delay_ms);
+            await sleep(pacingMs(comp.base_url, comp.delay_ms));
             if (!cp.blocked && !cp.gone) {
               const { ext, v, note } = await evalPage(cp);
               if (ext.found && v === 'match') return save(ext, cp.r.finalUrl, 'match', note);
@@ -238,7 +242,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
       pages++;
       if (sp.blocked) { sawBlocked = true; break; }
       if (sp.gone) continue;
-      await sleep(comp.delay_ms);
+      await sleep(pacingMs(comp.base_url, comp.delay_ms));
 
       // Direkttreffer: Suche leitet direkt auf eine Produktseite weiter
       const direct = extractProduct(sp.r.text, { priceSelector: comp.price_selector });
@@ -249,7 +253,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
         if (pages >= MAX_PAGES_PER_ITEM) break;
         const cp = await loadPage(url);
         pages++;
-        await sleep(comp.delay_ms);
+        await sleep(pacingMs(comp.base_url, comp.delay_ms));
         if (cp.blocked || cp.gone) continue;
         tried.add(url).add(cp.r.finalUrl);
         const { ext, v, note } = await evalPage(cp);
@@ -272,7 +276,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
           if (pick && pick.confidence >= 0.5) {
             const cp = await loadPage(pick.url);
             pages++;
-            await sleep(comp.delay_ms);
+            await sleep(pacingMs(comp.base_url, comp.delay_ms));
             if (!cp.blocked && !cp.gone) {
               const ext = withTemplates(cp.r.text, extractProduct(cp.r.text, { priceSelector: comp.price_selector }));
               // Zweite KI-Anfrage nur, wenn Regeln und Vorlagen keinen Preis finden; sonst reicht das Urteil der Auswahl
@@ -338,7 +342,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
   const tiers = new Map(db.prepare('SELECT id, tier FROM products').all().map((r) => [r.id, r.tier]));
   const tcfg = { refreshH: Math.max(minIntervalH, MIN_GAP_H), bDays: tierConfig(db).bDays };
   const rank = (it) => (tiers.get(it.p.id) === 'A' ? 0 : 2) + (!it.m.last_checked || it.m.status === 'pending' ? 0 : 1); // A-Erstsuche, A, B-Erstsuche, B
-  const queues = comps.map((c) => {
+  const dueFor = (c, exclude = new Set(), at = now, { topUp = fill } = {}) => {
     const rows = db.prepare('SELECT * FROM matches WHERE competitor_id=?').all(c.id);
     const byProduct = new Map(rows.map((r) => [r.product_id, r]));
     const items = prods
@@ -346,22 +350,23 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
       .filter(({ m }) => m)
       .sort((a, b) => rank(a) - rank(b) || (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''));
     // Gesamtabrufe (ohne einzelnen Artikel) halten die Tagesgrenzen ein; „Prüfen“ für einen Artikel ist davon ausgenommen
-    const limited = productId || force ? items : items.filter(({ m }) => withinDailyLimits(m, now));
-    const due = productId || force ? limited : limited.filter(({ p, m }) => dueByTier(m, tiers.get(p.id), now, tcfg));
+    const limited = (productId || force ? items : items.filter(({ m }) => withinDailyLimits(m, at))).filter(({ m }) => !exclude.has(m.id));
+    const due = productId || force ? limited : limited.filter(({ p, m }) => dueByTier(m, tiers.get(p.id), at, tcfg));
     // Volle Pakete: sind weniger Artikel fällig als die Paketgröße, wird mit den am längsten nicht geprüften aufgefüllt
     // (frühestens 24 Stunden nach der letzten Prüfung, nicht gefundene nie).
-    if (fill && limitPerCompetitor && due.length < limitPerCompetitor) {
+    if (topUp && limitPerCompetitor && due.length < limitPerCompetitor) {
       const taken = new Set(due.map(({ p }) => p.id));
       const oldest = [...limited].sort((a, b) => (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''));
       for (const it of oldest) {
         if (due.length >= limitPerCompetitor) break;
-        if (taken.has(it.p.id) || (it.m.last_checked && now - Date.parse(it.m.last_checked) < 24 * HOUR)) continue;
+        if (taken.has(it.p.id) || (it.m.last_checked && at - Date.parse(it.m.last_checked) < 24 * HOUR)) continue;
         if (['not_found', 'nourl', 'blocked'].includes(it.m.status)) continue;
         due.push(it);
       }
     }
-    return { comp: c, items: due.slice(0, limitPerCompetitor ?? undefined) };
-  });
+    return due.slice(0, limitPerCompetitor ?? undefined);
+  };
+  const queues = comps.map((c) => ({ comp: c, items: dueFor(c) }));
 
   const total = queues.reduce((s, q) => s + q.items.length, 0);
   if (trigger === 'rolling' && !total) return false; // nichts fällig: keinen leeren Lauf protokollieren
@@ -369,7 +374,11 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
   const runId = db.prepare('INSERT INTO runs(started_at, trigger, total, heartbeat) VALUES (?,?,?,?)').run(startedAt, trigger, total, startedAt).lastInsertRowid;
   const beat = setInterval(() => { try { db.prepare('UPDATE runs SET heartbeat=?, checked=? WHERE id=?').run(new Date().toISOString(), scrapeState.done, runId); } catch { /* DB geschlossen */ } }, 30000);
   beat.unref?.();
-  Object.assign(scrapeState, { running: true, stop: false, runId, trigger, total, done: 0, found: 0, errors: 0, startedAt, current: null });
+  Object.assign(scrapeState, { running: true, stop: false, runId, trigger, total, done: 0, found: 0, errors: 0, startedAt, current: null, backlog: false });
+  const t0 = Date.now();
+  // Verteilter Abruf: Jeder Mitbewerber arbeitet unabhängig weiter, solange etwas fällig ist (bis zur Zeitgrenze),
+  // statt nach seinem Paket auf den langsamsten Shop zu warten.
+  const continuous = trigger === 'rolling' && Boolean(limitPerCompetitor);
 
   (async () => {
     for (const c of comps) {
@@ -379,15 +388,27 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
     }
     await Promise.all(
       queues.map(async ({ comp, items }) => {
-        for (const { p, m } of items) {
-          if (scrapeState.stop) break;
-          scrapeState.current = `${comp.name}: ${p.name}`;
-          const ai = aiCfg.key && comp.ai_mode !== 'off' ? { cfg: aiCfg, mode: comp.ai_mode } : null;
-          const r = await processItem(db, comp, p, m, undefined, ai);
-          scrapeState.done++;
-          if (r.found) scrapeState.found++;
-          if (r.error) scrapeState.errors++;
-          await sleep(comp.delay_ms * (1 + Math.random() * 0.5)); // Pausen leicht streuen
+        const seen = new Set();
+        const st = (scrapeState.comps[comp.id] = { name: comp.name, done: 0, ms: 0, avg_s: null, ...paceInfo(comp.base_url) });
+        let queue = items;
+        while (queue.length) {
+          for (const { p, m } of queue) {
+            if (scrapeState.stop) return;
+            seen.add(m.id);
+            scrapeState.current = `${comp.name}: ${p.name}`;
+            const ai = aiCfg.key && comp.ai_mode !== 'off' ? { cfg: aiCfg, mode: comp.ai_mode } : null;
+            const t = Date.now();
+            const r = await processItem(db, comp, p, m, undefined, ai);
+            scrapeState.done++;
+            if (r.found) scrapeState.found++;
+            if (r.error) scrapeState.errors++;
+            await sleep(pacingMs(comp.base_url, comp.delay_ms) * (1 + Math.random() * 0.5)); // Pausen leicht streuen
+            st.done++; st.ms += Date.now() - t; st.avg_s = Math.round(st.ms / st.done / 100) / 10; Object.assign(st, paceInfo(comp.base_url));
+          }
+          if (!continuous || scrapeState.stop) break;
+          if (Date.now() - t0 > RUN_MAX_MS) { scrapeState.backlog = true; break; }
+          queue = dueFor(comp, seen, Date.now(), { topUp: false }); // nachfüllen, solange etwas fällig ist (ohne Auffüllen mit nicht fälligen)
+          scrapeState.total += queue.length;
         }
       }),
     );

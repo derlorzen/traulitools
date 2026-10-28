@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { openDb, upsertProducts, tx } from './db.js';
 import { parseCsv, pick, parsePrice, csvEscape } from './util.js';
 import { extractProduct, findCandidates } from './extract.js';
-import { fetchText, robotsAllows } from './fetcher.js';
+import { fetchText, robotsAllows, paceInfo } from './fetcher.js';
 import { fetchShopwareProducts, shopwareConfig, testShopware, syncShopware, productDetails } from './shopware.js';
 import { aiConfig, testAi, chatJson, DEFAULT_MODEL } from './ai.js';
 import { analyse, RULES } from './analysis.js';
@@ -112,7 +112,10 @@ export function createApp(db, { dataDir = null } = {}) {
 
   // --- Übersicht ---
   app.get('/api/overview', wrap((req, res) => {
-    const competitors = db.prepare('SELECT c.*, (SELECT COUNT(*) FROM sitemap_urls s WHERE s.competitor_id=c.id) AS sitemap_count FROM competitors c ORDER BY position, id').all();
+    const since24 = new Date(Date.now() - 86400e3).toISOString();
+    const competitors = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM sitemap_urls s WHERE s.competitor_id=c.id) AS sitemap_count,
+      (SELECT COUNT(*) FROM matches m WHERE m.competitor_id=c.id AND m.last_checked >= ?) AS checked_24h FROM competitors c ORDER BY position, id`).all(since24)
+      .map((c) => ({ ...c, pace: { ...paceInfo(c.base_url), live: scrapeState.comps?.[c.id] ?? null } }));
     const counts = db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get();
     // scope: tracked = beobachtete Artikel, all = komplette Artikelbasis; ohne Angabe beobachtete, sofern vorhanden
     const scope = req.query.scope === 'all' || (req.query.scope !== 'tracked' && !counts.tracked) ? 'all' : 'tracked';
@@ -883,7 +886,8 @@ export function startScheduler(db) {
       if (cfg.mode === 'rolling') {
         // Neuer Lauf erst, wenn der vorige beendet ist (auch der eigene Artikel-Import) und danach die Pause verstrichen ist
         if (!scrapeState.running && !ownImportState.running) {
-          pause ??= cfg.interval + Math.random() * cfg.jitter;
+          // War der letzte Lauf nur wegen der Zeitgrenze zu Ende (noch Arbeit offen), kurz durchatmen statt lange Pause
+          pause ??= scrapeState.backlog ? 20 + Math.random() * 20 : cfg.interval + Math.random() * cfg.jitter;
           const since = scrapeState.finishedAt ? (Date.now() - scrapeState.finishedAt) / 1000 : Infinity;
           if (since >= pause) {
             startScrape(db, { trigger: 'rolling', limitPerCompetitor: cfg.batch, minIntervalH: cfg.refresh, fill: true });

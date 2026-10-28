@@ -763,6 +763,19 @@ function ownImportControls() {
   return { limit, start, stop, msg };
 }
 
+/** Tempo eines Mitbewerbers: Prüfungen in 24 Stunden, Bremse durch robots.txt oder Überlastung, Schätzung pro Stunde. */
+function tempoHint(c) {
+  if (!c) return 'Wartezeit zwischen zwei Seitenaufrufen beim selben Shop. Kürzer = schneller, aber mehr Last für den Shop. Mindestens 1000.';
+  const pace = c.pace ?? {};
+  const eff = Math.max(c.delay_ms, (pace.crawl_delay_s ?? 0) * 1000) * (pace.factor ?? 1);
+  const perHour = Math.round(3600 / (eff * 1.25 / 1000 + 1.2)); // Pause mit Streuung plus typische Ladezeit
+  return [
+    `Etwa ${nf.format(perHour)} Seitenaufrufe pro Stunde${c.checked_24h != null ? `, in den letzten 24 Stunden ${nf.format(c.checked_24h)} Artikel geprüft` : ''}.`,
+    pace.crawl_delay_s ? `Der Shop verlangt in seiner robots.txt mindestens ${nf1.format(pace.crawl_delay_s)} s Abstand, daran hält sich Preisradar.` : null,
+    pace.factor > 1 ? `Gerade gebremst (${nf1.format(pace.factor)}-facher Abstand), weil der Shop überlastet war oder abgelehnt hat.` : null,
+  ].filter(Boolean).join(' ');
+}
+
 function competitorPanel(c) {
   const f = (label, name, value, { hint, type = 'text', ph } = {}) => h('div', { class: 'field' }, h('label', {}, label), h('input', { name, type, value: value ?? '', placeholder: ph ?? '' }), hint ? h('span', { class: 'hint' }, hint) : null);
   const form = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() });
@@ -799,7 +812,7 @@ function competitorPanel(c) {
         }) }, 'Suchlink erkennen')) : null),
       f('Ergebnis-Selektor (optional)', 'result_selector', c?.result_selector, { ph: 'a.product-name', hint: 'CSS-Selektor der Produktlinks auf der Suchseite' }),
       f('Preis-Selektor (optional)', 'price_selector', c?.price_selector, { ph: '.product-detail-price', hint: 'Nur nötig, wenn der Preis nicht automatisch erkannt wird' }),
-      f('Pause zwischen Abrufen (ms)', 'delay_ms', c?.delay_ms ?? 3000, { type: 'number' }),
+      f('Pause zwischen Abrufen (ms)', 'delay_ms', c?.delay_ms ?? 3000, { type: 'number', hint: tempoHint(c) }),
       h('div', { class: 'field', style: 'grid-column:1/-1' }, h('label', {}, 'Sitemap-URLs (optional, eine pro Zeile)'),
         h('textarea', { name: 'sitemap_url', rows: 2, placeholder: 'https://www.beispiel-shop.de/sitemap/Sitemap_item.xml' }, c?.sitemap_url ?? ''),
         h('span', { class: 'hint' }, 'Für Shops, deren Suche gesperrt oder nicht auslesbar ist: Produkte werden über die URLs der Sitemap (Marke und Name) gefunden. Die Sitemap wird wöchentlich neu eingelesen.'),
@@ -983,7 +996,7 @@ async function renderImport(root) {
     state.runs.length ? h('table', { class: 'plain' }, h('thead', {}, h('tr', {}, ['Start', 'Auslöser', 'Geprüft', 'Preise gefunden', 'Fehler', 'Dauer'].map((x) => h('th', {}, x)))),
       h('tbody', {}, state.runs.map((r) => h('tr', {}, h('td', {}, dt.format(new Date(r.started_at))), h('td', {}, r.trigger === 'schedule' ? 'Zeitplan' : r.trigger === 'rolling' ? 'verteilt' : 'manuell'), h('td', {}, `${r.checked}/${r.total}`), h('td', {}, r.found), h('td', {}, r.errors),
         h('td', {}, r.finished_at ? `${Math.max(1, Math.round((Date.parse(r.finished_at) - Date.parse(r.started_at)) / 60000))} min${r.note ? ` (${r.note})` : ''}` : 'läuft …'))))) : h('p', { class: 'pmeta' }, 'Noch kein Lauf.'),
-    h('p', { class: 'pmeta', style: 'margin-top:8px' }, (d.schedule.mode === 'rolling' ? `Automatischer Abruf verteilt über den Tag: Ein neuer Lauf beginnt erst ${d.schedule.interval} bis ${d.schedule.interval + d.schedule.jitter} Sekunden nach dem Ende des vorigen, mit bis zu ${d.schedule.batch} Artikeln je Mitbewerber, jeder Artikel höchstens alle ${d.schedule.refresh} Stunden.` : `Automatischer Abruf zu festen Zeiten (${d.schedule.hours.map((x) => String(x).padStart(2, '0') + ':00').join(' und ')} Uhr).`) + ' Einstellbar unter Einstellungen → Abrufplan.')));
+    h('p', { class: 'pmeta', style: 'margin-top:8px' }, (d.schedule.mode === 'rolling' ? `Automatischer Abruf verteilt über den Tag: alle Mitbewerber gleichzeitig, jeder Shop mit seinem eigenen Abstand zwischen den Seitenaufrufen. Solange Artikel fällig sind, läuft der Abruf durch; sonst Pause von ${d.schedule.interval} bis ${d.schedule.interval + d.schedule.jitter} Sekunden. Jeder Artikel höchstens alle ${d.schedule.refresh} Stunden.` : `Automatischer Abruf zu festen Zeiten (${d.schedule.hours.map((x) => String(x).padStart(2, '0') + ':00').join(' und ')} Uhr).`) + ' Einstellbar unter Einstellungen → Abrufplan.')));
 }
 
 // ---------- Anmeldung ----------
@@ -1096,12 +1109,13 @@ async function renderStart(root) {
       h('td', {}, `${c.ok} Preise`, h('small', {}, ` ${String(c.coverage).replace('.', ',')} %`)),
       h('td', { class: 'pmeta' }, c.review ? `${c.review} zu prüfen` : ''),
       h('td', { class: c.error + c.blocked ? 'warmtxt' : 'pmeta' }, c.error + c.blocked ? `${c.error + c.blocked} Fehler` : ''),
+      h('td', { class: 'pmeta', title: 'In den letzten 24 Stunden geprüft' }, (() => { const oc = d.competitors.find((x) => x.name === c.name); return oc?.checked_24h != null ? `${nf.format(oc.checked_24h)} in 24 h${oc.pace?.factor > 1 ? ' (gebremst)' : ''}` : ''; })()),
       h('td', { class: 'pmeta' }, c.last_checked ? dt.format(new Date(c.last_checked)) : 'noch nicht geprüft'))))) : h('p', { class: 'list-empty' }, 'Noch kein Mitbewerber angelegt.'));
   const sch = d.schedule;
   const ops = h('section', { class: 'list' },
     h('div', { class: 'list-h' }, h('h3', {}, 'Betrieb'), h('button', { class: 'linkbtn', onclick: () => setTab('import') }, 'Läufe ansehen')),
     h('dl', { class: 'facts' },
-      h('dt', {}, 'Abruf'), h('dd', {}, d.scrape.running ? `läuft: ${d.scrape.done} von ${d.scrape.total}` : sch.mode === 'rolling' ? `verteilt, ${sch.batch} Artikel je Mitbewerber, Pause ${sch.interval}–${sch.interval + sch.jitter} s nach jedem Lauf` : `feste Zeiten ${sch.hours.join(', ')} Uhr`),
+      h('dt', {}, 'Abruf'), h('dd', {}, d.scrape.running ? `läuft: ${d.scrape.done} von ${d.scrape.total}` : sch.mode === 'rolling' ? `verteilt, alle Mitbewerber gleichzeitig; solange etwas fällig ist ohne lange Pause, sonst ${sch.interval}–${sch.interval + sch.jitter} s Pause` : `feste Zeiten ${sch.hours.join(', ')} Uhr`),
       tiersFacts(d.tiers, sch),
       h('dt', {}, 'Artikel'), h('dd', {}, `${d.counts.all} gesamt, ${d.counts.tracked} beobachtet`),
       imp?.running ? [h('dt', {}, 'Import'), h('dd', {}, `läuft: ${imp.done} von ${imp.total}`)] : imp?.finishedAt ? [h('dt', {}, 'Letzter Import'), h('dd', {}, `${dt.format(new Date(imp.finishedAt))}, ${imp.created} neu, ${imp.updated} aktualisiert${imp.errors ? `, ${imp.errors} Fehler` : ''}`)] : null,
@@ -2132,7 +2146,7 @@ function renderHelp(root) {
 
     sec('h-abruf', 'Wann und wie oft abgefragt wird',
       sch.mode === 'rolling'
-        ? p(`Preisradar arbeitet in Paketen: Pro Mitbewerber werden bis zu ${sch.batch} Artikel abgefragt, danach folgt eine Pause von ${sch.interval} bis ${sch.interval + sch.jitter} Sekunden, erst dann beginnt das nächste Paket. Zwischen zwei Seitenaufrufen beim selben Shop liegen einige Sekunden. Jeder Artikel wird höchstens zweimal am Tag automatisch abgefragt, mit mindestens ${sch.refresh} Stunden Abstand. So verteilt sich die Last über den Tag, ohne dass ein Shop ständig dieselben Seiten sieht.`)
+        ? p(`Preisradar fragt alle Mitbewerber gleichzeitig ab, jeden Shop aber nur mit einem Seitenaufruf nach dem anderen und einigen Sekunden Abstand (je Mitbewerber einstellbar). Ein schneller Shop wartet nicht auf einen langsamen: Jeder arbeitet weiter, solange bei ihm Artikel fällig sind, bis zu 25 Minuten am Stück, dann folgt eine kurze Pause. Ist nichts mehr fällig, pausiert der Abruf ${sch.interval} bis ${sch.interval + sch.jitter} Sekunden. Verlangt ein Shop in seiner robots.txt einen Mindestabstand (Crawl-delay), hält sich Preisradar daran; antwortet ein Shop mit „zu viele Anfragen“ oder gar nicht, verdoppelt Preisradar den Abstand und wird erst nach und nach wieder schneller. Jeder Artikel wird höchstens zweimal am Tag automatisch abgefragt, mit mindestens ${sch.refresh} Stunden Abstand. So verteilt sich die Last über den Tag, ohne dass ein Shop ständig dieselben Seiten sieht.`)
         : p(`Preisradar fragt zu festen Zeiten ab (${sch.hours.map((x) => String(x).padStart(2, '0') + ':00').join(', ')} Uhr), jeder Artikel höchstens alle ${sch.refresh} Stunden.`),
       p(h('b', {}, 'Wichtige Artikel täglich, der Rest im Wechsel: '), `Bei großen Sortimenten werden nicht alle Artikel jeden Tag abgefragt. Täglich geprüft werden die ${(d.tiers?.size ?? sch.tier_a_size ?? 1000).toLocaleString('de-DE')} wichtigsten: zuerst Artikel, die sich in den letzten 90 Tagen verkauft haben (aus Shopware, nach Umsatz), dann solche, bei denen ein Mitbewerber in der letzten Woche den Preis geändert hat, dann Artikel mit viel Google-Nachfrage und solche über dem Google-Vergleichspreis. Alle übrigen werden alle ${d.tiers?.bDays ?? sch.tier_b_days ?? 4} Tage abgefragt. Die Einstufung wird laufend neu berechnet. Mit „täglich“ in der Preisliste oder in der Detailansicht setzt du einzelne Artikel zusätzlich von Hand auf tägliche Prüfung.`),
       p('Neue Artikel werden zuerst einmal bei allen Mitbewerbern gesucht, die täglich geprüften vorneweg. Den Fortschritt siehst du im Lagebild unter „Betrieb“. Der Preisverlauf speichert einen Preis nur, wenn er sich ändert, und sonst einmal pro Woche; so bleibt die Datenbank auch bei vielen Artikeln schlank.'),
@@ -2477,8 +2491,8 @@ async function renderSettings(root) {
     h('p', { class: 'sub' }, 'Verteilt: kleine Pakete über den ganzen Tag mit zufälligem Abstand, das schont die Server der Mitbewerber. Feste Zeiten: ein großer Lauf zu den Stunden aus der Server-Einstellung SCRAPE_HOURS. Abgeglichen werden nur beobachtete Artikel.'),
     h('div', { class: 'grid' },
       h('div', { class: 'field' }, h('label', {}, 'Modus'), h('select', { name: 'mode' }, [['rolling', 'Verteilt über den Tag'], ['slots', `Feste Zeiten (${sch.hours.map((x) => `${String(x).padStart(2, '0')}:00`).join(', ')})`]].map(([v, t]) => h('option', { value: v, selected: sch.mode === v }, t)))),
-      f('Artikel je Mitbewerber und Paket', 'batch', sch.batch, { type: 'number' }),
-      f('Abstand zwischen Paketen (Sekunden)', 'interval', sch.interval, { type: 'number' }),
+      f('Artikel je Mitbewerber und Paket', 'batch', sch.batch, { type: 'number', hint: 'Startmenge eines Laufs. Ist mehr fällig, arbeitet jeder Mitbewerber ohne Pause weiter (bis zu 25 Minuten am Stück).' }),
+      f('Pause, wenn nichts fällig ist (Sekunden)', 'interval', sch.interval, { type: 'number', hint: 'Solange noch Artikel fällig sind, folgt der nächste Lauf nach 20 bis 40 Sekunden.' }),
       f('Zufälliger Aufschlag bis (Sekunden)', 'jitter', sch.jitter, { type: 'number' }),
       f('Mindestabstand je Artikel (Stunden)', 'refresh', sch.refresh, { type: 'number', hint: 'Mindestens 8. Jeder Artikel wird höchstens zweimal am Tag automatisch abgefragt.' }),
       f('Täglich geprüfte Artikel', 'tier_a_size', sch.tier_a_size, { type: 'number', hint: 'Die wichtigsten Artikel nach Verkäufen, Preisbewegung und Google-Nachfrage. Von Hand gesetzte kommen dazu.' }),

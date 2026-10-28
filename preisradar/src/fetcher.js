@@ -21,9 +21,10 @@ export async function fetchText(url, { timeout = 20000, headers = {}, raw = fals
     });
     const buf = raw ? Buffer.from(await res.arrayBuffer()) : null;
     const text = raw ? '' : await res.text();
+    if (res.status === 429 || res.status === 503) notePace(url, { status: res.status, retryAfter: res.headers.get('retry-after') });
     return { status: res.status, text, buf, finalUrl: res.url || url, contentType: res.headers.get('content-type') || '' };
   } catch (e) {
-    if (e.name === 'AbortError') throw new Error('Zeitüberschreitung beim Abruf');
+    if (e.name === 'AbortError') { notePace(url, { error: true }); throw new Error('Zeitüberschreitung beim Abruf'); }
     throw new Error(`Abruf fehlgeschlagen: ${e.cause?.code || e.message}`);
   } finally {
     clearTimeout(t);
@@ -48,11 +49,16 @@ function parseRobots(text) {
     } else if ((key === 'allow' || key === 'disallow') && cur) {
       cur.rules.push({ allow: key === 'allow', path: val });
       lastWasAgent = false;
+    } else if (key === 'crawl-delay' && cur) {
+      const n = Number(val.replace(',', '.'));
+      if (Number.isFinite(n) && n > 0) cur.crawlDelay = Math.min(n, 120);
+      lastWasAgent = false;
     } else lastWasAgent = false;
   }
   const mine = groups.find((g) => g.agents.some((a) => a !== '*' && 'preisradarbot'.includes(a)));
   const star = groups.find((g) => g.agents.includes('*'));
-  return (mine || star)?.rules ?? [];
+  const g = mine || star;
+  return { rules: g?.rules ?? [], crawlDelay: g?.crawlDelay ?? 0 };
 }
 
 function ruleMatches(path, pattern) {
@@ -68,14 +74,14 @@ export async function robotsAllows(url) {
   const u = new URL(url);
   let entry = robotsCache.get(u.host);
   if (!entry || Date.now() - entry.at > ROBOTS_TTL) {
-    let rules = [];
+    let parsed = { rules: [], crawlDelay: 0 };
     try {
       const r = await fetchText(`${u.protocol}//${u.host}/robots.txt`, { timeout: 10000 });
-      if (r.status === 200 && !/html/i.test(r.contentType)) rules = parseRobots(r.text);
+      if (r.status === 200 && !/html/i.test(r.contentType)) parsed = parseRobots(r.text);
     } catch {
       /* robots.txt nicht erreichbar -> erlaubt */
     }
-    entry = { at: Date.now(), rules };
+    entry = { at: Date.now(), ...parsed };
     robotsCache.set(u.host, entry);
   }
   const target = u.pathname + u.search;
@@ -88,4 +94,35 @@ export async function robotsAllows(url) {
 
 export function clearRobotsCache() {
   robotsCache.clear();
+  pace.clear();
 }
+
+/*
+ * Tempo je Shop: Mindestabstand ist der eingestellte Abstand, aber nie weniger als der Crawl-delay aus der
+ * robots.txt. Antwortet ein Shop mit 429/503 oder gar nicht, wird der Abstand verdoppelt (bis 16-fach) und ein
+ * Retry-After beachtet; danach nähert er sich mit jedem erfolgreichen Abruf wieder dem eingestellten Wert.
+ */
+const pace = new Map(); // host -> { factor, until, ok, slow }
+const hostOf = (url) => { try { return new URL(url).host; } catch { return ''; } };
+export function crawlDelayMs(url) { return (robotsCache.get(hostOf(url))?.crawlDelay ?? 0) * 1000; }
+export function pacingMs(url, baseMs) {
+  const p = pace.get(hostOf(url));
+  const base = Math.max(baseMs, crawlDelayMs(url));
+  const wait = p?.until && p.until > Date.now() ? p.until - Date.now() : 0;
+  return Math.round(Math.max(base * (p?.factor ?? 1), wait));
+}
+export function notePace(url, { status = 200, error = false, retryAfter = null } = {}) {
+  const h = hostOf(url);
+  const p = pace.get(h) ?? { factor: 1, until: 0, ok: 0, slow: 0 };
+  if (error || status === 429 || status === 503) {
+    p.factor = Math.min(16, p.factor * 2);
+    p.slow++;
+    const ra = Number(retryAfter);
+    if (Number.isFinite(ra) && ra > 0) p.until = Date.now() + Math.min(ra, 600) * 1000;
+  } else {
+    p.ok++;
+    p.factor = Math.max(1, p.factor * 0.85);
+  }
+  pace.set(h, p);
+}
+export function paceInfo(url) { const p = pace.get(hostOf(url)); return { factor: Math.round((p?.factor ?? 1) * 10) / 10, slowdowns: p?.slow ?? 0, crawl_delay_s: crawlDelayMs(url) / 1000 }; }
