@@ -46,7 +46,7 @@ h3 { font-size: 14px; margin: 0 0 8px; }
 .btn[disabled] { opacity: .5; cursor: default; }
 
 .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
-.toolbar input[type=search], .toolbar select, .field input, .field select, .field textarea { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 7px 10px; }
+.toolbar input[type=search], .tbltools input[type=search], .toolbar select, .field input, .field select, .field textarea { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 7px 10px; }
 .toolbar input[type=search] { width: 260px; }
 .seg { display: inline-flex; flex-wrap: wrap; gap: 6px; }
 .chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 12px; cursor: pointer; display: inline-flex; gap: 6px; align-items: baseline; }
@@ -479,7 +479,7 @@ body::before {
 .btn, .chip { background: var(--glass-soft); border-color: var(--glass-border); }
 .btn.primary { background: var(--petrol); border-color: transparent; box-shadow: 0 6px 16px -8px var(--petrol); }
 .chip.on { background: var(--ink); color: var(--surface-solid); border-color: transparent; }
-.toolbar input[type=search], .toolbar select, .field input, .field select, .field textarea, input.numin, .mrow input, .catbox input[type=search], .plain input, .panel .row > input {
+.toolbar input[type=search], .tbltools input[type=search], .toolbar select, .field input, .field select, .field textarea, input.numin, .mrow input, .catbox input[type=search], .plain input, .panel .row > input {
   background: var(--glass-strong); border-color: var(--glass-border);
 }
 #tabs button.on { background: var(--glass-strong); box-shadow: var(--glass-shadow); }
@@ -795,7 +795,7 @@ iframe.descprev { width: 100%; height: 220px; border: 1px solid var(--line); bor
 
 /* Signale aus allen Bereichen */
 .sigs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-button.sig { font-family: inherit; font-size: 11px; font-weight: 600; line-height: 1.4; padding: 1px 8px; border-radius: 999px; border: 1px solid transparent; background: var(--sunk); color: var(--muted); cursor: pointer; white-space: nowrap; }
+button.sig, span.sig.good { font-family: inherit; font-size: 11px; font-weight: 600; line-height: 1.4; padding: 1px 8px; border-radius: 999px; border: 1px solid transparent; background: var(--sunk); color: var(--muted); cursor: pointer; white-space: nowrap; }
 button.sig:hover { border-color: currentColor; }
 button.sig:focus-visible { outline: 2px solid var(--petrol); outline-offset: 1px; }
 button.sig.good { background: var(--good-bg); color: var(--good); }
@@ -942,3 +942,24 @@ html.pl-lock, html.pl-lock body { overflow: hidden; }
   .setnav a { white-space: nowrap; border-left: 0; border-radius: 999px; background: var(--sunk); padding: 6px 12px; }
   .setgroup { scroll-margin-top: 120px; } /* unter der festen Kopfleiste */
 }
+
+/* Tabellen mit Sortierung, Suche und Filtern (Sichtbarkeit) */
+.smarttbl { display: flex; flex-direction: column; min-width: 0; }
+.tbltools { display: flex; gap: 10px; align-items: center; padding: 0 16px 10px; flex-wrap: wrap; }
+.tbltools input[type=search] { flex: 1 1 220px; min-width: 0; }
+.tblcount { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tblchips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 12px; }
+.chip.small { padding: 3px 10px; font-size: 12.5px; }
+.chip.small b { font-weight: 600; opacity: .75; font-variant-numeric: tabular-nums; }
+.chip:disabled { opacity: .4; cursor: default; }
+.tblarrow { font-size: 10px; margin-left: 3px; opacity: .35; align-self: center; }
+th.sorted .tblarrow { opacity: 1; color: var(--petrol); }
+.smarttbl th .thbtn { white-space: nowrap; }
+.tblmore { display: flex; justify-content: center; padding: 10px; }
+.tblmore:empty { display: none; }
+span.sig.good { background: var(--good-bg); color: var(--good); cursor: default; }
+@media (max-width: 700px) {
+  .tblchips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .tblchips .chip { flex: none; white-space: nowrap; }
+}
+.stack { display: flex; flex-direction: column; gap: 16px; margin-top: 16px; }

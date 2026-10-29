@@ -157,9 +157,9 @@ export function merchantSummary(db) {
     configured: cfg.configured, account: cfg.account, country: cfg.country, categories: cfg.categories, synced_at: getSetting(db, 'mc_synced_at'),
     offers: db.prepare('SELECT COUNT(*) AS n FROM mc_products').get().n, matched: matched.length,
     benchmark: { total: withBench.length, above: above.length, below: withBench.filter((r) => r.own_price < r.benchmark * 0.98).length },
-    above_benchmark: above.map((r) => ({ id: r.id, name: r.name, number: r.number, own_price: r.own_price, benchmark: r.benchmark, gap_percent: Math.round(gapOf(r) * 10) / 10 })).sort((a, b) => b.gap_percent - a.gap_percent).slice(0, 20),
+    above_benchmark: above.map((r) => ({ id: r.id, name: r.name, number: r.number, own_price: r.own_price, benchmark: r.benchmark, gap_percent: Math.round(gapOf(r) * 10) / 10 })).sort((a, b) => b.gap_percent - a.gap_percent),
     suggestions: matched.filter((r) => r.suggested && r.own_price && Math.abs(r.suggested - r.own_price) >= 0.01).map((r) => ({ id: r.id, name: r.name, number: r.number, own_price: r.own_price, suggested: r.suggested, clicks_change: r.clicks_change, conversions_change: r.conversions_change, effectiveness: r.effectiveness }))
-      .sort((a, b) => (b.conversions_change ?? 0) - (a.conversions_change ?? 0)).slice(0, 20),
+      .sort((a, b) => (b.conversions_change ?? 0) - (a.conversions_change ?? 0)),
     competitors: merchantCompetitors(db),
   };
 }

@@ -1194,6 +1194,66 @@ function lineChart(series, { height = 220, fmtY = (v) => nf.format(Math.round(v)
   return h('div', {}, svg, series.length > 1 ? h('div', { class: 'legend' }, series.map((x) => h('span', {}, h('i', { style: `background:${x.color}` }), x.name))) : null);
 }
 
+/**
+ * Tabelle mit Sortierung je Spalte (auf- und absteigend), Suche und Filtern. Der Zustand bleibt je Tabelle erhalten,
+ * auch wenn die Seite neu gezeichnet wird. Lange Listen werden in Schritten angezeigt.
+ *   cols:    [{ key, label, get(row) → Sortwert, cell(row) → Inhalt, first: 'asc'|'desc', cls }]
+ *   search:  row → durchsuchbarer Text
+ *   filters: [[key, label, row → bool]]
+ */
+const tblState = {};
+const CTR_CURVE = [0.2, 0.12, 0.08, 0.06, 0.045, 0.035, 0.028, 0.022, 0.018, 0.015];
+const tblNorm = (v) => String(v ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '');
+function smartTable(id, { cols, rows, search, filters = [], sort, dir = 'desc', placeholder = 'Suchen', onRow, rowClass, step = 100, maxHeight = 560, empty = 'Keine Einträge.' }) {
+  const st = (tblState[id] ??= { q: '', filter: 'all', sort, dir, shown: step });
+  if (!cols.some((c) => c.key === st.sort)) Object.assign(st, { sort, dir });
+  if (!filters.some(([k]) => k === st.filter)) st.filter = 'all';
+  const allFilters = [['all', 'Alle', () => true], ...filters];
+  const tbody = h('tbody', {});
+  const head = h('tr', {});
+  const counter = h('span', { class: 'pmeta tblcount', 'aria-live': 'polite' });
+  const more = h('div', { class: 'tblmore' });
+  const chipBox = h('div', { class: 'tblchips', role: 'group', 'aria-label': 'Filter' });
+
+  const filtered = () => {
+    const words = tblNorm(st.q).split(/\s+/).filter(Boolean);
+    const f = (allFilters.find(([k]) => k === st.filter) ?? allFilters[0])[2];
+    return rows.filter((r) => { if (!f(r)) return false; if (!words.length) return true; const t = tblNorm(search(r)); return words.every((w) => t.includes(w)); });
+  };
+  const sorted = (list) => {
+    const c = cols.find((x) => x.key === st.sort) ?? cols[0];
+    const d = st.dir === 'desc' ? -1 : 1;
+    return list.map((r) => [c.get(r), r]).sort(([a], [b]) => {
+      const an = a == null || a === '', bn = b == null || b === '';
+      if (an || bn) return an && bn ? 0 : an ? 1 : -1; // Leere Werte immer ans Ende
+      return (typeof a === 'string' ? a.localeCompare(b, 'de', { numeric: true }) : a - b) * d;
+    }).map(([, r]) => r);
+  };
+  const paint = () => {
+    head.replaceChildren(...cols.map((c) => {
+      const on = st.sort === c.key;
+      return h('th', { class: `${c.cls ?? ''} sortable${on ? ' sorted' : ''}`, 'aria-sort': on ? (st.dir === 'desc' ? 'descending' : 'ascending') : 'none' },
+        h('button', { class: 'thbtn', title: `Nach ${c.title ?? c.label} sortieren`, onclick: () => { st.dir = on ? (st.dir === 'asc' ? 'desc' : 'asc') : c.first ?? 'desc'; st.sort = c.key; st.shown = step; paint(); } },
+          c.label, h('span', { class: 'tblarrow', 'aria-hidden': 'true' }, on ? (st.dir === 'desc' ? '▼' : '▲') : '↕')));
+    }));
+    const counts = new Map(allFilters.map(([k, , f]) => [k, 0]));
+    for (const r of rows) for (const [k, , f] of allFilters) if (f(r)) counts.set(k, counts.get(k) + 1);
+    chipBox.replaceChildren(...allFilters.map(([k, label]) => h('button', { class: `chip small${st.filter === k ? ' on' : ''}`, 'aria-pressed': String(st.filter === k), disabled: k !== 'all' && !counts.get(k) && st.filter !== k, onclick: () => { st.filter = k; st.shown = step; paint(); } }, label, h('b', {}, nf.format(counts.get(k))))));
+    const list = sorted(filtered());
+    tbody.replaceChildren(...(list.length ? list.slice(0, st.shown).map((r) => h('tr', { class: rowClass?.(r) ?? (onRow ? '' : 'nolink'), onclick: onRow ? () => onRow(r) : null }, cols.map((c) => h('td', { class: c.cls ?? '' }, c.cell(r)))))
+      : [h('tr', { class: 'nolink' }, h('td', { colspan: cols.length, class: 'list-empty' }, st.q || st.filter !== 'all' ? 'Nichts gefunden. Suche oder Filter anpassen.' : empty))]));
+    counter.textContent = list.length === rows.length ? `${nf.format(rows.length)} Einträge` : `${nf.format(list.length)} von ${nf.format(rows.length)}`;
+    more.replaceChildren(list.length > st.shown ? h('button', { class: 'btn small', onclick: () => { st.shown += step * 2; paint(); } }, `Weitere ${nf.format(Math.min(step * 2, list.length - st.shown))} zeigen`) : '');
+  };
+  let tmr;
+  const input = h('input', { type: 'search', placeholder, value: st.q, 'aria-label': placeholder, oninput: (e) => { st.q = e.target.value; clearTimeout(tmr); tmr = setTimeout(() => { st.shown = step; paint(); }, 150); } });
+  paint();
+  return h('div', { class: 'smarttbl' },
+    h('div', { class: 'tbltools' }, input, counter),
+    filters.length ? chipBox : null,
+    h('div', { class: 'tablewrap', style: `max-height:${maxHeight}px` }, h('table', { class: 'prices', style: 'min-width:0' }, h('thead', {}, head), tbody), more));
+}
+
 function seoSetupHint() {
   return h('div', { class: 'panel empty' },
     h('h3', {}, 'Google verbinden'),
@@ -1247,19 +1307,30 @@ function renderMerchant(root, mc) {
   root.append(h('div', { class: 'grid2 eq' },
     h('div', { class: 'panel flush' },
       h('div', { class: 'panelhead' }, h('h3', {}, 'Über dem Google-Vergleichspreis'), h('p', { class: 'pmeta' }, 'Google vergleicht mit allen Händlern, die dasselbe Produkt in Shopping anbieten, auch mit solchen, die du noch nicht beobachtest.')),
-      mc.above_benchmark.length ? h('div', { class: 'tablewrap', style: 'max-height:460px' }, h('table', { class: 'prices', style: 'min-width:0' },
-        h('thead', {}, h('tr', {}, ['Artikel', 'Dein Preis', 'Vergleichspreis', 'Abstand'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
-        h('tbody', {}, mc.above_benchmark.map((r) => h('tr', { onclick: open(r.id) },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, r.number)),
-          h('td', {}, eur.format(r.own_price)), h('td', {}, eur.format(r.benchmark)), h('td', { class: 'gap bad' }, fmtPct(r.gap_percent))))))) : h('p', { class: 'list-empty', style: 'padding:0 16px 14px' }, 'Kein Artikel deutlich über dem Vergleichspreis.')),
+      mc.above_benchmark.length ? smartTable('mc-above', {
+        rows: mc.above_benchmark, sort: 'gap', dir: 'desc', maxHeight: 460, placeholder: 'Artikel oder Nummer suchen', onRow: (r) => openDrawer(r.id),
+        search: (r) => `${r.name} ${r.number ?? ''}`,
+        filters: [['g5', 'bis 10 %', (r) => r.gap_percent <= 10], ['g10', '10 bis 25 %', (r) => r.gap_percent > 10 && r.gap_percent <= 25], ['g25', 'über 25 %', (r) => r.gap_percent > 25]],
+        cols: [
+          { key: 'name', label: 'Artikel', cls: 'prod', first: 'asc', get: (r) => r.name, cell: (r) => [h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, r.number)] },
+          { key: 'own', label: 'Dein Preis', get: (r) => r.own_price, cell: (r) => eur.format(r.own_price) },
+          { key: 'bench', label: 'Vergleichspreis', get: (r) => r.benchmark, cell: (r) => eur.format(r.benchmark) },
+          { key: 'gap', label: 'Abstand', cls: 'gap bad', get: (r) => r.gap_percent, cell: (r) => fmtPct(r.gap_percent) },
+        ] }) : h('p', { class: 'list-empty', style: 'padding:0 16px 14px' }, 'Kein Artikel deutlich über dem Vergleichspreis.')),
     h('div', { class: 'panel flush' },
       h('div', { class: 'panelhead' }, h('h3', {}, 'Preisvorschläge von Google'), h('p', { class: 'pmeta' }, 'Googles Schätzung, wie sich ein anderer Preis auf Klicks und Verkäufe in Shopping auswirkt. Marge vorher prüfen.')),
-      mc.suggestions.length ? h('div', { class: 'tablewrap', style: 'max-height:460px' }, h('table', { class: 'prices', style: 'min-width:0' },
-        h('thead', {}, h('tr', {}, ['Artikel', 'Dein Preis', 'Vorschlag', 'Klicks', 'Verkäufe'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
-        h('tbody', {}, mc.suggestions.map((r) => h('tr', { onclick: open(r.id) },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, [r.number, r.effectiveness ? `Wirkung: ${{ HIGH: 'hoch', MEDIUM: 'mittel', LOW: 'gering' }[r.effectiveness] ?? r.effectiveness}` : null].filter(Boolean).join(' · '))),
-          h('td', {}, eur.format(r.own_price)), h('td', { style: 'font-weight:700' }, eur.format(r.suggested)),
-          h('td', { class: r.clicks_change > 0 ? 'cooltxt' : '' }, pctTxt(r.clicks_change)), h('td', { class: r.conversions_change > 0 ? 'cooltxt' : '' }, pctTxt(r.conversions_change))))))) : h('p', { class: 'list-empty', style: 'padding:0 16px 14px' }, 'Derzeit keine Vorschläge.'))));
+      mc.suggestions.length ? smartTable('mc-sugg', {
+        rows: mc.suggestions, sort: 'conv', dir: 'desc', maxHeight: 460, placeholder: 'Artikel oder Nummer suchen', onRow: (r) => openDrawer(r.id),
+        search: (r) => `${r.name} ${r.number ?? ''}`,
+        filters: [['down', 'Preis senken', (r) => r.suggested < r.own_price], ['up', 'Preis erhöhen', (r) => r.suggested > r.own_price], ['high', 'Wirkung hoch', (r) => r.effectiveness === 'HIGH']],
+        cols: [
+          { key: 'name', label: 'Artikel', cls: 'prod', first: 'asc', get: (r) => r.name, cell: (r) => [h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, [r.number, r.effectiveness ? `Wirkung: ${{ HIGH: 'hoch', MEDIUM: 'mittel', LOW: 'gering' }[r.effectiveness] ?? r.effectiveness}` : null].filter(Boolean).join(' · '))] },
+          { key: 'own', label: 'Dein Preis', get: (r) => r.own_price, cell: (r) => eur.format(r.own_price) },
+          { key: 'sugg', label: 'Vorschlag', get: (r) => r.suggested, cell: (r) => h('span', { style: 'font-weight:700' }, eur.format(r.suggested)) },
+          { key: 'diff', label: 'Änderung', title: 'Änderung zum eigenen Preis', get: (r) => (r.suggested - r.own_price) / r.own_price, cell: (r) => h('span', { class: r.suggested < r.own_price ? 'warmtxt' : 'cooltxt' }, fmtPct(Math.round(((r.suggested - r.own_price) / r.own_price) * 1000) / 10)) },
+          { key: 'clicks', label: 'Klicks', get: (r) => r.clicks_change, cell: (r) => h('span', { class: r.clicks_change > 0 ? 'cooltxt' : '' }, pctTxt(r.clicks_change)) },
+          { key: 'conv', label: 'Verkäufe', get: (r) => r.conversions_change, cell: (r) => h('span', { class: r.conversions_change > 0 ? 'cooltxt' : '' }, pctTxt(r.conversions_change)) },
+        ] }) : h('p', { class: 'list-empty', style: 'padding:0 16px 14px' }, 'Derzeit keine Vorschläge.'))));
   if (mc.competitors.length) root.append(h('p', { class: 'pmeta', style: 'margin-top:12px' }, `${mc.competitors.filter((c) => !c.known).length} weitere Shops sind in deinen Kategorien bei Google sichtbar. `, h('button', { class: 'linkbtn', onclick: () => setTab('mitbewerber') }, 'Unter Mitbewerber ansehen')));
 }
 
@@ -1291,23 +1362,59 @@ function renderGsc(root, o) {
   } else root.append(h('p', { class: 'pmeta' }, 'Chancen erscheinen, sobald Suchdaten zu beobachteten Artikeln mit Vergleichspreisen vorliegen. Dafür brauchen deine Artikel eine Shop-URL (eigene Sitemap unter Einstellungen).'));
 
   const posBadge = (p) => h('span', { class: `posbadge ${p <= 3 ? 'cool' : p <= 10 ? 'near' : 'warm'}` }, nf1.format(p));
-  root.append(h('div', { class: 'grid2 eq' },
+  const posFilters = (get) => [
+    ['p3', 'Platz 1–3', (r) => get(r) != null && get(r) <= 3.5],
+    ['p10', 'Platz 4–10', (r) => get(r) > 3.5 && get(r) <= 10.5],
+    ['p20', 'Platz 11–20', (r) => get(r) > 10.5 && get(r) <= 20.5],
+    ['p21', 'ab Platz 21', (r) => get(r) > 20.5],
+  ];
+  // wenig geklickt: genug Impressionen, aber Klickrate unter der Hälfte dessen, was auf dem Platz üblich ist
+  const lowCtr = (ctr, pos, imp) => imp >= 100 && pos != null && ctr != null && ctr < (CTR_CURVE[Math.min(9, Math.max(0, Math.round(pos) - 1))] ?? 0.01) / 2;
+  root.append(h('div', { class: 'stack' },
     h('div', { class: 'panel flush' },
-      h('div', { class: 'panelhead' }, h('h3', {}, 'Produktseiten'), h('p', { class: 'pmeta' }, 'Nach Klicks. Klick öffnet den Artikel.')),
-      h('div', { class: 'tablewrap', style: 'max-height:560px' }, h('table', { class: 'prices', style: 'min-width:0' },
-        h('thead', {}, h('tr', {}, ['Artikel', 'Klicks', 'Impr.', 'CTR', 'Pos.'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
-        h('tbody', {}, o.pages.map((p) => h('tr', { onclick: () => openDrawer(p.product.id) },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, p.product.name), h('div', { class: 'pmeta' }, [p.product.price != null ? eur.format(p.product.price) : null, p.product.offline ? 'bei dir offline' : null].filter(Boolean).join(' · ')), sigChips(p.product.id, p.product.sig, { omit: ['gsc'] })),
-          h('td', {}, nf.format(p.clicks)), h('td', {}, nf.format(p.impressions)), h('td', {}, `${nf1.format(p.ctr * 100)} %`), h('td', {}, posBadge(p.position)))))))),
+      h('div', { class: 'panelhead' }, h('h3', {}, 'Produktseiten'), h('p', { class: 'pmeta' }, 'Letzte 28 Tage. Spaltenkopf klicken zum Sortieren, Zeile öffnet den Artikel.')),
+      smartTable('gsc-pages', {
+        rows: o.pages, sort: 'clicks', dir: 'desc', placeholder: 'Artikel, Nummer oder URL suchen', onRow: (p) => openDrawer(p.product.id),
+        search: (p) => `${p.product.name} ${p.product.number ?? ''} ${p.url ?? p.page}`,
+        filters: [
+          ...posFilters((p) => p.position),
+          ['noclick', 'ohne Klicks', (p) => !p.clicks],
+          ['lowctr', 'wenig geklickt', (p) => lowCtr(p.ctr, p.position, p.impressions)],
+          ['dear', 'teurer als Mitbewerber', (p) => p.product.sig?.price?.kind === 'undercut'],
+          ['seo', 'mit SEO-Fehlern', (p) => p.product.sig?.audit?.errors > 0],
+          ['offline', 'bei dir offline', (p) => p.product.offline],
+        ],
+        cols: [
+          { key: 'name', label: 'Artikel', cls: 'prod', first: 'asc', get: (p) => p.product.name, cell: (p) => [h('div', { class: 'pname' }, p.product.name), h('div', { class: 'pmeta' }, [p.product.number, p.product.price != null ? eur.format(p.product.price) : null, p.product.offline ? 'bei dir offline' : null].filter(Boolean).join(' · ')), sigChips(p.product.id, p.product.sig, { omit: ['gsc'] })] },
+          { key: 'price', label: 'Preis', get: (p) => p.product.price, cell: (p) => (p.product.price != null ? eur.format(p.product.price) : '–') },
+          { key: 'gap', label: 'Abstand', title: 'Abstand zum günstigsten Mitbewerber', get: (p) => p.product.sig?.price?.gap_pct, cell: (p) => { const g = p.product.sig?.price?.gap_pct; return g == null ? '–' : h('span', { class: g > 0 ? 'warmtxt' : 'cooltxt' }, fmtPct(g)); } },
+          { key: 'clicks', label: 'Klicks', get: (p) => p.clicks, cell: (p) => nf.format(p.clicks) },
+          { key: 'impr', label: 'Impr.', title: 'Impressionen', get: (p) => p.impressions, cell: (p) => nf.format(p.impressions) },
+          { key: 'ctr', label: 'CTR', title: 'Klickrate', get: (p) => p.ctr, cell: (p) => `${nf1.format(p.ctr * 100)} %` },
+          { key: 'pos', label: 'Pos.', title: 'Position', first: 'asc', get: (p) => p.position, cell: (p) => posBadge(p.position) },
+        ] })),
     h('div', { class: 'panel flush' },
-      h('div', { class: 'panelhead' }, h('h3', {}, 'Suchanfragen'), h('p', { class: 'pmeta' }, 'Womit deine Produktseiten gefunden werden, nach Klicks.')),
-      h('div', { class: 'tablewrap', style: 'max-height:560px' }, h('table', { class: 'prices', style: 'min-width:0' },
-        h('thead', {}, h('tr', {}, ['Suchanfrage', 'Klicks', 'Impr.', 'Pos.'].map((t, i) => h('th', { class: i === 0 ? 'prod' : '' }, t)))),
-        h('tbody', {}, o.queries.map((q) => h('tr', { class: 'nolink' },
-          h('td', { class: 'prod' }, h('div', { class: 'pname' }, q.query), h('div', { class: 'sigs' },
-            h('button', { class: 'sig', title: 'Artikel zeigen, deren Seite mit dieser Suchanfrage gefunden wird', onclick: () => { Object.assign(state, { q: q.query, filter: 'all', view: 'google' }); setTab('preise'); } }, 'Artikel zeigen'),
-            h('button', { class: 'sig cool', title: 'Im Keyword-Monitoring täglich beobachten', onclick: guard(async (e) => { const r = await api('/api/keywords', { body: { keywords: q.query, source: 'suggestion' } }); toast(r.added ? `„${q.query}“ wird beobachtet` : 'Schon beobachtet'); e.target.disabled = true; }) }, '+ Keyword'))),
-          h('td', {}, nf.format(q.clicks)), h('td', {}, nf.format(q.impressions)), h('td', {}, q.position != null ? posBadge(q.position) : '–')))))))));
+      h('div', { class: 'panelhead' }, h('h3', {}, 'Suchanfragen'), h('p', { class: 'pmeta' }, 'Womit deine Produktseiten gefunden werden, letzte 28 Tage.')),
+      smartTable('gsc-queries', {
+        rows: o.queries, sort: 'clicks', dir: 'desc', placeholder: 'Suchanfrage suchen',
+        search: (q) => q.query,
+        filters: [
+          ...posFilters((q) => q.position),
+          ['noclick', 'ohne Klicks', (q) => !q.clicks],
+          ['lowctr', 'wenig geklickt', (q) => lowCtr(q.ctr, q.position, q.impressions)],
+          ['multi', 'mehrere Seiten', (q) => q.pages > 1],
+          ['watched', 'als Keyword beobachtet', (q) => q.watched],
+          ['unwatched', 'noch nicht beobachtet', (q) => !q.watched],
+        ],
+        cols: [
+          { key: 'query', label: 'Suchanfrage', cls: 'prod', first: 'asc', get: (q) => q.query, cell: (q) => [h('div', { class: 'pname' }, q.query), h('div', { class: 'sigs' },
+            h('button', { class: 'sig', title: 'Artikel zeigen, deren Seite mit dieser Suchanfrage gefunden wird', onclick: () => { Object.assign(state, { q: q.query, filter: 'all', view: 'google' }); setTab('preise'); } }, q.pages > 1 ? `${q.pages} Artikel zeigen` : 'Artikel zeigen'),
+            q.watched ? h('span', { class: 'sig good', title: 'Wird im Keyword-Monitoring täglich geprüft' }, 'Keyword') : h('button', { class: 'sig cool', title: 'Im Keyword-Monitoring täglich beobachten', onclick: guard(async (e) => { const r = await api('/api/keywords', { body: { keywords: q.query, source: 'suggestion' } }); toast(r.added ? `„${q.query}“ wird beobachtet` : 'Schon beobachtet'); q.watched = true; e.target.disabled = true; }) }, '+ Keyword'))] },
+          { key: 'clicks', label: 'Klicks', get: (q) => q.clicks, cell: (q) => nf.format(q.clicks) },
+          { key: 'impr', label: 'Impr.', title: 'Impressionen', get: (q) => q.impressions, cell: (q) => nf.format(q.impressions) },
+          { key: 'ctr', label: 'CTR', title: 'Klickrate', get: (q) => q.ctr, cell: (q) => (q.ctr == null ? '–' : `${nf1.format(q.ctr * 100)} %`) },
+          { key: 'pos', label: 'Pos.', title: 'Position', first: 'asc', get: (q) => q.position, cell: (q) => (q.position != null ? posBadge(q.position) : '–') },
+        ] }))));
 }
 
 /** Suchdaten in der Detailansicht eines Artikels. */
@@ -2197,6 +2304,7 @@ function renderHelp(root) {
         h('li', {}, h('b', {}, 'Günstigster, aber kaum gefunden: '), 'Du hast den besten Preis, aber die Seite steht weit hinten. Hier hilft Arbeit an Titel, Beschreibung und internen Links mehr als der Preis.'),
         h('li', {}, h('b', {}, 'Knapp vor Seite 1: '), 'Seiten auf Platz 8 bis 15. Schon wenige Plätze mehr bringen deutlich mehr Besucher.'),
         h('li', {}, h('b', {}, 'Gut platziert, wenig Klicks: '), 'Weit oben, aber selten angeklickt. Oft helfen ein besserer Seitentitel oder sichtbare Vorteile wie Versand oder Preis im Suchergebnis.')),
+      p('Darunter stehen alle Produktseiten und Suchanfragen sowie die Tabellen aus dem Merchant Center. Jede lässt sich per Klick auf den Spaltenkopf auf- und absteigend sortieren, über das Suchfeld durchsuchen (mehrere Wörter grenzen ein) und über die Filter darunter eingrenzen, etwa nach Google-Platz, „ohne Klicks“, „wenig geklickt“ (Klickrate unter der Hälfte dessen, was auf dem Platz üblich ist), „teurer als Mitbewerber“ oder „noch nicht als Keyword beobachtet“. Die Zahl im Filter zeigt, wie viele Einträge passen.'),
       p(h('b', {}, 'Ansicht „Google-Sichtbarkeit“: '), 'In der Preisliste schaltest du oben rechts von „Preisvergleich“ auf „Google-Sichtbarkeit“ um. Dann stehen je Artikel Google-Platz, Impressionen, Klicks, Klickrate und das Klickpotenzial im Vordergrund, dazu ein kurzer Hinweis, was zu tun ist (Preis prüfen, Titel und Beschreibung verbessern, Seite stärken). Das Klickpotenzial schätzt, wie viele Klicks in 28 Tagen dazukämen, wenn die Seite unter den ersten drei stünde; vorsichtig gerechnet, weil Shopping-Anzeigen über den normalen Treffern Klicks abziehen. Die Google-Filter (gefragt, aber teurer; über Google-Vergleichspreis; Platz 4–20; wenig geklickt; verkauft, aber kaum sichtbar und weitere) gibt es in beiden Ansichten.'),
       p(h('b', {}, 'Suche über Google-Suchbegriffe: '), 'Das Suchfeld findet auch Artikel, deren Seite bei Google über einen Begriff angezeigt wird, etwa „unterschrank weiß“, selbst wenn das Wort nicht im Artikelnamen steht. Unter dem Artikel steht dann, über welche Suchanfrage er gefunden wurde.'),
       p('In der Preisliste kannst du nach Impressionen oder Klicks sortieren, und in der Analyse die Empfehlungen nach „Nachfrage × Abstand“: Zuerst kommen die Artikel, bei denen ein besserer Preis die meisten Interessenten erreicht.'),

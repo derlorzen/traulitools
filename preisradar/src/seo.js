@@ -29,14 +29,16 @@ export function seoOverview(db) {
   };
   // Produktseiten mit den meisten Klicks bzw. Impressionen, mit Preislage
   const products = productsByPage(db);
-  const pages = db.prepare('SELECT page, url, clicks, impressions, ctr, position FROM seo_pages ORDER BY clicks DESC, impressions DESC LIMIT 300').all()
-    .map((p) => { const pr = products.get(p.page); return { ...p, product: pr ? { id: pr.id, name: pr.name, price: pr.price, offline: Boolean(pr.offline_since) } : null }; });
+  const pages = db.prepare('SELECT page, url, clicks, impressions, ctr, position FROM seo_pages ORDER BY clicks DESC, impressions DESC').all()
+    .map((p) => { const pr = products.get(p.page); return { ...p, product: pr ? { id: pr.id, name: pr.name, number: pr.number ?? null, price: pr.price, offline: Boolean(pr.offline_since) } : null }; });
   // Suchanfragen gesamt (über alle Seiten der Stichprobe)
-  const queries = db.prepare('SELECT query, SUM(clicks) AS clicks, SUM(impressions) AS impressions, SUM(position * impressions) / NULLIF(SUM(impressions),0) AS position FROM seo_queries GROUP BY query ORDER BY clicks DESC, impressions DESC LIMIT 100').all();
+  const watched = new Set(db.prepare('SELECT keyword FROM keywords').all().map((k) => k.keyword.toLowerCase()));
+  const queries = db.prepare('SELECT query, SUM(clicks) AS clicks, SUM(impressions) AS impressions, SUM(position * impressions) / NULLIF(SUM(impressions),0) AS position, COUNT(DISTINCT page) AS pages FROM seo_queries GROUP BY query ORDER BY clicks DESC, impressions DESC LIMIT 3000').all()
+    .map((q) => ({ ...q, ctr: q.impressions ? q.clicks / q.impressions : null, watched: watched.has(q.query.toLowerCase()) }));
   const productPages = pages.filter((p) => p.product);
   const coverage = { product_pages: db.prepare('SELECT COUNT(*) AS n FROM products WHERE active=1 AND url IS NOT NULL').get().n, with_data: 0 };
   for (const p of db.prepare('SELECT page FROM seo_pages').all()) if (products.has(p.page)) coverage.with_data++;
-  return { status, kpi, daily, pages: productPages.slice(0, 100), other_pages: pages.filter((p) => !p.product).slice(0, 30), queries, coverage, opportunities: opportunities(db) };
+  return { status, kpi, daily, pages: productPages, other_pages: pages.filter((p) => !p.product).slice(0, 30), queries, coverage, opportunities: opportunities(db) };
 }
 
 function productsByPage(db) {
