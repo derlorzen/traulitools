@@ -15,6 +15,7 @@ import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList, site
 import { pageDigest, aiExtract, initAiBudget, aiUsage, DEFAULT_AI_DAILY_LIMIT } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import crypto from 'node:crypto';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState, closeStaleRuns, checkProductNow } from './scraper.js';
 import { listProducts, getProduct, invalidatePriceList, warmPriceList } from './pricelist.js';
@@ -88,7 +89,7 @@ export function createApp(db, { dataDir = null } = {}) {
   });
   app.post('/api/auth/logout', (req, res) => { destroySession(db, req, res); res.json({ ok: true }); });
 
-  app.get('/healthz', (_req, res) => res.json({ ok: true }));
+  app.get('/healthz', (_req, res) => res.json({ ok: true, uptime_s: Math.round(process.uptime()), rss_mb: Math.round(process.memoryUsage().rss / 1048576), lag: loopLag }));
   const internalKey = crypto.randomBytes(24).toString('hex'); // nur für Aufrufe des MCP-Endpunkts an die eigenen Routen
   mountMcp(app, db, { ownName, schedule: () => scheduleConfig(db), internalKey }); // eigene Token-Prüfung, vor der Sitzungsprüfung
   app.use(express.static(path.join(here, '..', 'public')));
@@ -983,12 +984,27 @@ export async function applyBootstrap(db, file = process.env.BOOTSTRAP_FILE || '.
   return cfg.id;
 }
 
+let loopLag = null;
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const db = openDb();
   const seeded = seedCompetitors(db);
   if (seeded) console.log(`${seeded} Mitbewerber aus Datei übernommen`);
   const port = Number(process.env.PORT || 3000);
-  createApp(db, { dataDir: path.dirname(process.env.DB_PATH || './data/preisradar.db') }).listen(port, () => console.log(`Preisradar läuft auf Port ${port}`));
+  const server = createApp(db, { dataDir: path.dirname(process.env.DB_PATH || './data/preisradar.db') }).listen(port, () => console.log(`Preisradar läuft auf Port ${port}`));
+  // Der Proxy (Traefik) hält Verbindungen länger offen als Nodes Standard von 5 s. Schließt Node zuerst, schickt der
+  // Proxy die nächste Anfrage noch über die tote Verbindung und antwortet mit 502. Daher hier länger als der Proxy.
+  server.keepAliveTimeout = 75_000;
+  server.headersTimeout = 76_000;
+  // Ein Fehler in einer Hintergrundaufgabe darf nicht den ganzen Dienst beenden
+  process.on('unhandledRejection', (e) => console.error('Unbehandelter Fehler:', e));
+  process.on('uncaughtException', (e) => console.error('Abgefangener Fehler:', e));
+  // Blockaden der Ereignisschleife protokollieren (lange synchrone Arbeit macht den Dienst kurz unerreichbar)
+  const h = monitorEventLoopDelay({ resolution: 50 }); h.enable();
+  setInterval(() => {
+    loopLag = { max_ms: Math.round(h.max / 1e6), p99_ms: Math.round(h.percentile(99) / 1e6), rss_mb: Math.round(process.memoryUsage().rss / 1048576), at: new Date().toISOString() };
+    if (loopLag.max_ms > 2000) console.warn(`Server war ${loopLag.max_ms} ms blockiert (Speicher ${loopLag.rss_mb} MB)`);
+    h.reset();
+  }, 60_000).unref();
   closeStaleRuns(db); // Läufe eines vorherigen Prozesses abschließen
   startScheduler(db);
   setTimeout(() => warmPriceList(db), 1500); // Preisliste vorbereiten und aktuell halten, damit das Öffnen schnell ist
