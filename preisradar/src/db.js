@@ -160,7 +160,7 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
     UPDATE matches SET prev_price = (SELECT price FROM price_history WHERE match_id = NEW.match_id ORDER BY at DESC LIMIT 1 OFFSET 1) WHERE id = NEW.match_id;
   END`);
   const prodCols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
-  for (const [c, t] of [['purchase_price', 'REAL'], ['tax_rate', 'REAL'], ['stock', 'INTEGER'], ['sw_id', 'TEXT'], ['tier', 'TEXT'], ['tier_reason', 'TEXT'], ['tier_pin', 'INTEGER NOT NULL DEFAULT 0']]) if (!prodCols.includes(c)) db.exec(`ALTER TABLE products ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [['purchase_price', 'REAL'], ['tax_rate', 'REAL'], ['stock', 'INTEGER'], ['sw_id', 'TEXT'], ['tier', 'TEXT'], ['tier_reason', 'TEXT'], ['tier_pin', 'INTEGER NOT NULL DEFAULT 0'], ['idealo_on', 'INTEGER NOT NULL DEFAULT 0']]) if (!prodCols.includes(c)) db.exec(`ALTER TABLE products ADD COLUMN ${c} ${t}`);
   if (!prodCols.includes('offline_since')) db.exec('ALTER TABLE products ADD COLUMN offline_since TEXT');
   const compCols2 = db.prepare('PRAGMA table_info(competitors)').all().map((c) => c.name);
   if (!compCols2.includes('sitemap_categories')) db.exec('ALTER TABLE competitors ADD COLUMN sitemap_categories TEXT');

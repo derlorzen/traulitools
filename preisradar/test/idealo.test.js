@@ -79,8 +79,15 @@ test('idealo-Abgleich über Apify', async (t) => {
   setSetting(db, 'apify_token', 'tok', { secret: true });
   assert.equal(db.prepare("SELECT value FROM settings WHERE key='apify_token'").get().value.startsWith('enc:'), true, 'Token verschlüsselt');
 
-  // Fällig: nur Artikel mit EAN
+  // Nichts vorgemerkt: nichts fällig
+  assert.deepEqual(dueIdealo(db, 10), []);
+  db.prepare('UPDATE products SET idealo_on=1').run();
+  // Vorgemerkt: nur Artikel mit EAN
   assert.deepEqual(dueIdealo(db, 10).map((p) => p.id).sort(), [ids.A1, ids.A2, ids.A3].sort());
+  // herausgenommen: nicht mehr fällig
+  db.prepare('UPDATE products SET idealo_on=0 WHERE id=?').run(ids.A2);
+  assert.deepEqual(dueIdealo(db, 10).map((p) => p.id).sort(), [ids.A1, ids.A3].sort());
+  db.prepare('UPDATE products SET idealo_on=1 WHERE id=?').run(ids.A2);
 
   const r = await lookupBatch(db, dueIdealo(db, 10));
   assert.deepEqual(r, { found: 2, missing: 1 });
@@ -120,6 +127,8 @@ test('idealo-Abgleich über Apify', async (t) => {
   assert.equal(o.found, 2);
   assert.equal(o.listed, 2);
   assert.equal(o.dearer, 1);
+  assert.equal(o.selected, 4);
+  assert.equal(o.with_ean, 3);
 
   // Budget erreicht: kein neuer Lauf
   setSetting(db, 'idealo_budget', '0.005');

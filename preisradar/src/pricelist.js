@@ -172,6 +172,7 @@ const CHIPS = {
   gAdvice: (r) => r.g.advice.length > 0,
   gSeo: (r) => r.g.flags.includes('seoErrors'),
   // idealo
+  idealoOn: (r) => Boolean(r.idealo_on),
   idealoDear: (r) => r.idealo?.kind === 'dearer',
   idealoCheapest: (r) => r.idealo?.kind === 'cheapest',
   idealoHeadroom: (r) => r.idealo?.headroom_pct >= 5,
@@ -240,7 +241,7 @@ function sorter(key, dir) {
 
 // Datenstand: ändert sich bei jedem Abruf, Import oder jeder Zuordnung
 const dataVersion = (db) => db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(last_checked),'') || ':' || COALESCE(SUM(LENGTH(COALESCE(url,'')) + LENGTH(status)),0) FROM matches) || '|' ||
-    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM seo_audit) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM idealo_products) AS v`).get().v;
+    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) || ':' || COALESCE(SUM(idealo_on),0) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM seo_audit) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM idealo_products) AS v`).get().v;
 
 export function listProducts(db, q = {}) {
   const counts = db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get();

@@ -602,6 +602,20 @@ export function createApp(db, { dataDir = null } = {}) {
     res.json({ ok: true, changed: ids.length, tiers: dist, product: ids.length === 1 ? getProduct(db, ids[0]) : undefined });
   }));
 
+  // --- idealo pro Artikel: nur vorgemerkte Artikel werden automatisch abgefragt ---
+  app.post('/api/products/idealo-set', wrap((req, res) => {
+    let ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length && req.body?.query && typeof req.body.query === 'object') ids = listProducts(db, { ...req.body.query, ids: true, limit: 1 }).ids;
+    if (!ids.length) throw bad('Keine Artikel ausgewählt');
+    if (ids.length > 100000) throw bad('Zu viele Artikel auf einmal');
+    const v = req.body?.on === false ? 0 : 1;
+    const upd = db.prepare('UPDATE products SET idealo_on=? WHERE id=?');
+    tx(db, () => { for (const id of ids) upd.run(v, id); });
+    if (v) resetIdealoTick(); // neu vorgemerkte Artikel bald abfragen
+    const c = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(ean IS NULL OR length(ean) < 8),0) AS no_ean FROM products WHERE active=1 AND idealo_on=1').get();
+    res.json({ ok: true, changed: ids.length, selected: c.n, no_ean: c.no_ean, product: ids.length === 1 ? getProduct(db, ids[0]) : undefined });
+  }));
+
   // --- Beobachtete Artikel (nur diese werden bei Mitbewerbern abgeglichen) ---
   app.post('/api/products/track', wrap((req, res) => {
     let ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];

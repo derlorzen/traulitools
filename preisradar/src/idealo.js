@@ -200,12 +200,12 @@ export async function lookupBatch(db, products) {
 
 // ---------- Planung ----------
 export const idealoJob = { running: false, stop: false, total: 0, done: 0, found: 0, errors: 0, error: null, startedAt: null, finishedAt: null };
-/** Fällige Artikel: mit EAN, beobachtet, online; Prüf-Stufe A öfter, nicht gefundene nach 30 Tagen erneut. */
+/** Fällige Artikel: für idealo vorgemerkt, mit EAN, online; Prüf-Stufe A öfter, nicht gefundene nach 30 Tagen erneut. */
 export function dueIdealo(db, limit) {
   const cfg = idealoConfig(db);
   const now = Date.now();
   return db.prepare(`SELECT p.id, p.ean, p.tier, s.revenue_90, i.checked_at, i.found FROM products p LEFT JOIN product_sales s ON s.product_id=p.id LEFT JOIN idealo_products i ON i.product_id=p.id
-    WHERE p.active=1 AND p.tracked=1 AND p.offline_since IS NULL AND p.ean IS NOT NULL AND length(p.ean) >= 8`).all()
+    WHERE p.active=1 AND p.idealo_on=1 AND p.offline_since IS NULL AND p.ean IS NOT NULL AND length(p.ean) >= 8`).all()
     .filter((r) => { if (!r.checked_at) return true; const days = r.found === 0 ? 30 : r.tier === 'A' ? cfg.daysA : cfg.days; return now - Date.parse(r.checked_at) > days * 86400e3 - 3600e3; })
     // nie geprüfte zuerst, dann wichtige Artikel, dann die ältesten
     .sort((a, b) => (a.checked_at ? 1 : 0) - (b.checked_at ? 1 : 0) || (b.tier === 'A') - (a.tier === 'A') || (b.revenue_90 ?? 0) - (a.revenue_90 ?? 0) || String(a.checked_at).localeCompare(String(b.checked_at)))
@@ -326,7 +326,7 @@ export function dismissShop(db, shop) {
 export function idealoOverview(db) {
   const cfg = idealoConfig(db);
   const st = db.prepare(`SELECT COUNT(*) AS checked, COALESCE(SUM(found),0) AS found, COALESCE(SUM(own_rank IS NOT NULL),0) AS listed, COALESCE(SUM(own_rank=1),0) AS best, MAX(checked_at) AS last FROM idealo_products`).get();
-  const withEan = db.prepare("SELECT COUNT(*) AS n FROM products WHERE active=1 AND tracked=1 AND offline_since IS NULL AND ean IS NOT NULL AND length(ean) >= 8").get().n;
+  const sel = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(ean IS NOT NULL AND length(ean) >= 8),0) AS with_ean FROM products WHERE active=1 AND idealo_on=1 AND offline_since IS NULL").get();
   const m = idealoMap(db);
   let dearer = 0;
   for (const v of m.values()) if (v.kind === 'dearer') dearer++;
@@ -336,7 +336,7 @@ export function idealoOverview(db) {
     configured: cfg.configured, enabled: cfg.enabled, actor: { id: cfg.actorId, label: cfg.actor.label, note: cfg.actor.note },
     per_day: cfg.perDay, days: cfg.days, days_a: cfg.daysA, budget: cfg.budget,
     spend: { usd: Math.round(spend.usd * 100) / 100, lookups: spend.units, today: spendToday(db) },
-    with_ean: withEan, checked: st.checked, found: st.found, listed: st.listed, best: st.best, dearer, last: st.last,
+    selected: sel.n, with_ean: sel.with_ean, checked: st.checked, found: st.found, listed: st.listed, best: st.best, dearer, last: st.last,
     due: cfg.configured ? dueIdealo(db, 100000).length : null,
     error: err ? { at: err.split('|')[0], message: err.split('|').slice(1).join('|') } : null,
     job: { ...idealoJob },

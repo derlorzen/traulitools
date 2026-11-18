@@ -175,7 +175,7 @@ function renderPrices(root) {
   const typed = (key) => (e) => { state[key] = e.target.value; clearTimeout(typingTimer); typingTimer = setTimeout(reload, 250); };
   const hasGoogle = Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit);
   const gview = hasGoogle && state.view === 'google';
-  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'tierA', 'idealoDear', 'idealoCheapest', 'idealoHeadroom', 'idealoUnlisted'].includes(state.filter) ? 1 : 0);
+  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'tierA', 'idealoOn', 'idealoDear', 'idealoCheapest', 'idealoHeadroom', 'idealoUnlisted'].includes(state.filter) ? 1 : 0);
   const reset = () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '', impMin: '', posMax: '' }); render(); };
   const setView = (v) => {
     state.view = v;
@@ -230,7 +230,11 @@ function renderPrices(root) {
       h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
         h('span', { class: 'pmeta' }, 'Zusätzlich zu den automatisch gewählten Artikeln täglich prüfen:'),
         h('button', { class: 'btn small', onclick: guard(() => pinFiltered(true)) }, 'Gefilterte täglich prüfen'),
-        h('button', { class: 'btn small', onclick: guard(() => pinFiltered(false)) }, 'Gefilterte nicht mehr von Hand'))),
+        h('button', { class: 'btn small', onclick: guard(() => pinFiltered(false)) }, 'Gefilterte nicht mehr von Hand')),
+      h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
+        h('span', { class: 'pmeta' }, 'Nur vorgemerkte Artikel werden automatisch bei idealo abgefragt:'),
+        h('button', { class: 'btn small', onclick: guard(() => idealoFiltered(true)) }, 'Gefilterte für idealo vormerken'),
+        h('button', { class: 'btn small', onclick: guard(() => idealoFiltered(false)) }, 'Gefilterte nicht bei idealo abfragen'))),
     h('div', { class: 'tablewrap', id: 'tablewrap' }));
   buildTable();
   loadRows(true);
@@ -246,7 +250,8 @@ function renderChips() {
   document.getElementById('chips-more')?.replaceChildren(
     chip('equal', 'gleichauf'), chip('moved', 'Preis geändert'), chip('problem', 'Fehler oder gesperrt', 'bad'),
     chip('notFound', 'nicht gefunden'), chip('oos', 'Mitbewerber ausverkauft'), chip('offline', 'bei mir offline', 'warn'), chip('tierA', 'täglich geprüft'),
-    ...(state.data.config.idealo ? [
+    ...(state.data.config.idealo || c.idealoOn ? [
+      gchipT('idealoOn', 'für idealo vorgemerkt', '', 'Diese Artikel werden automatisch bei idealo abgefragt'),
       gchipT('idealoDear', 'auf idealo teurer', 'bad', 'Ein anderer Händler bietet dieselbe EAN auf idealo inklusive Versand günstiger an'),
       gchipT('idealoCheapest', 'auf idealo günstigster', 'good', 'Dein Preis ist auf idealo der niedrigste (bzw. dein Shop-Preis liegt nicht darüber)'),
       gchipT('idealoHeadroom', 'Luft nach oben (idealo)', 'good', 'Platz 1 auf idealo, der nächste Händler ist mindestens 5 % teurer'),
@@ -402,7 +407,7 @@ function rowEl(p) {
       a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `günstigster: ${a.ok.find(({ m }) => m.price === a.min)?.c.name ?? ''}`)]
         : a.kind === 'cheapest' ? ['günstigster', h('small', {}, a.min - p.price > 0.004 ? `${eur.format(a.min - p.price)} Vorsprung` : 'gleichauf')]
           : h('span', { class: 'tag mute' }, '–')) : null,
-    d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, checkButton(p.id), pinButton(p))) : null);
+    d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, checkButton(p.id), pinButton(p), d.config.idealo ? idealoButton(p) : null)) : null);
   return tr;
 }
 
@@ -410,7 +415,8 @@ function rowEl(p) {
 function idealoCell(p) {
   const i = p.idealo;
   const td = (cls, ...c) => h('td', { class: `mcell idcell ${cls}`, 'data-label': 'idealo', onclick: (e) => { e.stopPropagation(); openDrawer(p.id, null, 'idealo'); } }, ...c);
-  if (!i) return td('', h('span', { class: 'tag mute', title: p.ean ? 'Noch nicht abgeglichen' : 'Ohne EAN kein Abgleich' }, p.ean ? 'ausstehend' : 'keine EAN'));
+  if (!i) return td('', !p.ean ? h('span', { class: 'tag mute', title: 'Ohne EAN kein Abgleich' }, 'keine EAN')
+    : p.idealo_on ? h('span', { class: 'tag', title: 'Kommt beim nächsten Abgleich an die Reihe' }, 'vorgemerkt') : h('span', { class: 'tag mute', title: 'Wird nicht bei idealo abgefragt. Über „idealo“ in der Zeile vormerken.' }, 'aus'));
   if (!i.found) return td('', h('span', { class: 'tag mute' }, 'nicht auf idealo'));
   return td(i.kind === 'dearer' ? 'warmtxt' : i.kind === 'cheapest' ? 'cooltxt' : '',
     i.min_total != null ? eur.format(i.min_total) : '–',
@@ -462,7 +468,7 @@ function googleRowEl(p) {
     d.competitors.length ? h('td', { class: 'mcell', 'data-label': 'Preis-Position' }, pos
       ? h('span', { class: `gprank ${pos.tone}`, title: `Platz ${pos.rank} von ${pos.n} Anbietern` }, h('b', {}, `${pos.rank} von ${pos.n}`), h('small', {}, pos.rank > 1 ? `${pct.format(pos.pct)} % teurer` : 'günstigster'))
       : h('span', { class: 'tag mute' }, 'kein Vergleich')) : null,
-    h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, d.competitors.length ? checkButton(p.id) : null, pinButton(p))));
+    h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, d.competitors.length ? checkButton(p.id) : null, pinButton(p), d.config.idealo ? idealoButton(p) : null)));
   return tr;
 }
 
@@ -528,6 +534,33 @@ function pinButton(p, long = false) {
       } finally { b.disabled = false; }
     }) }, label);
   return b;
+}
+
+/** Artikel für den automatischen idealo-Abgleich vormerken bzw. herausnehmen. */
+function idealoButton(p, long = false) {
+  const on = Boolean(p.idealo_on);
+  const label = on ? (long ? 'idealo: wird abgefragt ✓' : 'idealo ✓') : (long ? 'Bei idealo abfragen' : 'idealo');
+  const b = h('button', { class: `btn small pin${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false',
+    title: on ? 'Wird automatisch bei idealo abgefragt. Klicken, um den Artikel herauszunehmen; bisherige idealo-Daten bleiben sichtbar.' : (p.ean ? 'Diesen Artikel automatisch bei idealo abfragen (kostet je Abfrage bei Apify)' : 'Ohne EAN kann der Artikel nicht bei idealo gefunden werden'),
+    onclick: guard(async () => {
+      b.disabled = true;
+      try {
+        const r = await api('/api/products/idealo-set', { body: { ids: [p.id], on: !on } });
+        toast(on ? 'Wird nicht mehr bei idealo abgefragt' : p.ean ? 'Wird ab jetzt bei idealo abgefragt' : 'Vorgemerkt, aber ohne EAN findet idealo den Artikel nicht', !on && !p.ean);
+        replaceRow(r.product);
+        if (state.selected === p.id) openDrawer(p.id, r.product, 'idealo');
+      } finally { b.disabled = false; }
+    }) }, label);
+  return b;
+}
+async function idealoFiltered(on) {
+  const n = list.total;
+  if (!n) return toast('Keine Artikel im Filter', true);
+  if (on && n > 100 && !confirm(`${n.toLocaleString('de-DE')} Artikel für idealo vormerken? Jede Abfrage kostet bei Apify Geld; das Tageskontingent und das Monatsbudget in den Einstellungen gelten weiter.`)) return;
+  const r = await api('/api/products/idealo-set', { body: { query: listQuery(), on } });
+  toast(on ? `${r.changed.toLocaleString('de-DE')} Artikel vorgemerkt, insgesamt ${r.selected.toLocaleString('de-DE')} für idealo${r.no_ean ? ` (${r.no_ean} davon ohne EAN)` : ''}` : `${r.changed.toLocaleString('de-DE')} Artikel werden nicht mehr bei idealo abgefragt`);
+  await refresh();
+  render();
 }
 
 /** Gefilterte Artikel von Hand auf täglich setzen bzw. zurücknehmen. */
@@ -614,6 +647,7 @@ async function openDrawer(id, given = null, section = null) {
       p.url ? h('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, 'im Shop öffnen') : null,
       h('span', { class: 'spacer' }),
       pinButton(p, true),
+      idealoButton(p, true),
       checkButton(p.id, 'Jetzt alle Mitbewerber prüfen')),
     econLine(p),
     p.tracked && !p.offline_since && p.tier ? h('p', { class: 'pmeta tierline' }, p.tier === 'A'
@@ -1191,7 +1225,8 @@ async function renderStart(root) {
       h('dt', {}, 'idealo'), h('dd', {}, !d.config.idealo ? h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht eingerichtet')
         : !ido ? '–'
           : [ido.error ? h('div', { class: 'warmtxt' }, `Fehler: ${ido.error.message}`) : null,
-            ido.checked ? [`${nf.format(ido.found)} von ${nf.format(ido.checked)} abgeglichenen Artikeln auf idealo`, ido.dearer ? [', ', h('button', { class: 'linkbtn', onclick: () => goPrices('idealoDear') }, `${nf.format(ido.dearer)} dort teurer`)] : null, ido.due ? `, ${nf.format(ido.due)} stehen noch aus` : '']
+            !ido.selected ? [h('button', { class: 'linkbtn', onclick: () => setTab('preise') }, 'noch keine Artikel vorgemerkt'), ' (in der Preisliste „idealo“ je Artikel oder für gefilterte Artikel)']
+            : ido.checked ? [`${nf.format(ido.selected)} Artikel vorgemerkt, ${nf.format(ido.found)} von ${nf.format(ido.checked)} abgeglichenen auf idealo`, ido.dearer ? [', ', h('button', { class: 'linkbtn', onclick: () => goPrices('idealoDear') }, `${nf.format(ido.dearer)} dort teurer`)] : null, ido.due ? `, ${nf.format(ido.due)} stehen noch aus` : '']
               : ido.job.running ? `erster Abgleich läuft: ${ido.job.done} von ${ido.job.total}` : 'erster Abgleich startet in Kürze',
             h('div', { class: 'pmeta' }, `${ido.spend.usd.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} von ${ido.budget.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} Budget in diesem Monat`)]),
       h('dt', {}, 'KI'), h('dd', {}, d.config.ai
@@ -1549,7 +1584,7 @@ function idealoBox(p) {
   const btn = () => (state.data.config.idealo && p.ean ? h('button', { class: 'btn small', onclick: check }, 'Jetzt bei idealo abgleichen') : null);
   const paint = (r) => {
     if (!p.ean) return box.replaceChildren(h('p', { class: 'pmeta' }, 'Ohne EAN kein Abgleich mit idealo. Die EAN kommt aus Shopware oder dem Import.'));
-    if (!r) return box.replaceChildren(h('p', { class: 'pmeta' }, state.data.config.idealo ? 'Noch nicht abgeglichen. Der Artikel kommt automatisch an die Reihe (wichtige Artikel zuerst).' : 'idealo ist noch nicht eingerichtet (Einstellungen → Preisabfrage → idealo).'), h('div', { class: 'row' }, btn()));
+    if (!r) return box.replaceChildren(h('p', { class: 'pmeta' }, !state.data.config.idealo ? 'idealo ist noch nicht eingerichtet (Einstellungen → Preisabfrage → idealo).' : p.idealo_on ? 'Noch nicht abgeglichen. Der Artikel ist vorgemerkt und kommt automatisch an die Reihe.' : 'Dieser Artikel wird nicht automatisch bei idealo abgefragt. Vormerken mit „Bei idealo abfragen“ oben, oder einmalig abgleichen:'), h('div', { class: 'row' }, btn()));
     if (!r.found) return box.replaceChildren(h('p', { class: 'pmeta' }, `Auf idealo kein Produkt mit der EAN ${p.ean} gefunden (geprüft ${dt.format(new Date(r.checked_at))}). Erneuter Versuch nach 30 Tagen.`), h('div', { class: 'row' }, btn()));
     const ownPrice = r.own_total ?? p.price;
     const hist = r.history.filter((x) => x.min_total != null);
@@ -1570,7 +1605,7 @@ function idealoBox(p) {
           h('td', { class: !o.own && o.total < ownPrice - 0.005 ? 'warmtxt' : '' }, h('b', {}, eur.format(o.total))),
           h('td', { class: 'pmeta' }, o.delivery ?? '')))))),
       h('div', { class: 'row', style: 'margin-top:8px' },
-        h('span', { class: 'pmeta' }, `Stand ${dt.format(new Date(r.checked_at))}`),
+        h('span', { class: 'pmeta' }, `Stand ${dt.format(new Date(r.checked_at))}${p.idealo_on ? '' : ' · wird nicht mehr automatisch abgefragt'}`),
         r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, 'Auf idealo öffnen') : null,
         h('span', { class: 'spacer' }), btn()));
   };
@@ -1916,6 +1951,7 @@ function idealoSettingsPanel(cur, f) {
     actorHint.textContent = a ? a.note : 'Kosten geschätzt wie beim Actor von s-r';
     const n = Number(form.querySelector('[name=idealo_per_day]')?.value || 0);
     costHint.textContent = n > 0 ? `Etwa ${(n * 30 * (a?.per1000 ?? 4.4) / 1000).toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} im Monat bei vollem Tageskontingent. Nie geprüfte und wichtige Artikel zuerst.` : 'Mit 0 läuft kein automatischer Abgleich, nur auf Knopfdruck.';
+    costHint.textContent += ' Abgefragt werden nur Artikel, die du in der Preisliste für idealo vorgemerkt hast.';
   };
   const actorSel = h('select', { name: 'idealo_actor', onchange: (e) => { custom.style.display = e.target.value === '_custom' ? '' : 'none'; updHints(); } },
     c.actors.map((a) => h('option', { value: a.id, selected: a.id === c.actor }, a.label)), h('option', { value: '_custom', selected: !known }, 'Eigener Actor …'));
@@ -2441,6 +2477,7 @@ function renderHelp(root) {
     sec('h-idealo', 'idealo: alle Händler zu deinen Artikeln',
       p('Zu jedem Artikel mit EAN holt Preisradar die Händlerangebote von idealo.de: Händler, Preis, Versand, Gesamtpreis und Lieferzeit. Damit siehst du auch Händler, die du noch gar nicht als Mitbewerber angelegt hast, und ob du auf idealo selbst gut dastehst.'),
       p(h('b', {}, 'Woher die Daten kommen: '), 'Preisradar fragt idealo nicht selbst ab. Das übernimmt ein Scraper beim Dienst Apify, den du unter ', go('einstellungen', 'Einstellungen → Preisabfrage → idealo'), ' mit deinem Apify-Token einrichtest. Apify berechnet je Artikel einige Zehntel Cent. Preisradar schätzt die Kosten nach dem Tarif des gewählten Actors und hält ein Monatsbudget ein. Ist es erreicht, pausiert der Abgleich bis zum Monatsende.'),
+      p(h('b', {}, 'Welche Artikel: '), 'Nur Artikel, die du für idealo vormerkst. In der Preisliste hat jede Zeile dafür den Schalter „idealo“, in der Detailansicht „Bei idealo abfragen“. Unter „Weitere Filter“ kannst du alle gefilterten Artikel auf einmal vormerken oder herausnehmen, und der Filter „für idealo vorgemerkt“ zeigt, welche es sind. Nimmst du einen Artikel heraus, bleiben seine bisherigen idealo-Daten sichtbar, werden aber nicht mehr aktualisiert. Einmalig abgleichen geht in der Detailansicht auch ohne Vormerken.'),
       p(h('b', {}, 'Wie oft: '), 'Das Tageskontingent wird über den Tag verteilt. Nie geprüfte Artikel kommen zuerst dran, dann die täglich geprüften (Prüf-Stufe A), dann die mit den meisten Verkäufen. Danach wird jeder Artikel im eingestellten Abstand erneut geprüft. Artikel, die es auf idealo nicht gibt, kommen erst nach 30 Tagen wieder dran. In der Detailansicht kannst du einen Artikel jederzeit sofort abgleichen.'),
       p(h('b', {}, 'Was verglichen wird: '), 'Auf idealo zählt der Gesamtpreis inklusive Versand. Bist du dort gelistet (erkannt am Händlernamen unter „Dein Shop auf idealo“), vergleicht Preisradar deinen idealo-Gesamtpreis, sonst deinen Shop-Preis. Ein gelistetes Angebot ist also genauer als der Vergleich mit dem Shop-Preis, bei dem der Versand fehlt.'),
       p(h('b', {}, 'Wo es auftaucht: '), 'In der Preisliste als eigene Spalte „idealo“ (sortierbar) und als Filter (auf idealo teurer, günstigster, Luft nach oben, nicht gelistet). In der Detailansicht als Abschnitt „Bei idealo“ mit allen Angeboten. Unter ', go('chancen', 'Chancen'), ' als „Auf idealo teurer“ und „Luft nach oben auf idealo“ mit Preisvorschlag, der nie unter die Preisuntergrenze geht. Unter ', go('mitbewerber', 'Mitbewerber'), ' als Liste der Händler, die noch nicht angelegt sind, mit einem Klick zum Anlegen. Marktplätze wie Amazon, eBay oder Kaufland werden dort nur angezeigt, für sie gibt es eigene Anbindungen.')),

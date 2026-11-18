@@ -119,6 +119,7 @@ const TOOLS = [
   { name: 'opportunities', description: 'Chancenfinder: Mitbewerber ausverkauft, fehlt auf eBay, eBay-Angebot zu teuer, bald ausverkauft, zu wenig Gewinn, Ladenhüter – mit Begründung, geschätztem Wert und Handlung.', inputSchema: obj({ type: { type: 'string', enum: ['comp_oos', 'ebay_missing', 'ebay_cheaper', 'stockout', 'low_profit', 'slow_mover'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }) },
   { name: 'channel_prices', description: 'Gewinn, Marge, Preisuntergrenze und Vorschlag je Verkaufskanal (Shop, eBay, ggf. Amazon) für einen Artikel; dazu die Kanal-Einstellungen (Gebühren, Versand).', inputSchema: obj({ id: { type: 'integer' }, number: { type: 'string' } }) },
   { name: 'idealo_overview', description: 'idealo (über Apify): Abdeckung, wie oft der Shop auf idealo gelistet und Günstigster ist, Kosten im Monat, Fehler, und Händler auf idealo, die noch nicht als Mitbewerber angelegt sind (mit Anzahl gemeinsamer Artikel und wie oft sie günstiger sind).', inputSchema: obj() },
+  { name: 'idealo_select', description: 'Artikel für den automatischen idealo-Abgleich vormerken (on=true) oder herausnehmen (on=false). Nur vorgemerkte Artikel werden automatisch bei idealo abgefragt; jede Abfrage kostet bei Apify Geld.', inputSchema: obj({ ids: { type: 'array', items: { type: 'integer' } }, numbers: { type: 'array', items: { type: 'string' } }, brand: { type: 'string' }, on: { type: 'boolean' } }, ['on']) },
   { name: 'idealo_offers', description: 'Alle Händlerangebote auf idealo für einen Artikel (über die EAN): Händler, Preis, Versand, Gesamtpreis, Lieferzeit, Marktplatz (Amazon, eBay, Kaufland …), eigener Platz und Verlauf des Bestpreises.', inputSchema: obj({ id: { type: 'integer' }, number: { type: 'string' } }) },
   { name: 'ebay_overview', description: 'eBay: Verbindung, eigene Angebote mit Preis, günstigstem Mitbewerber auf eBay, Gewinn, und Angebote, deren Übernahme in JTL noch aussteht.', inputSchema: obj() },
   { name: 'keywords_overview', description: 'Keyword-Monitoring: Google-Platzierung (Top 50) je beobachtetem Keyword mit Veränderung, Suchvolumen, Search-Console-Daten und Mitbewerber-Positionen sowie Kennzahlen.', inputSchema: obj({ filter: { type: 'string', enum: ['all', 'top10', 'out', 'up', 'down', 'comp'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }) },
@@ -271,6 +272,15 @@ function handlers(db, ownName, schedule, call) {
       return { gestartet: true, artikel: scrapeState.total };
     },
     stop_scrape: () => { scrapeState.stop = true; return { ok: true }; },
+    idealo_select: ({ ids = [], numbers = [], brand, on } = {}) => {
+      const set = new Set(ids.map(Number).filter(Number.isInteger));
+      for (const n of numbers) { const r = db.prepare('SELECT id FROM products WHERE number=?').get(String(n)); if (r) set.add(r.id); }
+      if (brand) for (const r of db.prepare('SELECT id FROM products WHERE active=1 AND manufacturer=?').all(brand)) set.add(r.id);
+      if (!set.size) throw new Error('Keine Artikel ausgewählt (ids, numbers oder brand angeben)');
+      const upd = db.prepare('UPDATE products SET idealo_on=? WHERE id=?');
+      tx(db, () => { for (const id of set) upd.run(on ? 1 : 0, id); });
+      return { geaendert: set.size, vorgemerkt_gesamt: db.prepare('SELECT COUNT(*) AS n FROM products WHERE active=1 AND idealo_on=1').get().n };
+    },
     track_products: ({ ids = [], numbers = [], brand, tracked } = {}) => {
       const set = new Set(ids.map(Number).filter(Number.isInteger));
       for (const n of numbers) { const r = db.prepare('SELECT id FROM products WHERE number=?').get(String(n)); if (r) set.add(r.id); }
