@@ -4,7 +4,7 @@ import { openDb } from '../src/db.js';
 import { sitemapCandidates, slugOf } from '../src/sitemap.js';
 import { closeStaleRuns } from '../src/scraper.js';
 
-test('Sitemap-Zuordnung: Herstellernummer/EAN in der URL schlägt Namensähnlichkeit', () => {
+test('Sitemap-Zuordnung: Herstellernummer/EAN in der URL schlägt Namensähnlichkeit', async () => {
   const db = openDb(':memory:');
   db.prepare("INSERT INTO competitors(id, name, base_url) VALUES (7,'H','https://h.example')").run();
   const urls = [
@@ -15,12 +15,12 @@ test('Sitemap-Zuordnung: Herstellernummer/EAN in der URL schlägt Namensähnlich
     'https://h.example/irgendwas-1732090600',
   ];
   for (const u of urls) db.prepare('INSERT INTO sitemap_urls(competitor_id, url, slug) VALUES (7,?,?)').run(u, slugOf(u));
-  const hsk = sitemapCandidates(db, 7, { name: 'HSK Walk In Atelier Duschwand-Frontelement 90 x 200cm Mattglas', manufacturer: 'HSK - Die Badexperten', mpn: '1732090-60', number: '10067-003' }, { limit: 3 });
+  const hsk = await sitemapCandidates(db, 7, { name: 'HSK Walk In Atelier Duschwand-Frontelement 90 x 200cm Mattglas', manufacturer: 'HSK - Die Badexperten', mpn: '1732090-60', number: '10067-003' }, { limit: 3 });
   assert.equal(hsk[0].url, urls[1]);
   assert.equal(hsk[0].via, 'Herstellernummer');
   assert.ok(!hsk.some((c) => c.url === urls[2])); // www-Dublette entfernt
   assert.ok(!hsk.some((c) => c.url === urls[4])); // nur ganze URL-Bestandteile, nicht Teil einer längeren Zahl
-  const ean = sitemapCandidates(db, 7, { name: 'Ganz anderer Name', manufacturer: 'Grohe', ean: '4006501234567' });
+  const ean = await sitemapCandidates(db, 7, { name: 'Ganz anderer Name', manufacturer: 'Grohe', ean: '4006501234567' });
   assert.equal(ean[0].via, 'EAN');
 });
 

@@ -9,7 +9,6 @@ import { tokens, jaccard, normId } from './util.js';
  */
 
 const WEEK = 7 * 24 * 3600 * 1000;
-const cache = new Map(); // competitor_id -> [{ url, tokens }]
 const MAX_FILES = 40;
 
 export const sitemapList = (comp) => String(comp.sitemap_url ?? '').split(/\s+/).filter(Boolean);
@@ -108,12 +107,13 @@ export async function refreshSitemaps(db, comp) {
       db.prepare('DELETE FROM sitemap_urls WHERE competitor_id=?').run(comp.id);
       for (const u of found) ins.run(comp.id, u, slugOf(u));
       db.prepare('UPDATE competitors SET sitemap_fetched_at=? WHERE id=?').run(new Date().toISOString(), comp.id);
+      bumpIndex(db, comp.id);
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
       throw e;
     }
-    cache.delete(comp.id);
+    ensureIndex(db, comp.id).catch((e) => console.error('Sitemap-Index:', e.message)); // im Hintergrund neu aufbauen
   }
   return { count: found.size, report };
 }
@@ -203,7 +203,8 @@ const inCategories = (cat, sel) => sel.some((c) => (c === '' ? cat === '' : cat 
 export function selectedCategories(db, compId) {
   try { return JSON.parse(db.prepare('SELECT sitemap_categories FROM competitors WHERE id=?').get(compId)?.sitemap_categories || '[]'); } catch { return []; }
 }
-export const clearSitemapCache = (compId) => cache.delete(compId);
+/** Früher: Speicher-Index verwerfen. Die Kategorie-Auswahl wirkt jetzt direkt bei der Suche, daher nichts zu tun. */
+export const clearSitemapCache = () => {};
 
 /**
  * Kategorien aus den Sitemap-URLs eines Mitbewerbers (zwei Ebenen) mit Anzahl der Produkt-URLs.
@@ -230,21 +231,95 @@ export function sitemapCategories(db, compId) {
   return { total, root, flat, categories: flat ? list.filter((c) => c.level === 1).sort((a, b) => b.count - a.count).slice(0, 60) : list, selected: selectedCategories(db, compId) };
 }
 
-function entries(db, compId) {
-  if (!cache.has(compId)) timed(`Sitemap-Index aufbauen (Mitbewerber ${compId})`, () => {
-    const sel = selectedCategories(db, compId);
-    const rows = db.prepare('SELECT url, slug FROM sitemap_urls WHERE competitor_id=?').all(compId).filter((r) => !sel.length || inCategories(categoryOf(r.url), sel));
-    cache.set(compId, rows.map((r) => {
-      let path = r.url;
-      try { path = decodeURIComponent(new URL(r.url).pathname); } catch { /* Rohwert */ }
-      const parts = path.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-      return { url: r.url, slug: r.slug, tokens: tokens(r.slug), parts, norm: parts.join('') };
-    }));
-  });
-  return cache.get(compId);
+// ---------- Suchindex der Sitemap-Adressen (SQLite-Volltext, FTS5) ----------
+// Je Adresse: Wörter der URL-Bezeichnung (wie tokens()) und alle Folgen von URL-Bestandteilen mit Ziffer, sodass
+// eine Kennung (EAN, Herstellernummer, Artikelnummer) exakt als ein Begriff gefunden wird.
+// Jeder Mitbewerber hat einen Index-Stand (gen); nach einem Sitemap-Update wird ein neuer Stand in kleinen Paketen
+// aufgebaut und der alte danach gelöscht, ohne den Server zu blockieren.
+const STEP = 2000;
+const building = new Map(); // competitor_id -> Promise
+const yieldNow = () => new Promise((r) => setImmediate(r));
+const cidOf = (compId, gen) => `c${compId}g${gen}`;
+const pathParts = (url) => {
+  let path = url;
+  try { path = decodeURIComponent(new URL(url).pathname); } catch { try { path = new URL(url).pathname; } catch { /* Rohwert */ } }
+  return path.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+};
+/** Alle zusammenhängenden Folgen von URL-Bestandteilen mit Ziffer (4–24 Zeichen): „75-275-182“ ergibt u. a. 75275182. */
+const idTerms = (parts) => {
+  const out = new Set();
+  for (let i = 0; i < parts.length; i++) {
+    let s = '';
+    for (let j = i; j < parts.length; j++) {
+      s += parts[j];
+      if (s.length > 24) break;
+      if (s.length >= 4 && /\d/.test(s)) out.add(s);
+    }
+  }
+  return [...out];
+};
+const q = (t) => `"${t}"`; // Begriffe enthalten nur a-z, 0-9, äöüß
+
+function indexState(db, compId) {
+  let st = db.prepare('SELECT gen, built FROM sitemap_index WHERE competitor_id=?').get(compId);
+  if (!st) { db.prepare('INSERT OR IGNORE INTO sitemap_index(competitor_id, gen, built) VALUES (?,1,0)').run(compId); st = { gen: 1, built: 0 }; }
+  return st;
+}
+function bumpIndex(db, compId) {
+  indexState(db, compId);
+  db.prepare('UPDATE sitemap_index SET gen=gen+1, built=0 WHERE competitor_id=?').run(compId);
+}
+async function deleteGen(db, cid) {
+  const del = db.prepare('DELETE FROM sitemap_fts WHERE rowid IN (SELECT rowid FROM sitemap_fts WHERE sitemap_fts MATCH ? LIMIT 5000)');
+  while (timed(`Sitemap-Index aufräumen (${cid})`, () => del.run(`cid:${q(cid)}`).changes) > 0) await yieldNow();
+}
+async function buildIndex(db, compId, gen) {
+  const cid = cidOf(compId, gen);
+  await deleteGen(db, cid); // Reste eines abgebrochenen Aufbaus
+  const { lo, hi } = db.prepare('SELECT MIN(rowid) AS lo, MAX(rowid) AS hi FROM sitemap_urls WHERE competitor_id=?').get(compId);
+  const sel = db.prepare('SELECT rowid AS id, url, slug FROM sitemap_urls WHERE rowid BETWEEN ? AND ? AND competitor_id=?');
+  const ins = db.prepare('INSERT INTO sitemap_fts(cid, words, ids, uid) VALUES (?,?,?,?)');
+  let n = 0;
+  const t0 = Date.now();
+  for (let a = lo ?? 1; lo != null && a <= hi; a += STEP) {
+    timed(`Sitemap-Index Paket (Mitbewerber ${compId})`, () => {
+      db.exec('BEGIN');
+      try {
+        for (const r of sel.all(a, a + STEP - 1, compId)) { ins.run(cid, [...tokens(r.slug)].join(' '), idTerms(pathParts(r.url)).join(' '), r.id); n++; }
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+    });
+    await yieldNow();
+    if (indexState(db, compId).gen !== gen) return null; // Sitemap wurde inzwischen neu geladen: dieser Stand ist veraltet
+  }
+  db.prepare('UPDATE sitemap_index SET built=1, rows=?, built_at=? WHERE competitor_id=? AND gen=?').run(n, new Date().toISOString(), compId, gen);
+  if (n > 20000) console.log(`Sitemap-Index für Mitbewerber ${compId} aufgebaut: ${n} Adressen in ${Math.round((Date.now() - t0) / 1000)} s`);
+  // ältere Stände im Hintergrund löschen
+  (async () => { for (let g = gen - 1; g >= Math.max(1, gen - 5); g--) await deleteGen(db, cidOf(compId, g)); })().catch((e) => console.error('Sitemap-Index aufräumen:', e.message));
+  return gen;
+}
+/** Index-Stand eines Mitbewerbers sicherstellen (baut bei Bedarf im Hintergrund auf); gibt den Stand zurück. */
+export function ensureIndex(db, compId) {
+  const st = indexState(db, compId);
+  if (st.built) return Promise.resolve(st.gen);
+  if (!building.has(compId)) {
+    building.set(compId, (async () => {
+      let gen = st.gen;
+      // neu starten, falls sich der Stand während des Aufbaus ändert
+      for (let i = 0; i < 3; i++) { const r = await buildIndex(db, compId, gen); if (r != null) return r; gen = indexState(db, compId).gen; }
+      throw new Error('Sitemap ändert sich laufend, Index nicht fertig');
+    })().finally(() => building.delete(compId)));
+  }
+  return building.get(compId);
+}
+/** Alle Indizes im Hintergrund vorbereiten (nach dem Start, damit der erste Abruf nicht warten muss). */
+export async function prepareSitemapIndexes(db) {
+  for (const { id } of db.prepare('SELECT DISTINCT competitor_id AS id FROM sitemap_urls').all()) {
+    try { await ensureIndex(db, id); } catch (e) { console.error('Sitemap-Index:', e.message); }
+  }
 }
 
-export const hasSitemap = (db, compId) => entries(db, compId).length > 0;
+export const hasSitemap = (db, compId) => Boolean(db.prepare('SELECT 1 FROM sitemap_urls WHERE competitor_id=? LIMIT 1').get(compId));
 
 /** Kennungen des eigenen Artikels, die in einer fremden URL vorkommen können (EAN, Herstellernummer, Artikelnummer). */
 export function productIds(product) {
@@ -276,33 +351,61 @@ function idInUrl(e, id) {
  * Passende Produkt-URLs zu einem eigenen Artikel. Zuerst Treffer über EAN, Herstellernummer oder Artikelnummer
  * in der URL (eindeutig, unabhängig von der Schreibweise des Namens), danach die ähnlichsten Namen (Marke + Name gegen URL-Bezeichnung).
  */
-export function sitemapCandidates(db, compId, product, opts = {}) {
-  return timed(() => `Sitemap-Suche (Mitbewerber ${compId}, ${cache.get(compId)?.length ?? 'neu'} Adressen)`, () => sitemapCandidatesInner(db, compId, product, opts));
+export async function sitemapCandidates(db, compId, product, { limit = 5, min = 0.25 } = {}) {
+  const gen = await ensureIndex(db, compId);
+  return timed(`Sitemap-Suche (Mitbewerber ${compId})`, () => searchIndex(db, compId, gen, product, { limit, min }));
 }
-function sitemapCandidatesInner(db, compId, product, { limit = 5, min = 0.25 } = {}) {
+function searchIndex(db, compId, gen, product, { limit, min }) {
+  const cid = `cid:${q(cidOf(compId, gen))}`;
   const want = tokens(`${product.manufacturer ?? ''} ${product.name}`);
   const brand = [...tokens(product.manufacturer)].slice(0, 1); // erstes Markenwort („HSK - Die Badexperten“ → hsk)
   const ids = productIds(product);
+  const sel = selectedCategories(db, compId);
+  const inSel = (url) => !sel.length || inCategories(categoryOf(url), sel);
+  const rowsOf = (match, cap) => {
+    const uids = db.prepare('SELECT uid FROM sitemap_fts WHERE sitemap_fts MATCH ? ORDER BY rank LIMIT ?').all(match, cap).map((r) => r.uid);
+    if (!uids.length) return [];
+    const out = [];
+    for (let i = 0; i < uids.length; i += 900) out.push(...db.prepare(`SELECT rowid AS rid, url, slug FROM sitemap_urls WHERE rowid IN (${uids.slice(i, i + 900).map(() => '?').join(',')})`).all(...uids.slice(i, i + 900)));
+    return out.filter((r) => inSel(r.url));
+  };
+  // 1) Kennung als zusammenhängende Folge von URL-Bestandteilen (exakt über den Index)
   const byId = [];
-  const scored = [];
-  for (const e of entries(db, compId)) {
-    const hit = ids.find((x) => idInUrl(e, x.id));
-    if (hit) { byId.push({ url: e.url, slug: e.slug, score: 2, via: hit.kind }); continue; }
-    if (!want.size || (brand.length && !brand.every((b) => e.slug.toLowerCase().includes(b)))) continue;
-    const s = jaccard(want, e.tokens);
-    if (s >= min) scored.push({ url: e.url, slug: e.slug, score: s });
+  const idSeen = new Set();
+  for (const x of ids) {
+    if (x.id.length < 4 || x.id.length > 24) continue;
+    for (const r of rowsOf(`${cid} AND ids:${q(x.id)}`, 500)) {
+      if (idSeen.has(r.url)) continue;
+      const parts = pathParts(r.url);
+      if (idInUrl({ parts, norm: parts.join('') }, x.id)) { idSeen.add(r.url); byId.push({ url: r.url, slug: r.slug, score: 2, via: x.kind, rid: r.rid }); }
+    }
   }
+  // 2) ähnlichste Bezeichnungen: Marke (Wortanfang) und mindestens ein weiteres Wort, Ähnlichkeit wie bisher (Jaccard)
+  const scored = [];
+  if (want.size) {
+    const rest = [...want].filter((t) => !brand.includes(t));
+    const words = brand.length ? `${q(brand[0])}*${rest.length ? ` AND (${rest.map(q).join(' OR ')})` : ''}` : rest.map(q).join(' OR ');
+    for (const r of rowsOf(`${cid} AND words:(${words})`, 4000)) {
+      if (idSeen.has(r.url)) continue;
+      if (brand.length && !brand.every((b) => r.slug.toLowerCase().includes(b))) continue;
+      const s = jaccard(want, tokens(r.slug));
+      if (s >= min) scored.push({ url: r.url, slug: r.slug, score: s, rid: r.rid });
+    }
+  }
+  // Gleichstand wie früher in der Reihenfolge der Adressen
+  byId.sort((a, b) => (a.url < b.url ? -1 : a.url > b.url ? 1 : 0));
   // Viele ID-Treffer heißen: Kennung zu unspezifisch (z. B. Teil vieler Varianten) – dann nur als normale Kandidaten
   const ids1 = byId.length <= 6 ? byId : [];
   // gleiche Seite unter www/ohne www nur einmal
   const seen = new Set();
   const out = [];
-  for (const c of [...ids1, ...scored.sort((a, b) => b.score - a.score)]) {
+  for (const c of [...ids1, ...scored.sort((a, b) => b.score - a.score || (a.url < b.url ? -1 : a.url > b.url ? 1 : 0))]) {
     let key = c.url;
     try { const u = new URL(c.url); key = u.hostname.replace(/^www\./, '') + u.pathname.replace(/\/$/, ''); } catch { /* Rohwert */ }
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(c);
+    const { rid, ...rest } = c;
+    out.push(c.rid != null ? rest : c);
   }
   return out.slice(0, Math.max(limit, ids1.length ? Math.min(ids1.length, 6) : 0));
 }

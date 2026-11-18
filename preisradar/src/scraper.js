@@ -199,7 +199,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
     let aiTried = false;
     const tried = new Set();
     if (hasSitemap(db, comp.id)) {
-      const cands = sitemapCandidates(db, comp.id, product, { limit: 4 });
+      const cands = await sitemapCandidates(db, comp.id, product, { limit: 4 });
       for (const c of cands) {
         let cp;
         try { cp = await loadPage(c.url); } catch { continue; }
@@ -216,7 +216,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
       }
       // KI wählt aus den ähnlichsten URLs, wenn die Regeln nichts Sicheres fanden
       if (ai && !bestMaybe && aiBudgetLeft()) {
-        const more = sitemapCandidates(db, comp.id, product, { limit: 25, min: 0.15 }).filter((c) => !tried.has(c.url));
+        const more = (await sitemapCandidates(db, comp.id, product, { limit: 25, min: 0.15 })).filter((c) => !tried.has(c.url));
         if (more.length) {
           aiTried = true;
           let pick = null;

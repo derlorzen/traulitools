@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS sitemap_urls (
   slug TEXT NOT NULL,
   PRIMARY KEY (competitor_id, url)
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS sitemap_fts USING fts5(cid, words, ids, uid UNINDEXED, tokenize='unicode61 remove_diacritics 0');
+CREATE TABLE IF NOT EXISTS sitemap_index (competitor_id INTEGER PRIMARY KEY, gen INTEGER NOT NULL DEFAULT 1, built INTEGER NOT NULL DEFAULT 0, rows INTEGER, built_at TEXT);
 CREATE TABLE IF NOT EXISTS own_sitemap_urls (
   url TEXT PRIMARY KEY,
   slug TEXT NOT NULL

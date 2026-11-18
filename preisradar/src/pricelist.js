@@ -7,40 +7,42 @@ import { marketMap } from './market.js';
 import { timed } from './perf.js';
 
 /*
- * Zwischenspeicher je Ausschnitt (beobachtet / alle), gültig solange sich der Datenstand nicht ändert.
- * Ein Hintergrund-Wärmer rechnet nach Änderungen (z. B. während ein Abruf läuft) alle paar Sekunden vor,
- * damit das Öffnen der Preisliste meist ohne Neuberechnung auskommt.
+ * Zwischenspeicher aller aktiven Artikel, gültig solange sich der Datenstand nicht ändert. Der Ausschnitt
+ * „beobachtet“ wird daraus gefiltert statt getrennt berechnet (früher doppelte Arbeit bei jedem Datenstand).
+ * Ein Hintergrund-Wärmer rechnet nach Änderungen (z. B. während ein Abruf läuft) alle 20 Sekunden vor, solange
+ * die Preisliste in den letzten 10 Minuten benutzt wurde, damit das Öffnen meist ohne Neuberechnung auskommt.
  */
-const caches = new Map(); // scope -> { key, at, rows }
+let cache = null; // { key, at, rows, tracked }
 const TTL = 10 * 60000;
-export const invalidatePriceList = () => { caches.clear(); };
-const lastUsed = new Map(); // scope -> Zeitpunkt der letzten Abfrage durch die Oberfläche
+export const invalidatePriceList = () => { cache = null; };
+let lastUsed = 0;
 function rowsFor(db, scope, key, { warm = false } = {}) {
-  if (!warm) lastUsed.set(scope, Date.now());
-  const c = caches.get(scope);
-  if (c && c.key === key && Date.now() - c.at <= TTL) return c.rows;
-  const rows = timed(() => `Preisliste aufbauen (${scope})`, () => build(db, scope));
-  caches.set(scope, { key, at: Date.now(), rows });
-  return rows;
+  if (!warm) lastUsed = Date.now();
+  if (!cache || cache.key !== key || Date.now() - cache.at > TTL) {
+    const rows = timed('Preisliste aufbauen', () => build(db));
+    cache = { key, at: Date.now(), rows, tracked: null };
+  }
+  if (scope !== 'tracked') return cache.rows;
+  cache.tracked ??= cache.rows.filter((r) => r.tracked);
+  return cache.tracked;
 }
 /**
- * Preisliste im Hintergrund aktuell halten: beim Start beide Ausschnitte, danach alle 20 Sekunden nur die, die in den
- * letzten 10 Minuten benutzt wurden (spart Rechenzeit, wenn niemand hinschaut).
+ * Preisliste im Hintergrund aktuell halten: beim Start einmal, danach alle 20 Sekunden, wenn sie in den letzten
+ * 10 Minuten benutzt wurde (spart Rechenzeit, wenn niemand hinschaut).
  */
 export function warmPriceList(db) {
   const tick = (first = false) => {
     try {
-      const key = dataVersion(db);
-      for (const scope of ['tracked', 'all']) if (first || Date.now() - (lastUsed.get(scope) ?? 0) < 10 * 60000) rowsFor(db, scope, key, { warm: true });
+      if (first || Date.now() - lastUsed < 10 * 60000) rowsFor(db, 'all', dataVersion(db), { warm: true });
     } catch (e) { console.error('Preisliste vorbereiten:', e.message); }
   };
   tick(true);
   return setInterval(tick, 20000);
 }
 
-function build(db, scope) {
+function build(db) {
   const comps = db.prepare('SELECT id FROM competitors ORDER BY position, id').all();
-  const products = db.prepare(`SELECT * FROM products WHERE active=1 ${scope === 'tracked' ? 'AND tracked=1' : ''}`).all();
+  const products = db.prepare('SELECT * FROM products WHERE active=1').all();
   const byProduct = new Map();
   for (const m of db.prepare('SELECT id, product_id, competitor_id, status, price, url, title, availability, last_checked, last_error, source, ai_note, prev_price FROM matches').all()) {
     if (!byProduct.has(m.product_id)) byProduct.set(m.product_id, {});

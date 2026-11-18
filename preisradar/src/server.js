@@ -11,7 +11,7 @@ import { aiConfig, testAi, chatJson, DEFAULT_MODEL } from './ai.js';
 import { analyse, RULES } from './analysis.js';
 import { autoSetup, detectSearchLink } from './autosetup.js';
 import { startOwnImport, ownImportState } from './ownimport.js';
-import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList, sitemapCategories, clearSitemapCache } from './sitemap.js';
+import { refreshSitemaps, refreshOwnSitemap, discoverSitemaps, sitemapList, sitemapCategories, clearSitemapCache, prepareSitemapIndexes } from './sitemap.js';
 import { pageDigest, aiExtract, initAiBudget, aiUsage, DEFAULT_AI_DAILY_LIMIT } from './aiscrape.js';
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import crypto from 'node:crypto';
@@ -1051,5 +1051,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   closeStaleRuns(db); // Läufe eines vorherigen Prozesses abschließen
   startScheduler(db);
   setTimeout(() => warmPriceList(db), 1500); // Preisliste vorbereiten und aktuell halten, damit das Öffnen schnell ist
+  setTimeout(() => prepareSitemapIndexes(db).catch((e) => console.error('Sitemap-Index:', e.message)), 5000); // Suchindex der Sitemaps im Hintergrund
   applyBootstrap(db).catch((e) => console.error('Bootstrap fehlgeschlagen:', e.message));
 }

@@ -54,10 +54,10 @@ test('Sitemap-Kategorien begrenzen die Suche; eigene Artikel werden offline mark
     const cats = sitemapCategories(db, 1);
     assert.deepEqual(cats.categories.filter((c) => c.level === 1).map((c) => [c.path, c.count]), [['bad', 3], ['heizung', 3]]);
     const prod = { name: 'Grohe Eurosmart', manufacturer: 'Grohe' };
-    assert.ok(sitemapCandidates(db, 1, prod, { min: 0.1 }).some((c) => c.url.includes('/heizung/')));
+    assert.ok((await sitemapCandidates(db, 1, prod, { min: 0.1 })).some((c) => c.url.includes('/heizung/')));
     db.prepare("UPDATE competitors SET sitemap_categories='[\"bad/armaturen\"]' WHERE id=1").run();
     clearSitemapCache(1);
-    const only = sitemapCandidates(db, 1, prod, { min: 0.1 });
+    const only = await sitemapCandidates(db, 1, prod, { min: 0.1 });
     assert.ok(only.length && only.every((c) => c.url.includes('/bad/armaturen/')));
 
     // Sofortprüfung über die Sitemap-Kandidaten
