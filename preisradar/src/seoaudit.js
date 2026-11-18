@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { eco } from './eco.js';
 import * as cheerio from 'cheerio';
 import { fetchText, robotsAllows } from './fetcher.js';
 import { jsonLdNodes } from './extract.js';
@@ -192,7 +193,7 @@ export function startAudit(db, { ids = null, limit = null, manual = false } = {}
   const list = dueProducts(db, { ids, limit: limit ?? (manual ? 500 : 50) });
   if (!list.length) return false;
   Object.assign(auditJob, { running: true, stop: false, total: list.length, done: 0, errors: 0, startedAt: new Date().toISOString(), finishedAt: null, manual });
-  const gap = manual ? 1500 : Math.max(1500, Math.round(86400e3 / Math.max(1, cfg.perDay)));
+  const gap = manual ? 1500 : Math.max(1500, Math.round(86400e3 / Math.max(1, cfg.perDay))) * (eco.on ? 2 : 1);
   (async () => {
     for (const p of list) {
       if (auditJob.stop) break;

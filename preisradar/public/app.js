@@ -1247,6 +1247,7 @@ async function renderStart(root) {
               : x.checked ? [`${nf.format(x.selected)} vorgemerkt, ${nf.format(x.found)} von ${nf.format(x.checked)} abgeglichenen gefunden`, x.dearer ? [', ', h('button', { class: 'linkbtn', onclick: () => goPrices('marketDear') }, `${nf.format(x.dearer)} dort teurer`)] : null, x.due ? `, ${nf.format(x.due)} stehen noch aus` : '']
                 : x.job.running ? `erster Abgleich läuft: ${x.job.done} von ${x.job.total}` : 'erster Abgleich startet in Kürze',
             h('div', { class: 'pmeta' }, `${x.spend.usd.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} von ${x.budget.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} Budget in diesem Monat`)))),
+      d.config.eco ? [h('dt', {}, 'Sparmodus'), h('dd', {}, 'an: längere Pausen beim Abruf, Preisliste höchstens alle 3 Minuten neu. ', h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'Einstellungen'))] : null,
       h('dt', {}, 'KI'), h('dd', {}, d.config.ai
         ? [h('div', { class: 'aimeter', title: `${d.config.aiUsage.today} von ${d.config.aiUsage.limit} KI-Anfragen heute` }, h('div', { style: `width:${Math.min(100, (d.config.aiUsage.today / Math.max(1, d.config.aiUsage.limit)) * 100)}%` })),
           `${d.config.aiUsage.today.toLocaleString('de-DE')} von ${d.config.aiUsage.limit.toLocaleString('de-DE')} Anfragen heute${d.config.aiUsage.today >= d.config.aiUsage.limit ? ' (Grenze erreicht, weiter ohne KI)' : ''}`]
@@ -2861,6 +2862,10 @@ async function renderSettings(root) {
     kout);
 
   const sch = cur.schedule;
+  const ecoPanel = h('div', { class: 'panel' },
+    h('h3', {}, 'Sparmodus'),
+    h('p', { class: 'sub' }, 'Senkt die Rechenlast des Servers deutlich, damit er nicht gedrosselt wird. Dafür sind die Daten etwas weniger frisch: Der Abruf macht nach jedem Lauf mindestens 5 bis 10 Minuten Pause, arbeitet höchstens 10 Minuten am Stück, mit 1,5-fachem Abstand und ohne automatisches Beschleunigen. Die Preisliste wird höchstens alle 3 Minuten neu berechnet, und der Seiten-Check läuft im halben Tempo.'),
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: cur.eco_mode, onchange: guard(async (e) => { await api('/api/settings', { method: 'PUT', body: { eco_mode: e.target.checked } }); toast(e.target.checked ? 'Sparmodus an' : 'Sparmodus aus'); await refresh(); }) }), 'Sparmodus einschalten'));
   const plan = h('form', { class: 'panel', onsubmit: (e) => e.preventDefault() },
     h('h3', {}, 'Abrufplan'),
     h('p', { class: 'sub' }, 'Verteilt: kleine Pakete über den ganzen Tag mit zufälligem Abstand, das schont die Server der Mitbewerber. Feste Zeiten: ein großer Lauf zu den Stunden aus der Server-Einstellung SCRAPE_HOURS. Abgeglichen werden nur beobachtete Artikel.'),
@@ -3031,7 +3036,7 @@ async function renderSettings(root) {
   const up = h('div', { id: 'userpanel' }, await userPanel());
   const groups = [
     { id: 'set-shop', title: 'Shop und Daten', sub: 'Eigener Shop, Sitemap und Shopware-Anbindung (Artikel, Einkaufspreise, Bestand, Verkäufe).', panels: [form] },
-    { id: 'set-abruf', title: 'Preisabfrage', sub: 'Wie oft und wie schonend die Mitbewerber abgefragt werden, die KI für schwierige Shops und die Marktquellen (idealo …).', panels: [plan, ki, marketSettingsPanel(cur, f)] },
+    { id: 'set-abruf', title: 'Preisabfrage', sub: 'Wie oft und wie schonend die Mitbewerber abgefragt werden, die KI für schwierige Shops und die Marktquellen (idealo …).', panels: [ecoPanel, plan, ki, marketSettingsPanel(cur, f)] },
     { id: 'set-kanaele', title: 'Verkaufskanäle und eBay', sub: 'Gebühren und Versand je Kanal für die Gewinnrechnung, eBay-Anbindung zum Vergleichen und Einstellen.', panels: [await channelSettingsPanel(), ebaySettingsPanel(cur, f)] },
     { id: 'set-google', title: 'Google und SEO', sub: 'Search Console, Merchant Center und Keyword-Monitoring.', panels: [gsc, merchant, kwPanel] },
     { id: 'set-mail', title: 'Benachrichtigungen', sub: 'Tägliche Zusammenfassung per E-Mail.', panels: [mail] },

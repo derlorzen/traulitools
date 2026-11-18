@@ -1,5 +1,6 @@
 import zlib from 'node:zlib';
 import { timed } from './perf.js';
+import { eco } from './eco.js';
 import { fetchText, robotsAllows } from './fetcher.js';
 import { tokens, jaccard, normId } from './util.js';
 
@@ -238,7 +239,8 @@ export function sitemapCategories(db, compId) {
 // aufgebaut und der alte danach gelöscht, ohne den Server zu blockieren.
 const STEP = 2000;
 const building = new Map(); // competitor_id -> Promise
-const yieldNow = () => new Promise((r) => setImmediate(r));
+// Zwischen den Paketen Luft lassen; im Sparmodus deutlich mehr, damit der Aufbau die CPU nicht dauerhaft belegt
+const yieldNow = () => new Promise((r) => (eco.on ? setTimeout(r, 150) : setImmediate(r)));
 const cidOf = (compId, gen) => `c${compId}g${gen}`;
 const pathParts = (url) => {
   let path = url;

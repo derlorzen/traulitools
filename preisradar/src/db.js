@@ -178,6 +178,11 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
   if (!db.prepare('PRAGMA table_info(runs)').all().some((c) => c.name === 'heartbeat')) db.exec('ALTER TABLE runs ADD COLUMN heartbeat TEXT');
   // Einmalig: Standardabstand von 3 auf 2 Sekunden (nur bei unverändertem Standardwert); das automatische Tempo
   // geht bei entspannten Shops bis 1,5 Sekunden, bremst bei Ablehnung sofort.
+  // Einmalig: Sparmodus für bestehende Installationen einschalten (Server war wegen Dauerlast gedrosselt)
+  if (file !== ':memory:' && !db.prepare("SELECT 1 FROM settings WHERE key='migr_eco_default'").get()) {
+    db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES ('eco_mode', '1')").run();
+    db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES ('migr_eco_default', '1')").run();
+  }
   if (!db.prepare("SELECT 1 FROM settings WHERE key='migr_delay_2000'").get()) {
     db.prepare('UPDATE competitors SET delay_ms=2000 WHERE delay_ms=3000').run();
     db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES ('migr_delay_2000', '1')").run();

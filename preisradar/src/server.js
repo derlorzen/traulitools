@@ -17,6 +17,7 @@ import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import crypto from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { timed, noteSlow, now as perfNow, logDataSizes } from './perf.js';
+import { eco, refreshEco } from './eco.js';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState, closeStaleRuns, checkProductNow } from './scraper.js';
 import { listProducts, getProduct, invalidatePriceList, warmPriceList } from './pricelist.js';
@@ -139,7 +140,7 @@ export function createApp(db, { dataDir = null } = {}) {
       tiers: tierStatus(db),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, market: activeSources(db), seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, market: activeSources(db), eco: refreshEco(db), seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -656,6 +657,7 @@ export function createApp(db, { dataDir = null } = {}) {
       min_margin: Number(getSetting(db, 'min_margin') ?? 10),
       ebay: (() => { const e = ebayConfig(db); return { client_id: e.clientId, secret_set: Boolean(e.clientSecret), runame: e.runame, sandbox: e.sandbox, connected: e.connected, username: e.username, fulfillment_policy: e.policies.fulfillment, payment_policy: e.policies.payment, return_policy: e.policies.return, location: e.location, postal_code: e.postalCode, condition: e.condition, max_qty: e.maxQty, browse_per_day: e.perDay, callback: `${getSetting(db, 'app_url') || ''}/api/ebay/callback` }; })(),
       seo_pages_per_day: auditConfig(db).perDay,
+      eco_mode: getSetting(db, 'eco_mode') === '1',
       market: marketSettings(db, { hasToken: Boolean(apifyToken(db)), fromEnv: !hasSetting(db, 'apify_token') && Boolean(process.env.APIFY_TOKEN) }),
       keywords: (() => { const k = kwConfig(db); return { login: k.login, password_set: Boolean(k.password), configured: k.configured, device: k.device, depth: k.depth, hour: k.hour, every_days: k.everyDays, own_host: k.ownHost, from_env: !getSetting(db, 'dfs_login') && Boolean(process.env.DATAFORSEO_LOGIN) }; })(),
       sw_synced_at: getSetting(db, 'sw_synced_at'),
@@ -697,6 +699,7 @@ export function createApp(db, { dataDir = null } = {}) {
     // E-Mail
     for (const k of ['mail_host', 'mail_user', 'mail_from', 'mail_to']) if (typeof b[k] === 'string') setSetting(db, k, b[k].trim());
     if (b.mail_pass) setSetting(db, 'mail_pass', String(b.mail_pass), { secret: true });
+    if (b.eco_mode !== undefined) { setSetting(db, 'eco_mode', [true, 'on', '1', 1].includes(b.eco_mode) ? '1' : '0'); refreshEco(db); invalidatePriceList(); }
     if (b.seo_pages_per_day !== undefined && b.seo_pages_per_day !== '') {
       const n = Number(b.seo_pages_per_day);
       if (!Number.isInteger(n) || n < 0 || n > 20000) throw bad('Seiten pro Tag: 0 bis 20000');
@@ -892,6 +895,7 @@ export function startScheduler(db) {
   const tick = () => {
     let next = 30;
     try {
+      refreshEco(db);
       const cfg = scheduleConfig(db);
       // Search Console täglich abgleichen (fehlgeschlagene Versuche frühestens nach 6 Stunden erneut)
       const retryOk = Date.now() - (Date.parse(getSetting(db, 'gsc_tried_at') || 0) || 0) > 6 * 3600 * 1000;
@@ -930,7 +934,8 @@ export function startScheduler(db) {
         // Neuer Lauf erst, wenn der vorige beendet ist (auch der eigene Artikel-Import) und danach die Pause verstrichen ist
         if (!scrapeState.running && !ownImportState.running) {
           // War der letzte Lauf nur wegen der Zeitgrenze zu Ende (noch Arbeit offen), kurz durchatmen statt lange Pause
-          pause ??= scrapeState.backlog ? 20 + Math.random() * 20 : cfg.interval + Math.random() * cfg.jitter;
+          // Sparmodus: nach einem Lauf mindestens 5 bzw. 10 Minuten Pause
+          pause ??= scrapeState.backlog ? (eco.on ? 300 : 20) + Math.random() * 20 : (eco.on ? Math.max(600, cfg.interval) : cfg.interval) + Math.random() * cfg.jitter;
           const since = scrapeState.finishedAt ? (Date.now() - scrapeState.finishedAt) / 1000 : Infinity;
           if (since >= pause) {
             timed('Abruf starten (Planung)', () => startScrape(db, { trigger: 'rolling', limitPerCompetitor: cfg.batch, minIntervalH: cfg.refresh, fill: true }));

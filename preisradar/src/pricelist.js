@@ -5,6 +5,7 @@
 import { auditFlags } from './seoaudit.js';
 import { marketMap } from './market.js';
 import { timed } from './perf.js';
+import { eco } from './eco.js';
 
 /*
  * Zwischenspeicher aller aktiven Artikel, gültig solange sich der Datenstand nicht ändert. Der Ausschnitt
@@ -18,7 +19,9 @@ export const invalidatePriceList = () => { cache = null; };
 let lastUsed = 0;
 function rowsFor(db, scope, key, { warm = false } = {}) {
   if (!warm) lastUsed = Date.now();
-  if (!cache || cache.key !== key || Date.now() - cache.at > TTL) {
+  // Sparmodus: höchstens alle 3 Minuten neu berechnen, solange es einen Stand gibt (etwas ältere Daten sind in Ordnung)
+  const fresh = cache && eco.on && Date.now() - cache.at < 3 * 60000;
+  if (!fresh && (!cache || cache.key !== key || Date.now() - cache.at > TTL)) {
     const rows = timed('Preisliste aufbauen', () => build(db));
     cache = { key, at: Date.now(), rows, tracked: null };
   }
@@ -33,7 +36,7 @@ function rowsFor(db, scope, key, { warm = false } = {}) {
 export function warmPriceList(db) {
   const tick = (first = false) => {
     try {
-      if (first || Date.now() - lastUsed < 10 * 60000) rowsFor(db, 'all', dataVersion(db), { warm: true });
+      if (first || Date.now() - lastUsed < (eco.on ? 2 : 10) * 60000) rowsFor(db, 'all', dataVersion(db), { warm: true });
     } catch (e) { console.error('Preisliste vorbereiten:', e.message); }
   };
   tick(true);

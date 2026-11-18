@@ -1,3 +1,4 @@
+import { eco } from './eco.js';
 const UA =
   process.env.SCRAPER_USER_AGENT ||
   'Mozilla/5.0 (compatible; PreisradarBot/1.0; +Preisvergleich fuer den eigenen Shop)';
@@ -113,8 +114,10 @@ export function crawlDelayMs(url) { return (robotsCache.get(hostOf(url))?.crawlD
  */
 export function pacingMs(url, baseMs) {
   const p = pace.get(hostOf(url));
-  const floor = Math.min(baseMs, Math.max(1500, baseMs * 0.5));
-  const base = Math.max(Math.max(floor, baseMs * (p?.speed ?? 1)), crawlDelayMs(url));
+  // Sparmodus: 1,5-facher Abstand und kein Beschleunigen
+  if (eco.on) baseMs = Math.round(baseMs * 1.5);
+  const floor = eco.on ? baseMs : Math.min(baseMs, Math.max(1500, baseMs * 0.5));
+  const base = Math.max(Math.max(floor, baseMs * (eco.on ? Math.max(1, p?.speed ?? 1) : p?.speed ?? 1)), crawlDelayMs(url));
   const wait = p?.until && p.until > Date.now() ? p.until - Date.now() : 0;
   return Math.round(Math.max(base * (p?.factor ?? 1), wait));
 }
