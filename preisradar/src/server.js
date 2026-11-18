@@ -26,6 +26,7 @@ import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from 
 import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
 import { computeTiers, tierConfig, tierStatus } from './tiers.js';
 import { listChannels, updateChannel, channelView } from './channels.js';
+import { idealoConfig, idealoOverview, apifyTest, startIdealoJob, idealoJob, idealoTick, resetIdealoTick, productIdealo, discoveredShops, dismissShop, ACTORS as IDEALO_ACTORS, DEFAULT_ACTOR as IDEALO_DEFAULT } from './idealo.js';
 import { ebayConfig, authorizeUrl, exchangeCode, disconnect as ebayDisconnect, ebayTest, syncListings, startMarketJob, marketJob, marketCheck, ebayTick, suggestCategories, aspects as ebayAspects, policies as ebayPolicies, draft as ebayDraft, createListing, ebayOverview, resetAppToken, cleanDescription } from './ebay.js';
 import { findOpportunities, jtlExport, productOpportunities } from './opportunities.js';
 import { productSignals, withSignals } from './signals.js';
@@ -130,7 +131,7 @@ export function createApp(db, { dataDir = null } = {}) {
       tiers: tierStatus(db),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, idealo: idealoConfig(db).configured, seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -161,6 +162,28 @@ export function createApp(db, { dataDir = null } = {}) {
     const m = db.prepare('SELECT * FROM ebay_market WHERE product_id=?').get(p.id) ?? null;
     const shopMin = db.prepare("SELECT MIN(m.price) AS v FROM matches m JOIN competitors c ON c.id=m.competitor_id WHERE c.enabled=1 AND m.product_id=? AND m.status='ok' AND m.price IS NOT NULL AND COALESCE(m.availability,'') <> 'out_of_stock'").get(p.id).v;
     res.json({ channels: channelView(db, p, { prices: { shop: p.price, ebay: l?.price ?? null }, market: { shop: shopMin ?? null, ebay: m?.min_total ?? null } }), ebay: { listing: l, market: m }, purchase_price: p.purchase_price ?? null });
+  }));
+
+  // --- idealo (über Apify) ---
+  app.get('/api/idealo', wrap((_req, res) => res.json({ ...idealoOverview(db), shops: discoveredShops(db) })));
+  app.post('/api/idealo/test', wrap(async (_req, res) => res.json(await apifyTest(db))));
+  app.post('/api/idealo/run', wrap((req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger).slice(0, 500) : null;
+    const max = req.body?.max ? Math.max(1, Math.min(2000, Number(req.body.max) || 0)) : null;
+    const started = startIdealoJob(db, { ids, max: max ?? (ids ? null : 50) });
+    res.json({ started, job: { ...idealoJob } });
+  }));
+  app.post('/api/idealo/stop', (_req, res) => { idealoJob.stop = true; res.json({ ok: true }); });
+  app.post('/api/idealo/dismiss', wrap((req, res) => { if (!req.body?.shop) throw bad('Händler fehlt'); dismissShop(db, req.body.shop); res.json({ ok: true }); }));
+  app.get('/api/products/:id/idealo', wrap((req, res) => res.json(productIdealo(db, Number(req.params.id)))));
+  app.post('/api/products/:id/idealo', wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!idealoConfig(db).configured) throw bad('idealo ist nicht eingerichtet (Einstellungen → Preisabfrage → idealo)');
+    if (idealoJob.running) throw bad('Ein idealo-Abgleich läuft gerade, bitte kurz warten');
+    if (!startIdealoJob(db, { ids: [id] })) throw bad(idealoJob.error || 'Artikel hat keine gültige EAN');
+    while (idealoJob.running) await new Promise((r) => setTimeout(r, 300));
+    if (idealoJob.errors) throw bad(idealoJob.error);
+    res.json(productIdealo(db, id));
   }));
 
   // --- eBay ---
@@ -621,6 +644,7 @@ export function createApp(db, { dataDir = null } = {}) {
       min_margin: Number(getSetting(db, 'min_margin') ?? 10),
       ebay: (() => { const e = ebayConfig(db); return { client_id: e.clientId, secret_set: Boolean(e.clientSecret), runame: e.runame, sandbox: e.sandbox, connected: e.connected, username: e.username, fulfillment_policy: e.policies.fulfillment, payment_policy: e.policies.payment, return_policy: e.policies.return, location: e.location, postal_code: e.postalCode, condition: e.condition, max_qty: e.maxQty, browse_per_day: e.perDay, callback: `${getSetting(db, 'app_url') || ''}/api/ebay/callback` }; })(),
       seo_pages_per_day: auditConfig(db).perDay,
+      idealo: (() => { const c = idealoConfig(db); return { token_set: Boolean(c.token), from_env: !hasSetting(db, 'apify_token') && Boolean(process.env.APIFY_TOKEN), enabled: c.enabled, actor: c.actorId, actors: Object.entries(IDEALO_ACTORS).map(([id, a]) => ({ id, label: a.label, note: a.note, per1000: a.per1000 })), default_actor: IDEALO_DEFAULT, country: c.country, per_day: c.perDay, days: c.days, days_a: c.daysA, budget: c.budget, own_names: c.ownNames.join(', ') }; })(),
       keywords: (() => { const k = kwConfig(db); return { login: k.login, password_set: Boolean(k.password), configured: k.configured, device: k.device, depth: k.depth, hour: k.hour, every_days: k.everyDays, own_host: k.ownHost, from_env: !getSetting(db, 'dfs_login') && Boolean(process.env.DATAFORSEO_LOGIN) }; })(),
       sw_synced_at: getSetting(db, 'sw_synced_at'),
       openai_key_set: Boolean(aiConfig(db).key),
@@ -674,6 +698,28 @@ export function createApp(db, { dataDir = null } = {}) {
       const n = Number(b[k]);
       if (!Number.isInteger(n) || n < lo || n > hi) throw bad(label);
       setSetting(db, k, String(n));
+    }
+    // idealo über Apify
+    if (b.apify_token) { setSetting(db, 'apify_token', String(b.apify_token).trim(), { secret: true }); resetIdealoTick(); setSetting(db, 'idealo_error', ''); }
+    if (b.apify_remove === true) setSetting(db, 'apify_token', '');
+    if (typeof b.idealo_actor === 'string') {
+      const a = b.idealo_actor.trim().replace('/', '~');
+      if (a && !/^[\w.-]+~[\w.-]+$/.test(a)) throw bad('Actor-ID im Format „anbieter~name“ bzw. „anbieter/name“');
+      setSetting(db, 'idealo_actor', a); setSetting(db, 'idealo_error', '');
+    }
+    if (b.idealo_enabled !== undefined) setSetting(db, 'idealo_enabled', b.idealo_enabled === true || b.idealo_enabled === 'on' || b.idealo_enabled === '1' ? '1' : '0');
+    if (b.idealo_country !== undefined) setSetting(db, 'idealo_country', b.idealo_country === 'at' ? 'at' : 'de');
+    if (typeof b.idealo_own_names === 'string') setSetting(db, 'idealo_own_names', b.idealo_own_names.trim());
+    for (const [k, lo, hi, label] of [['idealo_per_day', 0, 5000, 'idealo-Abfragen pro Tag: 0 bis 5000'], ['idealo_days', 1, 90, 'Abstand: 1 bis 90 Tage'], ['idealo_days_a', 1, 60, 'Abstand Prüf-Stufe A: 1 bis 60 Tage']]) {
+      if (b[k] === undefined || b[k] === '') continue;
+      const n = Number(b[k]);
+      if (!Number.isInteger(n) || n < lo || n > hi) throw bad(label);
+      setSetting(db, k, String(n));
+    }
+    if (b.idealo_budget !== undefined && b.idealo_budget !== '') {
+      const n = Number(String(b.idealo_budget).replace(',', '.'));
+      if (!Number.isFinite(n) || n < 0 || n > 10000) throw bad('Monatsbudget: 0 bis 10000 $');
+      setSetting(db, 'idealo_budget', String(n));
     }
     if (typeof b.dfs_login === 'string') setSetting(db, 'dfs_login', b.dfs_login.trim());
     if (b.dfs_password) setSetting(db, 'dfs_password', String(b.dfs_password).trim(), { secret: true });
@@ -868,6 +914,8 @@ export function startScheduler(db) {
       kwTick(db);
       // eBay: Mitbewerberpreise und eigene Angebote
       ebayTick(db);
+      // idealo: Händlerangebote nach EAN, Tageskontingent über den Tag verteilt
+      idealoTick(db);
       // SEO-Prüfung der eigenen Seiten, schonend verteilt
       if (!ownImportState.running) auditTick(db);
       // Tägliche Zusammenfassung per E-Mail

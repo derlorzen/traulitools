@@ -7,6 +7,7 @@ import { listProducts } from './pricelist.js';
 import { auditOverview, auditOf } from './seoaudit.js';
 import { findOpportunities } from './opportunities.js';
 import { ebayOverview } from './ebay.js';
+import { idealoOverview, productIdealo, discoveredShops } from './idealo.js';
 import { channelView, listChannels } from './channels.js';
 import { kwOverview, addKeywords, suggestions, postChecks, refreshVolumes, kwConfig, kwJob } from './keywords.js';
 
@@ -117,6 +118,8 @@ const TOOLS = [
   { name: 'seo_audit_page', description: 'Seiten-Check eines Artikels: Titel, Beschreibung, Produktdaten, Befunde mit Erklärung und ggf. KI-Vorschlag.', inputSchema: obj({ id: { type: 'integer' } }, ['id']) },
   { name: 'opportunities', description: 'Chancenfinder: Mitbewerber ausverkauft, fehlt auf eBay, eBay-Angebot zu teuer, bald ausverkauft, zu wenig Gewinn, Ladenhüter – mit Begründung, geschätztem Wert und Handlung.', inputSchema: obj({ type: { type: 'string', enum: ['comp_oos', 'ebay_missing', 'ebay_cheaper', 'stockout', 'low_profit', 'slow_mover'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }) },
   { name: 'channel_prices', description: 'Gewinn, Marge, Preisuntergrenze und Vorschlag je Verkaufskanal (Shop, eBay, ggf. Amazon) für einen Artikel; dazu die Kanal-Einstellungen (Gebühren, Versand).', inputSchema: obj({ id: { type: 'integer' }, number: { type: 'string' } }) },
+  { name: 'idealo_overview', description: 'idealo (über Apify): Abdeckung, wie oft der Shop auf idealo gelistet und Günstigster ist, Kosten im Monat, Fehler, und Händler auf idealo, die noch nicht als Mitbewerber angelegt sind (mit Anzahl gemeinsamer Artikel und wie oft sie günstiger sind).', inputSchema: obj() },
+  { name: 'idealo_offers', description: 'Alle Händlerangebote auf idealo für einen Artikel (über die EAN): Händler, Preis, Versand, Gesamtpreis, Lieferzeit, Marktplatz (Amazon, eBay, Kaufland …), eigener Platz und Verlauf des Bestpreises.', inputSchema: obj({ id: { type: 'integer' }, number: { type: 'string' } }) },
   { name: 'ebay_overview', description: 'eBay: Verbindung, eigene Angebote mit Preis, günstigstem Mitbewerber auf eBay, Gewinn, und Angebote, deren Übernahme in JTL noch aussteht.', inputSchema: obj() },
   { name: 'keywords_overview', description: 'Keyword-Monitoring: Google-Platzierung (Top 50) je beobachtetem Keyword mit Veränderung, Suchvolumen, Search-Console-Daten und Mitbewerber-Positionen sowie Kennzahlen.', inputSchema: obj({ filter: { type: 'string', enum: ['all', 'top10', 'out', 'up', 'down', 'comp'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }) },
   { name: 'keyword_suggestions', description: 'Vorschläge für neue Keywords (Search Console, Bestseller, DataForSEO-Daten zu eigenem Shop und Mitbewerbern) mit Begründung.', inputSchema: obj({ limit: { type: 'integer', minimum: 1, maximum: 150 } }) },
@@ -155,6 +158,12 @@ function handlers(db, ownName, schedule, call) {
       const l = db.prepare("SELECT price FROM ebay_listings WHERE status='active' AND product_id=?").get(p.id);
       const m = db.prepare('SELECT min_total FROM ebay_market WHERE product_id=?').get(p.id);
       return { artikel: { id: p.id, number: p.number, name: p.name, einkauf_netto: p.purchase_price }, kanaele: channelView(db, p, { prices: { shop: p.price, ebay: l?.price ?? null }, market: { ebay: m?.min_total ?? null } }), einstellungen: listChannels(db) };
+    },
+    idealo_overview: () => ({ ...idealoOverview(db), haendler_nicht_angelegt: discoveredShops(db, { limit: 30 }) }),
+    idealo_offers: ({ id, number } = {}) => {
+      const p = id != null ? db.prepare('SELECT id, number, name, ean, price FROM products WHERE id=?').get(id) : db.prepare('SELECT id, number, name, ean, price FROM products WHERE number=?').get(String(number ?? ''));
+      if (!p) throw new Error('Artikel nicht gefunden');
+      return { artikel: p, idealo: productIdealo(db, p.id) ?? 'noch nicht abgeglichen' };
     },
     ebay_overview: () => { const o = ebayOverview(db); return { ...o, listings: o.listings.slice(0, 100) }; },
     keywords_overview: ({ filter = 'all', limit = 200 } = {}) => {

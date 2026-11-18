@@ -115,6 +115,12 @@ CREATE TABLE IF NOT EXISTS channels (key TEXT PRIMARY KEY, name TEXT NOT NULL, f
 CREATE TABLE IF NOT EXISTS ebay_listings (item_id TEXT PRIMARY KEY, sku TEXT, product_id INTEGER REFERENCES products(id) ON DELETE SET NULL, title TEXT, price REAL, quantity INTEGER, sold INTEGER, variation INTEGER NOT NULL DEFAULT 0, url TEXT, status TEXT NOT NULL DEFAULT 'active', created_by_us INTEGER NOT NULL DEFAULT 0, jtl_state TEXT, created_at TEXT, checked_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_ebay_listings_product ON ebay_listings(product_id);
 CREATE TABLE IF NOT EXISTS ebay_market (product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, checked_at TEXT NOT NULL, offers INTEGER, min_total REAL, min_price REAL, min_shipping REAL, min_seller TEXT, min_url TEXT, min_title TEXT, own_rank INTEGER, error TEXT);
+CREATE TABLE IF NOT EXISTS idealo_products (product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, ean TEXT, checked_at TEXT NOT NULL, found INTEGER NOT NULL DEFAULT 0, idealo_id TEXT, url TEXT, title TEXT, offers INTEGER, min_total REAL, min_shop TEXT, own_rank INTEGER, own_total REAL, next_total REAL, error TEXT);
+CREATE TABLE IF NOT EXISTS idealo_offers (product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, position INTEGER, shop TEXT NOT NULL, shop_id TEXT, price REAL, shipping REAL, total REAL NOT NULL, delivery TEXT, marketplace TEXT, own INTEGER NOT NULL DEFAULT 0, competitor_id INTEGER);
+CREATE INDEX IF NOT EXISTS idx_idealo_offers_pid ON idealo_offers(product_id);
+CREATE INDEX IF NOT EXISTS idx_idealo_offers_shop ON idealo_offers(shop);
+CREATE TABLE IF NOT EXISTS idealo_history (product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, day TEXT NOT NULL, min_total REAL, own_total REAL, offers INTEGER, PRIMARY KEY(product_id, day));
+CREATE TABLE IF NOT EXISTS ext_spend (day TEXT NOT NULL, service TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0, units INTEGER NOT NULL DEFAULT 0, usd REAL NOT NULL DEFAULT 0, PRIMARY KEY(day, service));
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT NOT NULL,
