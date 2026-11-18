@@ -3,7 +3,8 @@ import { channel, profit, margin, floorPrice, channelView } from './channels.js'
 import { pageKey } from './gsc.js';
 import { ISSUES } from './seoaudit.js';
 import { expectedCtr } from './pricelist.js';
-import { idealoMap } from './idealo.js';
+import { marketMap } from './market.js';
+import { SOURCES } from './sources/index.js';
 
 /**
  * Chancenfinder (Regeln aus dem Marktschreier, angepasst an Shopware/JTL): Wo Marco mehr verkaufen oder mehr
@@ -22,8 +23,8 @@ export const TYPES = {
   search_near: { label: 'Knapp vor den Top 3', tone: 'warn', hint: 'Die Seite steht bei Google auf Platz 4 bis 20 und wird gesucht. Wenige Plätze mehr bringen deutlich mehr Klicks: Titel, Beschreibung, Text und interne Links verbessern.' },
   seo_error: { label: 'SEO-Fehler bei wichtigem Artikel', tone: 'bad', hint: 'Der Seiten-Check hat auf der Seite eines Artikels, der sich verkauft oder gesucht wird, Fehler gefunden (z. B. Preis in den Produktdaten falsch, noindex, keine Produktdaten).' },
   keyword_drop: { label: 'Keyword verloren', tone: 'bad', hint: 'Ein beobachtetes Keyword ist in den letzten 7 Tagen deutlich abgerutscht. Seite und Preis prüfen, oft hat ein Mitbewerber nachgelegt.' },
-  idealo_dear: { label: 'Auf idealo teurer', tone: 'bad', hint: 'Bei idealo bietet ein anderer Händler dasselbe Produkt (gleiche EAN) inklusive Versand günstiger an. Auf idealo entscheidet fast nur der Gesamtpreis.' },
-  idealo_headroom: { label: 'Luft nach oben auf idealo', tone: 'good', hint: 'Du bist auf idealo der Günstigste, und der nächste Händler liegt deutlich darüber. Ein etwas höherer Preis kostet den ersten Platz nicht.' },
+  market_dear: { label: 'Am Markt teurer', tone: 'bad', hint: 'In einer Marktquelle (z. B. idealo) bietet ein anderer Händler dasselbe Produkt (gleiche EAN) inklusive Versand günstiger an. Dort entscheidet fast nur der Gesamtpreis.' },
+  market_headroom: { label: 'Luft nach oben am Markt', tone: 'good', hint: 'Du bist in einer Marktquelle (z. B. idealo) der Günstigste, und der nächste Händler liegt deutlich darüber. Ein etwas höherer Preis kostet den ersten Platz nicht.' },
   slow_mover: { label: 'Ladenhüter', tone: 'bad', hint: 'Bestand ohne Verkauf in 90 Tagen. Geld liegt im Lager: auf eBay anbieten, Preis senken oder als Aktion bewerben.' },
 };
 
@@ -85,27 +86,31 @@ export function findOpportunities(db) {
       }
     }
   }
-  // idealo: teurer als der günstigste Händler bzw. viel Abstand zum Zweiten
-  const ideal = idealoMap(db);
+  // Marktquellen (idealo …): teurer als der günstigste Händler bzw. viel Abstand zum Zweiten
+  const mkt = marketMap(db);
   for (const p of prods) {
-    const v = ideal.get(p.id);
-    if (!v?.found || p.price == null) continue;
+    const m = mkt.get(p.id);
+    if (!m || p.price == null) continue;
     const cost = p.purchase_price > 0 ? p.purchase_price : null;
     const floor = cost && shopCh ? floorPrice(cost, shopCh, p.tax_rate ?? 19) : null;
     const weight = Math.max(1, (p.units_90 ?? 0) / 3);
-    const ship = v.compare === 'idealo' && v.own_total != null ? Math.round((v.own_total - p.price) * 100) / 100 : 0; // eigener Versand auf idealo
-    if (v.kind === 'dearer' && v.gap_pct > 2) {
-      const target = Math.round((v.min_total - 0.01 - Math.max(0, ship)) * 100) / 100; // Shop-Preis, mit dem der Gesamtpreis knapp darunter liegt
+    const v = m.best;
+    if (v?.kind === 'dearer' && v.gap_pct > 2) {
+      const name = SOURCES[v.source]?.name ?? v.source;
+      const ship = v.compare === 'source' && v.own_total != null ? r2(v.own_total - p.price) : 0; // eigener Versand bei der Quelle
+      const target = r2(v.min_total - 0.01 - Math.max(0, ship)); // Shop-Preis, mit dem der Gesamtpreis knapp darunter liegt
       const reachable = floor == null || target >= floor;
-      add('idealo_dear', p, {
-        detail: `${v.min_shop} ${eur(v.min_total)} inkl. Versand, du ${eur(v.own_total ?? p.price)}${v.compare === 'shop' ? ' (Shop-Preis, nicht auf idealo gelistet)' : ` (Platz ${v.own_rank} von ${v.offers})`}, ${String(v.gap_pct).replace('.', ',')} % teurer${!reachable ? `; Untergrenze ${eur(floor)} liegt darüber` : ''}`,
-        value: r2((((v.own_total ?? p.price) - v.min_total)) * weight), action: reachable ? `Preis auf ${eur(target)} prüfen` : 'Einkauf prüfen, Preis nicht unter die Untergrenze',
+      add('market_dear', p, {
+        detail: `${name}: ${v.min_shop} ${eur(v.min_total)} inkl. Versand, du ${eur(v.own_total ?? p.price)}${v.compare === 'shop' ? ` (Shop-Preis, nicht auf ${name} gelistet)` : ` (Platz ${v.own_rank} von ${v.offers})`}, ${String(v.gap_pct).replace('.', ',')} % teurer${!reachable ? `; Untergrenze ${eur(floor)} liegt darüber` : ''}`,
+        value: r2(((v.own_total ?? p.price) - v.min_total) * weight), action: reachable ? `Preis auf ${eur(target)} prüfen` : 'Einkauf prüfen, Preis nicht unter die Untergrenze',
         channel: 'shop', suggested_price: reachable && target > 0 && target < p.price ? target : null,
       });
     }
-    if (v.kind === 'cheapest' && v.headroom_pct >= 5 && v.next_total && v.own_total) {
-      const target = Math.round((p.price + (v.next_total - 0.01 - v.own_total)) * 100) / 100;
-      add('idealo_headroom', p, { detail: `Platz 1 mit ${eur(v.own_total)}, nächster Händler ${eur(v.next_total)} (${String(v.headroom_pct).replace('.', ',')} % mehr)`, value: r2((target - p.price) * weight), action: `Preis bis ${eur(target)} anheben`, channel: 'shop', suggested_price: target > p.price ? target : null });
+    // Luft nach oben: auf der Quelle mit dem kleinsten Abstand zum Zweiten (sonst würde man dort Platz 1 verlieren)
+    const room = Object.values(m.per).filter((x) => x.kind === 'cheapest' && x.headroom_pct >= 5 && x.next_total && x.own_total).sort((a, b) => a.headroom_pct - b.headroom_pct)[0];
+    if (room && v?.kind !== 'dearer') {
+      const target = r2(p.price + (room.next_total - 0.01 - room.own_total));
+      add('market_headroom', p, { detail: `${SOURCES[room.source]?.name ?? room.source}: Platz 1 mit ${eur(room.own_total)}, nächster Händler ${eur(room.next_total)} (${String(room.headroom_pct).replace('.', ',')} % mehr)`, value: r2((target - p.price) * weight), action: `Preis bis ${eur(target)} anheben`, channel: 'shop', suggested_price: target > p.price ? target : null });
     }
   }
   // Google: gefragt aber teurer, knapp vor den Top 3; Seiten-Check; Keywords

@@ -16,6 +16,7 @@ import { pageDigest, aiExtract, initAiBudget, aiUsage, DEFAULT_AI_DAILY_LIMIT } 
 import { initSecrets, getSetting, setSetting, hasSetting } from './settings.js';
 import crypto from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { timed, noteSlow, now as perfNow, logDataSizes } from './perf.js';
 import { hashPassword, verifyPassword, createSession, destroySession, currentUser, hasUsers, tooManyAttempts, clearAttempts } from './auth.js';
 import { startScrape, scrapeState, closeStaleRuns, checkProductNow } from './scraper.js';
 import { listProducts, getProduct, invalidatePriceList, warmPriceList } from './pricelist.js';
@@ -26,7 +27,8 @@ import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from 
 import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
 import { computeTiers, tierConfig, tierStatus } from './tiers.js';
 import { listChannels, updateChannel, channelView } from './channels.js';
-import { idealoConfig, idealoOverview, apifyTest, startIdealoJob, idealoJob, idealoTick, resetIdealoTick, productIdealo, discoveredShops, dismissShop, ACTORS as IDEALO_ACTORS, DEFAULT_ACTOR as IDEALO_DEFAULT } from './idealo.js';
+import { activeSources, marketOverview, apifyTest, apifyToken, startJob, jobs as marketJobs, marketTick, resetTicks, productMarket, lookupNow, discoveredShops, dismissShop, setSelected, marketSettings, saveMarketSettings } from './market.js';
+import { source as marketSource } from './sources/index.js';
 import { ebayConfig, authorizeUrl, exchangeCode, disconnect as ebayDisconnect, ebayTest, syncListings, startMarketJob, marketJob, marketCheck, ebayTick, suggestCategories, aspects as ebayAspects, policies as ebayPolicies, draft as ebayDraft, createListing, ebayOverview, resetAppToken, cleanDescription } from './ebay.js';
 import { findOpportunities, jtlExport, productOpportunities } from './opportunities.js';
 import { productSignals, withSignals } from './signals.js';
@@ -109,7 +111,13 @@ export function createApp(db, { dataDir = null } = {}) {
   // Adresse der App für Links in der E-Mail (vom ersten angemeldeten Aufruf übernommen)
   app.use('/api/overview', (req, _res, next) => { if (!getSetting(db, 'app_url') && !/^(localhost|127\.)/.test(req.hostname)) setSetting(db, 'app_url', `${req.protocol}://${req.get('host')}`); next(); });
 
-  const wrap = (fn) => (req, res) => (async () => fn(req, res))().catch((e) => res.status(e.status || 500).json({ error: e.message })); // auch synchrone Fehler als JSON
+  // Fehler (auch synchrone) als JSON; der synchrone Teil wird gemessen, weil er den Server für alle blockiert
+  const wrap = (fn) => (req, res) => {
+    const t = perfNow();
+    const p = (async () => fn(req, res))();
+    noteSlow(`${req.method} ${req.originalUrl.split('?')[0]}`, perfNow() - t);
+    return p.catch((e) => res.status(e.status || 500).json({ error: e.message }));
+  };
   const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
 
   // --- Übersicht ---
@@ -131,7 +139,7 @@ export function createApp(db, { dataDir = null } = {}) {
       tiers: tierStatus(db),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, idealo: idealoConfig(db).configured, seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, market: activeSources(db), seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -164,26 +172,30 @@ export function createApp(db, { dataDir = null } = {}) {
     res.json({ channels: channelView(db, p, { prices: { shop: p.price, ebay: l?.price ?? null }, market: { shop: shopMin ?? null, ebay: m?.min_total ?? null } }), ebay: { listing: l, market: m }, purchase_price: p.purchase_price ?? null });
   }));
 
-  // --- idealo (über Apify) ---
-  app.get('/api/idealo', wrap((_req, res) => res.json({ ...idealoOverview(db), shops: discoveredShops(db) })));
-  app.post('/api/idealo/test', wrap(async (_req, res) => res.json(await apifyTest(db))));
-  app.post('/api/idealo/run', wrap((req, res) => {
+  // --- Marktquellen über Apify (idealo …) ---
+  const srcOf = (k) => { if (!marketSource(k)) throw bad(`Unbekannte Marktquelle: ${k}`, 404); return k; };
+  app.get('/api/market', wrap((_req, res) => res.json({ ...marketOverview(db), shops: discoveredShops(db) })));
+  app.post('/api/market/test', wrap(async (_req, res) => res.json(await apifyTest(db))));
+  app.post('/api/market/:source/run', wrap((req, res) => {
+    const key = srcOf(req.params.source);
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger).slice(0, 500) : null;
     const max = req.body?.max ? Math.max(1, Math.min(2000, Number(req.body.max) || 0)) : null;
-    const started = startIdealoJob(db, { ids, max: max ?? (ids ? null : 50) });
-    res.json({ started, job: { ...idealoJob } });
+    const started = startJob(db, key, { ids, max: max ?? (ids ? null : 50) });
+    res.json({ started, job: { ...marketJobs[key] } });
   }));
-  app.post('/api/idealo/stop', (_req, res) => { idealoJob.stop = true; res.json({ ok: true }); });
-  app.post('/api/idealo/dismiss', wrap((req, res) => { if (!req.body?.shop) throw bad('Händler fehlt'); dismissShop(db, req.body.shop); res.json({ ok: true }); }));
-  app.get('/api/products/:id/idealo', wrap((req, res) => res.json(productIdealo(db, Number(req.params.id)))));
-  app.post('/api/products/:id/idealo', wrap(async (req, res) => {
-    const id = Number(req.params.id);
-    if (!idealoConfig(db).configured) throw bad('idealo ist nicht eingerichtet (Einstellungen → Preisabfrage → idealo)');
-    if (idealoJob.running) throw bad('Ein idealo-Abgleich läuft gerade, bitte kurz warten');
-    if (!startIdealoJob(db, { ids: [id] })) throw bad(idealoJob.error || 'Artikel hat keine gültige EAN');
-    while (idealoJob.running) await new Promise((r) => setTimeout(r, 300));
-    if (idealoJob.errors) throw bad(idealoJob.error);
-    res.json(productIdealo(db, id));
+  app.post('/api/market/:source/stop', wrap((req, res) => { marketJobs[srcOf(req.params.source)].stop = true; res.json({ ok: true }); }));
+  app.post('/api/market/dismiss', wrap((req, res) => { if (!req.body?.shop) throw bad('Händler fehlt'); dismissShop(db, req.body.shop); res.json({ ok: true }); }));
+  app.get('/api/products/:id/market', wrap((req, res) => res.json(productMarket(db, Number(req.params.id)))));
+  app.post('/api/products/:id/market/:source', wrap(async (req, res) => res.json(await lookupNow(db, srcOf(req.params.source), Number(req.params.id)))));
+  // Vormerken je Artikel und Quelle: nur vorgemerkte Artikel werden automatisch abgefragt
+  app.post('/api/products/market-set', wrap((req, res) => {
+    const key = srcOf(String(req.body?.source ?? ''));
+    let ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length && req.body?.query && typeof req.body.query === 'object') ids = listProducts(db, { ...req.body.query, ids: true, limit: 1 }).ids;
+    if (!ids.length) throw bad('Keine Artikel ausgewählt');
+    if (ids.length > 100000) throw bad('Zu viele Artikel auf einmal');
+    const c = setSelected(db, key, ids, req.body?.on !== false);
+    res.json({ ok: true, changed: ids.length, selected: c.n, no_ean: c.no_ean, product: ids.length === 1 ? getProduct(db, ids[0]) : undefined });
   }));
 
   // --- eBay ---
@@ -602,20 +614,6 @@ export function createApp(db, { dataDir = null } = {}) {
     res.json({ ok: true, changed: ids.length, tiers: dist, product: ids.length === 1 ? getProduct(db, ids[0]) : undefined });
   }));
 
-  // --- idealo pro Artikel: nur vorgemerkte Artikel werden automatisch abgefragt ---
-  app.post('/api/products/idealo-set', wrap((req, res) => {
-    let ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
-    if (!ids.length && req.body?.query && typeof req.body.query === 'object') ids = listProducts(db, { ...req.body.query, ids: true, limit: 1 }).ids;
-    if (!ids.length) throw bad('Keine Artikel ausgewählt');
-    if (ids.length > 100000) throw bad('Zu viele Artikel auf einmal');
-    const v = req.body?.on === false ? 0 : 1;
-    const upd = db.prepare('UPDATE products SET idealo_on=? WHERE id=?');
-    tx(db, () => { for (const id of ids) upd.run(v, id); });
-    if (v) resetIdealoTick(); // neu vorgemerkte Artikel bald abfragen
-    const c = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(ean IS NULL OR length(ean) < 8),0) AS no_ean FROM products WHERE active=1 AND idealo_on=1').get();
-    res.json({ ok: true, changed: ids.length, selected: c.n, no_ean: c.no_ean, product: ids.length === 1 ? getProduct(db, ids[0]) : undefined });
-  }));
-
   // --- Beobachtete Artikel (nur diese werden bei Mitbewerbern abgeglichen) ---
   app.post('/api/products/track', wrap((req, res) => {
     let ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
@@ -658,7 +656,7 @@ export function createApp(db, { dataDir = null } = {}) {
       min_margin: Number(getSetting(db, 'min_margin') ?? 10),
       ebay: (() => { const e = ebayConfig(db); return { client_id: e.clientId, secret_set: Boolean(e.clientSecret), runame: e.runame, sandbox: e.sandbox, connected: e.connected, username: e.username, fulfillment_policy: e.policies.fulfillment, payment_policy: e.policies.payment, return_policy: e.policies.return, location: e.location, postal_code: e.postalCode, condition: e.condition, max_qty: e.maxQty, browse_per_day: e.perDay, callback: `${getSetting(db, 'app_url') || ''}/api/ebay/callback` }; })(),
       seo_pages_per_day: auditConfig(db).perDay,
-      idealo: (() => { const c = idealoConfig(db); return { token_set: Boolean(c.token), from_env: !hasSetting(db, 'apify_token') && Boolean(process.env.APIFY_TOKEN), enabled: c.enabled, actor: c.actorId, actors: Object.entries(IDEALO_ACTORS).map(([id, a]) => ({ id, label: a.label, note: a.note, per1000: a.per1000 })), default_actor: IDEALO_DEFAULT, country: c.country, per_day: c.perDay, days: c.days, days_a: c.daysA, budget: c.budget, own_names: c.ownNames.join(', ') }; })(),
+      market: marketSettings(db, { hasToken: Boolean(apifyToken(db)), fromEnv: !hasSetting(db, 'apify_token') && Boolean(process.env.APIFY_TOKEN) }),
       keywords: (() => { const k = kwConfig(db); return { login: k.login, password_set: Boolean(k.password), configured: k.configured, device: k.device, depth: k.depth, hour: k.hour, every_days: k.everyDays, own_host: k.ownHost, from_env: !getSetting(db, 'dfs_login') && Boolean(process.env.DATAFORSEO_LOGIN) }; })(),
       sw_synced_at: getSetting(db, 'sw_synced_at'),
       openai_key_set: Boolean(aiConfig(db).key),
@@ -713,28 +711,10 @@ export function createApp(db, { dataDir = null } = {}) {
       if (!Number.isInteger(n) || n < lo || n > hi) throw bad(label);
       setSetting(db, k, String(n));
     }
-    // idealo über Apify
-    if (b.apify_token) { setSetting(db, 'apify_token', String(b.apify_token).trim(), { secret: true }); resetIdealoTick(); setSetting(db, 'idealo_error', ''); }
+    // Marktquellen über Apify
+    if (b.apify_token) { setSetting(db, 'apify_token', String(b.apify_token).trim(), { secret: true }); for (const x of activeSources(db)) setSetting(db, `${x.key}_error`, ''); resetTicks(); }
     if (b.apify_remove === true) setSetting(db, 'apify_token', '');
-    if (typeof b.idealo_actor === 'string') {
-      const a = b.idealo_actor.trim().replace('/', '~');
-      if (a && !/^[\w.-]+~[\w.-]+$/.test(a)) throw bad('Actor-ID im Format „anbieter~name“ bzw. „anbieter/name“');
-      setSetting(db, 'idealo_actor', a); setSetting(db, 'idealo_error', '');
-    }
-    if (b.idealo_enabled !== undefined) setSetting(db, 'idealo_enabled', b.idealo_enabled === true || b.idealo_enabled === 'on' || b.idealo_enabled === '1' ? '1' : '0');
-    if (b.idealo_country !== undefined) setSetting(db, 'idealo_country', b.idealo_country === 'at' ? 'at' : 'de');
-    if (typeof b.idealo_own_names === 'string') setSetting(db, 'idealo_own_names', b.idealo_own_names.trim());
-    for (const [k, lo, hi, label] of [['idealo_per_day', 0, 5000, 'idealo-Abfragen pro Tag: 0 bis 5000'], ['idealo_days', 1, 90, 'Abstand: 1 bis 90 Tage'], ['idealo_days_a', 1, 60, 'Abstand Prüf-Stufe A: 1 bis 60 Tage']]) {
-      if (b[k] === undefined || b[k] === '') continue;
-      const n = Number(b[k]);
-      if (!Number.isInteger(n) || n < lo || n > hi) throw bad(label);
-      setSetting(db, k, String(n));
-    }
-    if (b.idealo_budget !== undefined && b.idealo_budget !== '') {
-      const n = Number(String(b.idealo_budget).replace(',', '.'));
-      if (!Number.isFinite(n) || n < 0 || n > 10000) throw bad('Monatsbudget: 0 bis 10000 $');
-      setSetting(db, 'idealo_budget', String(n));
-    }
+    saveMarketSettings(db, b, bad);
     if (typeof b.dfs_login === 'string') setSetting(db, 'dfs_login', b.dfs_login.trim());
     if (b.dfs_password) setSetting(db, 'dfs_password', String(b.dfs_password).trim(), { secret: true });
     if (b.dfs_remove === true) { setSetting(db, 'dfs_login', ''); setSetting(db, 'dfs_password', ''); }
@@ -925,13 +905,13 @@ export function startScheduler(db) {
         startMerchantJob(db);
       }
       // Keyword-Monitoring: Aufträge abgeben und fertige abholen
-      kwTick(db);
+      timed('Planer: Keywords', () => kwTick(db));
       // eBay: Mitbewerberpreise und eigene Angebote
-      ebayTick(db);
-      // idealo: Händlerangebote nach EAN, Tageskontingent über den Tag verteilt
-      idealoTick(db);
+      timed('Planer: eBay', () => ebayTick(db));
+      // Marktquellen (idealo …): Händlerangebote nach EAN, Tageskontingent je Quelle über den Tag verteilt
+      timed('Planer: Marktquellen', () => marketTick(db));
       // SEO-Prüfung der eigenen Seiten, schonend verteilt
-      if (!ownImportState.running) auditTick(db);
+      if (!ownImportState.running) timed('Planer: Seiten-Check', () => auditTick(db));
       // Tägliche Zusammenfassung per E-Mail
       maybeSendDigest(db).then((r) => r && console.log(`Zusammenfassung an ${r.to.join(', ')} gesendet`)).catch((e) => console.error('E-Mail:', e.message));
       // Shopware täglich (Verkäufe, Einkaufspreise, Bestand)
@@ -953,7 +933,7 @@ export function startScheduler(db) {
           pause ??= scrapeState.backlog ? 20 + Math.random() * 20 : cfg.interval + Math.random() * cfg.jitter;
           const since = scrapeState.finishedAt ? (Date.now() - scrapeState.finishedAt) / 1000 : Infinity;
           if (since >= pause) {
-            startScrape(db, { trigger: 'rolling', limitPerCompetitor: cfg.batch, minIntervalH: cfg.refresh, fill: true });
+            timed('Abruf starten (Planung)', () => startScrape(db, { trigger: 'rolling', limitPerCompetitor: cfg.batch, minIntervalH: cfg.refresh, fill: true }));
             pause = null;
             if (!scrapeState.running) scrapeState.finishedAt = Date.now(); // nichts fällig: eine Pause abwarten
           } else next = Math.max(5, pause - since);
@@ -1067,6 +1047,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (loopLag.max_ms > 2000) console.warn(`Server war ${loopLag.max_ms} ms blockiert (Speicher ${loopLag.rss_mb} MB)`);
     h.reset();
   }, 60_000).unref();
+  logDataSizes(db);
   closeStaleRuns(db); // Läufe eines vorherigen Prozesses abschließen
   startScheduler(db);
   setTimeout(() => warmPriceList(db), 1500); // Preisliste vorbereiten und aktuell halten, damit das Öffnen schnell ist

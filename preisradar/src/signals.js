@@ -1,6 +1,6 @@
 import { pageKey } from './gsc.js';
 import { ISSUES } from './seoaudit.js';
-import { idealoView } from './idealo.js';
+import { marketMap } from './market.js';
 
 /**
  * Gemeinsamer Blick auf einen Artikel über alle Bereiche hinweg: Preislage, Verkäufe, Google (Search Console,
@@ -45,8 +45,7 @@ export function productSignals(db, ids = null) {
   const ebayMkt = new Map();
   for (const m of db.prepare('SELECT product_id, min_total, offers FROM ebay_market').all()) if (want.has(m.product_id)) ebayMkt.set(m.product_id, m);
 
-  const ideal = new Map();
-  for (const r of db.prepare(`SELECT * FROM idealo_products ${ids ? `WHERE product_id IN (${ids.map(() => '?').join(',') || 'NULL'})` : ''}`).all(...(ids ?? []))) ideal.set(r.product_id, r);
+  const market = marketMap(db, ids);
 
   const out = new Map();
   for (const p of prods) {
@@ -63,7 +62,7 @@ export function productSignals(db, ids = null) {
       audit: audit.get(p.id) ?? null,
       keywords: p.url ? kwByPage.get(pageKey(p.url)) ?? null : null,
       ebay: l || em ? { listed: Boolean(l), price: l?.price ?? null, pending_jtl: Boolean(l?.created_by_us && l.jtl_state === 'pending'), market_min: em?.min_total ?? null, offers: em?.offers ?? null } : null,
-      idealo: ideal.has(p.id) ? (({ found, offers, min_total, min_shop, own_rank, gap_pct, headroom_pct, kind, compare }) => ({ found, offers, min_total, min_shop, own_rank, gap_pct, headroom_pct, kind, compare }))(idealoView({ ...ideal.get(p.id), own_price: p.price })) : null,
+      market: market.get(p.id)?.best ? (({ source, offers, min_total, min_shop, own_rank, gap_pct, headroom_pct, kind, compare }) => ({ source, offers, min_total, min_shop, own_rank, gap_pct, headroom_pct, kind, compare }))(market.get(p.id).best) : null,
       offline: Boolean(p.offline_since),
     });
   }

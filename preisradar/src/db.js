@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureChannels } from './channels.js';
+import { migrateIdealo } from './market.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS products (
@@ -121,6 +122,12 @@ CREATE INDEX IF NOT EXISTS idx_idealo_offers_pid ON idealo_offers(product_id);
 CREATE INDEX IF NOT EXISTS idx_idealo_offers_shop ON idealo_offers(shop);
 CREATE TABLE IF NOT EXISTS idealo_history (product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, day TEXT NOT NULL, min_total REAL, own_total REAL, offers INTEGER, PRIMARY KEY(product_id, day));
 CREATE TABLE IF NOT EXISTS ext_spend (day TEXT NOT NULL, service TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0, units INTEGER NOT NULL DEFAULT 0, usd REAL NOT NULL DEFAULT 0, PRIMARY KEY(day, service));
+CREATE TABLE IF NOT EXISTS market_products (source TEXT NOT NULL, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, ean TEXT, checked_at TEXT NOT NULL, found INTEGER NOT NULL DEFAULT 0, ext_id TEXT, url TEXT, title TEXT, offers INTEGER, min_total REAL, min_shop TEXT, own_rank INTEGER, own_total REAL, next_total REAL, extra TEXT, PRIMARY KEY(source, product_id));
+CREATE TABLE IF NOT EXISTS market_offers (source TEXT NOT NULL, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, position INTEGER, shop TEXT NOT NULL, shop_id TEXT, price REAL, shipping REAL, total REAL NOT NULL, delivery TEXT, marketplace TEXT, own INTEGER NOT NULL DEFAULT 0, competitor_id INTEGER, url TEXT, condition TEXT, sold_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_market_offers_sp ON market_offers(source, product_id);
+CREATE INDEX IF NOT EXISTS idx_market_offers_shop ON market_offers(shop);
+CREATE TABLE IF NOT EXISTS market_history (source TEXT NOT NULL, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, day TEXT NOT NULL, min_total REAL, own_total REAL, offers INTEGER, PRIMARY KEY(source, product_id, day));
+CREATE TABLE IF NOT EXISTS market_select (source TEXT NOT NULL, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, PRIMARY KEY(source, product_id));
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT NOT NULL,
@@ -174,6 +181,7 @@ export function openDb(file = process.env.DB_PATH || './data/preisradar.db') {
     db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES ('migr_delay_2000', '1')").run();
   }
   ensureChannels(db);
+  migrateIdealo(db);
   return db;
 }
 

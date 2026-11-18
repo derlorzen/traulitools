@@ -4,6 +4,11 @@ const eur = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' 
 const pct = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1, signDisplay: 'exceptZero' });
 const dt = new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short' });
 const dtd = new Intl.DateTimeFormat('de-DE', { dateStyle: 'short' });
+/** Marktquellen mit Apify-Token (idealo …), Anzeigename und Sammelname („idealo“ bei nur einer Quelle, sonst „Markt“). */
+const mk = () => state.data?.config?.market ?? [];
+const srcName = (k) => mk().find((x) => x.key === k)?.name ?? { idealo: 'idealo' }[k] ?? k;
+const mkName = () => (mk().length === 1 ? mk()[0].name : 'Markt');
+const onMk = () => (mk().length === 1 ? `auf ${mk()[0].name}` : 'am Markt');
 const dShort = new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit' });
 
 // append/replaceChildren ohne null/false (bedingte Elemente), Arrays werden aufgelöst
@@ -175,7 +180,7 @@ function renderPrices(root) {
   const typed = (key) => (e) => { state[key] = e.target.value; clearTimeout(typingTimer); typingTimer = setTimeout(reload, 250); };
   const hasGoogle = Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit);
   const gview = hasGoogle && state.view === 'google';
-  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'tierA', 'idealoOn', 'idealoDear', 'idealoCheapest', 'idealoHeadroom', 'idealoUnlisted'].includes(state.filter) ? 1 : 0);
+  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'tierA', 'marketOn', 'marketDear', 'marketCheapest', 'marketHeadroom', 'marketUnlisted'].includes(state.filter) ? 1 : 0);
   const reset = () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '', impMin: '', posMax: '' }); render(); };
   const setView = (v) => {
     state.view = v;
@@ -231,10 +236,14 @@ function renderPrices(root) {
         h('span', { class: 'pmeta' }, 'Zusätzlich zu den automatisch gewählten Artikeln täglich prüfen:'),
         h('button', { class: 'btn small', onclick: guard(() => pinFiltered(true)) }, 'Gefilterte täglich prüfen'),
         h('button', { class: 'btn small', onclick: guard(() => pinFiltered(false)) }, 'Gefilterte nicht mehr von Hand')),
-      h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
-        h('span', { class: 'pmeta' }, 'Nur vorgemerkte Artikel werden automatisch bei idealo abgefragt:'),
-        h('button', { class: 'btn small', onclick: guard(() => idealoFiltered(true)) }, 'Gefilterte für idealo vormerken'),
-        h('button', { class: 'btn small', onclick: guard(() => idealoFiltered(false)) }, 'Gefilterte nicht bei idealo abfragen'))),
+      mk().length ? (() => {
+        const sel = mk().length > 1 ? h('select', { 'aria-label': 'Marktquelle' }, mk().map((x) => h('option', { value: x.key }, x.name))) : null;
+        const key = () => sel?.value ?? mk()[0].key;
+        return h('div', { class: 'toolbar', style: 'margin:12px 0 0' },
+          h('span', { class: 'pmeta' }, `Nur vorgemerkte Artikel werden automatisch ${mk().length > 1 ? 'bei der Marktquelle' : `bei ${mk()[0].name}`} abgefragt:`), sel,
+          h('button', { class: 'btn small', onclick: guard(() => marketFiltered(true, key())) }, mk().length > 1 ? 'Gefilterte vormerken' : `Gefilterte für ${mk()[0].name} vormerken`),
+          h('button', { class: 'btn small', onclick: guard(() => marketFiltered(false, key())) }, mk().length > 1 ? 'Gefilterte nicht mehr abfragen' : `Gefilterte nicht bei ${mk()[0].name} abfragen`));
+      })() : null),
     h('div', { class: 'tablewrap', id: 'tablewrap' }));
   buildTable();
   loadRows(true);
@@ -250,12 +259,12 @@ function renderChips() {
   document.getElementById('chips-more')?.replaceChildren(
     chip('equal', 'gleichauf'), chip('moved', 'Preis geändert'), chip('problem', 'Fehler oder gesperrt', 'bad'),
     chip('notFound', 'nicht gefunden'), chip('oos', 'Mitbewerber ausverkauft'), chip('offline', 'bei mir offline', 'warn'), chip('tierA', 'täglich geprüft'),
-    ...(state.data.config.idealo || c.idealoOn ? [
-      gchipT('idealoOn', 'für idealo vorgemerkt', '', 'Diese Artikel werden automatisch bei idealo abgefragt'),
-      gchipT('idealoDear', 'auf idealo teurer', 'bad', 'Ein anderer Händler bietet dieselbe EAN auf idealo inklusive Versand günstiger an'),
-      gchipT('idealoCheapest', 'auf idealo günstigster', 'good', 'Dein Preis ist auf idealo der niedrigste (bzw. dein Shop-Preis liegt nicht darüber)'),
-      gchipT('idealoHeadroom', 'Luft nach oben (idealo)', 'good', 'Platz 1 auf idealo, der nächste Händler ist mindestens 5 % teurer'),
-      gchipT('idealoUnlisted', 'nicht auf idealo gelistet', '', 'Das Produkt gibt es auf idealo, dein Shop ist dort nicht dabei'),
+    ...(mk().length || c.marketOn ? [
+      gchipT('marketOn', `für ${mkName()} vorgemerkt`, '', `Diese Artikel werden automatisch ${mk().length > 1 ? 'bei mindestens einer Marktquelle' : `bei ${mkName()}`} abgefragt`),
+      gchipT('marketDear', `${onMk()} teurer`, 'bad', `Ein anderer Händler bietet dieselbe EAN ${onMk()} inklusive Versand günstiger an`),
+      gchipT('marketCheapest', `${onMk()} günstigster`, 'good', `Dein Preis ist ${onMk()} der niedrigste (bzw. dein Shop-Preis liegt nicht darüber)`),
+      gchipT('marketHeadroom', `Luft nach oben (${mkName()})`, 'good', `Platz 1 ${onMk()}, der nächste Händler ist mindestens 5 % teurer`),
+      gchipT('marketUnlisted', mk().length > 1 ? 'auf einer Marktquelle nicht gelistet' : `nicht ${onMk()} gelistet`, '', 'Das Produkt gibt es dort, dein Shop ist nicht dabei'),
     ] : []));
   const gc = state.data.config;
   const gchip = (key, label, cls, title) => { const b = chip(key, label, cls); b.title = title; return b; };
@@ -337,7 +346,7 @@ function buildTable() {
       sortHead(h('span', { id: 'prodcount' }, 'Produkt'), 'name', 'prod'),
       sortHead(d.own.name, 'price', 'own', 'desc'),
       d.competitors.map((c) => sortHead(`${c.name}${c.enabled ? '' : ' (aus)'}`, `comp:${c.id}`)),
-      d.config.idealo ? sortHead('idealo', 'idealo', 'idealoh', 'desc') : null,
+      mk().length ? sortHead(mkName(), 'market', 'idealoh', 'desc') : null,
       has ? [sortHead('Position (Platz)', 'gappct', 'posh', 'desc'), sortHead('Abstand zum günstigsten', 'gap', '', 'desc'), h('th', {}, '')] : null)),
     h('tbody', { id: 'rows' }));
   const status = h('div', { id: 'liststatus', class: 'liststatus' }, miniRadar('Preise werden geladen'));
@@ -401,27 +410,32 @@ function rowEl(p) {
       p.offline_since ? h('span', { class: 'tag warn', title: `Seit ${dt.format(new Date(p.offline_since))} nicht mehr in deiner Sitemap bzw. nicht erreichbar` }, 'bei dir offline') : null),
     h('td', { class: `own ${position(p, a)?.tone ?? ''}`, 'data-label': d.own.name }, p.price != null ? eur.format(p.price) : '–'),
     a.cells.map((cell) => matchCell(p, a, cell)),
-    d.config.idealo ? idealoCell(p) : null,
+    mk().length ? marketCell(p) : null,
     d.competitors.length ? positionCell(p, a) : null,
     d.competitors.length ? h('td', { 'data-label': 'Abstand zum günstigsten', class: a.kind === 'undercut' ? 'gapcell gap bad' : a.kind === 'cheapest' ? 'gapcell gap good' : 'gapcell gap' },
       a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `günstigster: ${a.ok.find(({ m }) => m.price === a.min)?.c.name ?? ''}`)]
         : a.kind === 'cheapest' ? ['günstigster', h('small', {}, a.min - p.price > 0.004 ? `${eur.format(a.min - p.price)} Vorsprung` : 'gleichauf')]
           : h('span', { class: 'tag mute' }, '–')) : null,
-    d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, checkButton(p.id), pinButton(p), d.config.idealo ? idealoButton(p) : null)) : null);
+    d.competitors.length ? h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, checkButton(p.id), pinButton(p), ...mk().map((x) => marketButton(p, x)))) : null);
   return tr;
 }
 
-/** Zelle „idealo“: günstigster fremder Gesamtpreis, Händler und Abstand. */
-function idealoCell(p) {
-  const i = p.idealo;
-  const td = (cls, ...c) => h('td', { class: `mcell idcell ${cls}`, 'data-label': 'idealo', onclick: (e) => { e.stopPropagation(); openDrawer(p.id, null, 'idealo'); } }, ...c);
-  if (!i) return td('', !p.ean ? h('span', { class: 'tag mute', title: 'Ohne EAN kein Abgleich' }, 'keine EAN')
-    : p.idealo_on ? h('span', { class: 'tag', title: 'Kommt beim nächsten Abgleich an die Reihe' }, 'vorgemerkt') : h('span', { class: 'tag mute', title: 'Wird nicht bei idealo abgefragt. Über „idealo“ in der Zeile vormerken.' }, 'aus'));
-  if (!i.found) return td('', h('span', { class: 'tag mute' }, 'nicht auf idealo'));
+/** Zelle „Markt“: günstigster fremder Gesamtpreis über alle Marktquellen, Händler, Quelle und Abstand. */
+function marketCell(p) {
+  const m = p.market;
+  const i = m?.best;
+  const td = (cls, ...c) => h('td', { class: `mcell idcell ${cls}`, 'data-label': mkName(), onclick: (e) => { e.stopPropagation(); openDrawer(p.id, null, 'markt'); } }, ...c);
+  if (!i) {
+    if (!p.ean) return td('', h('span', { class: 'tag mute', title: 'Ohne EAN kein Abgleich' }, 'keine EAN'));
+    const views = Object.values(m?.per ?? {});
+    if (views.length && views.every((v) => !v.found)) return td('', h('span', { class: 'tag mute' }, `nicht ${onMk()}`));
+    return td('', m?.sel?.length ? h('span', { class: 'tag', title: `Vorgemerkt für ${m.sel.map(srcName).join(', ')}. Kommt beim nächsten Abgleich an die Reihe.` }, 'vorgemerkt')
+      : h('span', { class: 'tag mute', title: `Wird nicht abgefragt. Über „${mk()[0]?.name ?? 'idealo'}“ in der Zeile vormerken.` }, 'aus'));
+  }
   return td(i.kind === 'dearer' ? 'warmtxt' : i.kind === 'cheapest' ? 'cooltxt' : '',
     i.min_total != null ? eur.format(i.min_total) : '–',
-    h('small', { title: `${i.offers} Händler, Gesamtpreis inkl. Versand` }, i.own_rank ? `${i.min_shop} · du Platz ${i.own_rank}/${i.offers}` : `${i.min_shop} · ${i.offers} Händler`),
-    i.gap_pct != null ? h('small', {}, i.kind === 'dearer' ? `du ${fmtPct(i.gap_pct)}` : i.headroom_pct >= 5 ? `${fmtPct(i.headroom_pct)} Luft` : 'du günstigster') : null);
+    h('small', { title: `${i.offers} Händler bei ${srcName(i.source)}, Gesamtpreis inkl. Versand` }, `${mk().length > 1 ? `${srcName(i.source)}: ` : ''}${i.min_shop}${i.own_rank ? ` · du Platz ${i.own_rank}/${i.offers}` : ` · ${i.offers} Händler`}`),
+    i.gap_pct != null ? h('small', {}, i.kind === 'dearer' ? `du ${fmtPct(i.gap_pct)}` : m.headroom ? `${fmtPct(Math.min(...Object.values(m.per).filter((v) => v.headroom_pct >= 5).map((v) => v.headroom_pct)))} Luft` : 'du günstigster') : null);
 }
 
 /** Treffer über einen Google-Suchbegriff (die Produktseite wird mit dieser Suchanfrage gefunden). */
@@ -468,7 +482,7 @@ function googleRowEl(p) {
     d.competitors.length ? h('td', { class: 'mcell', 'data-label': 'Preis-Position' }, pos
       ? h('span', { class: `gprank ${pos.tone}`, title: `Platz ${pos.rank} von ${pos.n} Anbietern` }, h('b', {}, `${pos.rank} von ${pos.n}`), h('small', {}, pos.rank > 1 ? `${pct.format(pos.pct)} % teurer` : 'günstigster'))
       : h('span', { class: 'tag mute' }, 'kein Vergleich')) : null,
-    h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, d.competitors.length ? checkButton(p.id) : null, pinButton(p), d.config.idealo ? idealoButton(p) : null)));
+    h('td', { class: 'actcell', onclick: (e) => e.stopPropagation() }, h('div', { class: 'acts' }, d.competitors.length ? checkButton(p.id) : null, pinButton(p), ...mk().map((x) => marketButton(p, x)))));
   return tr;
 }
 
@@ -536,29 +550,30 @@ function pinButton(p, long = false) {
   return b;
 }
 
-/** Artikel für den automatischen idealo-Abgleich vormerken bzw. herausnehmen. */
-function idealoButton(p, long = false) {
-  const on = Boolean(p.idealo_on);
-  const label = on ? (long ? 'idealo: wird abgefragt ✓' : 'idealo ✓') : (long ? 'Bei idealo abfragen' : 'idealo');
+/** Artikel für den automatischen Abgleich bei einer Marktquelle vormerken bzw. herausnehmen. */
+function marketButton(p, src, long = false) {
+  const on = Boolean(p.market?.sel?.includes(src.key));
+  const label = on ? (long ? `${src.name}: wird abgefragt ✓` : `${src.name} ✓`) : (long ? `Bei ${src.name} abfragen` : src.name);
   const b = h('button', { class: `btn small pin${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false',
-    title: on ? 'Wird automatisch bei idealo abgefragt. Klicken, um den Artikel herauszunehmen; bisherige idealo-Daten bleiben sichtbar.' : (p.ean ? 'Diesen Artikel automatisch bei idealo abfragen (kostet je Abfrage bei Apify)' : 'Ohne EAN kann der Artikel nicht bei idealo gefunden werden'),
+    title: on ? `Wird automatisch bei ${src.name} abgefragt. Klicken, um den Artikel herauszunehmen; bisherige Daten bleiben sichtbar.` : (p.ean ? `Diesen Artikel automatisch bei ${src.name} abfragen (kostet je Abfrage bei Apify)` : `Ohne EAN kann der Artikel bei ${src.name} nicht gefunden werden`),
     onclick: guard(async () => {
       b.disabled = true;
       try {
-        const r = await api('/api/products/idealo-set', { body: { ids: [p.id], on: !on } });
-        toast(on ? 'Wird nicht mehr bei idealo abgefragt' : p.ean ? 'Wird ab jetzt bei idealo abgefragt' : 'Vorgemerkt, aber ohne EAN findet idealo den Artikel nicht', !on && !p.ean);
+        const r = await api('/api/products/market-set', { body: { source: src.key, ids: [p.id], on: !on } });
+        toast(on ? `Wird nicht mehr bei ${src.name} abgefragt` : p.ean ? `Wird ab jetzt bei ${src.name} abgefragt` : `Vorgemerkt, aber ohne EAN findet ${src.name} den Artikel nicht`, !on && !p.ean);
         replaceRow(r.product);
-        if (state.selected === p.id) openDrawer(p.id, r.product, 'idealo');
+        if (state.selected === p.id) openDrawer(p.id, r.product, 'markt');
       } finally { b.disabled = false; }
     }) }, label);
   return b;
 }
-async function idealoFiltered(on) {
+async function marketFiltered(on, key) {
   const n = list.total;
+  const name = srcName(key);
   if (!n) return toast('Keine Artikel im Filter', true);
-  if (on && n > 100 && !confirm(`${n.toLocaleString('de-DE')} Artikel für idealo vormerken? Jede Abfrage kostet bei Apify Geld; das Tageskontingent und das Monatsbudget in den Einstellungen gelten weiter.`)) return;
-  const r = await api('/api/products/idealo-set', { body: { query: listQuery(), on } });
-  toast(on ? `${r.changed.toLocaleString('de-DE')} Artikel vorgemerkt, insgesamt ${r.selected.toLocaleString('de-DE')} für idealo${r.no_ean ? ` (${r.no_ean} davon ohne EAN)` : ''}` : `${r.changed.toLocaleString('de-DE')} Artikel werden nicht mehr bei idealo abgefragt`);
+  if (on && n > 100 && !confirm(`${n.toLocaleString('de-DE')} Artikel für ${name} vormerken? Jede Abfrage kostet bei Apify Geld; das Tageskontingent und das Monatsbudget in den Einstellungen gelten weiter.`)) return;
+  const r = await api('/api/products/market-set', { body: { source: key, query: listQuery(), on } });
+  toast(on ? `${r.changed.toLocaleString('de-DE')} Artikel vorgemerkt, insgesamt ${r.selected.toLocaleString('de-DE')} für ${name}${r.no_ean ? ` (${r.no_ean} davon ohne EAN)` : ''}` : `${r.changed.toLocaleString('de-DE')} Artikel werden nicht mehr bei ${name} abgefragt`);
   await refresh();
   render();
 }
@@ -647,7 +662,7 @@ async function openDrawer(id, given = null, section = null) {
       p.url ? h('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, 'im Shop öffnen') : null,
       h('span', { class: 'spacer' }),
       pinButton(p, true),
-      idealoButton(p, true),
+      ...mk().map((x) => marketButton(p, x, true)),
       checkButton(p.id, 'Jetzt alle Mitbewerber prüfen')),
     econLine(p),
     p.tracked && !p.offline_since && p.tier ? h('p', { class: 'pmeta tierline' }, p.tier === 'A'
@@ -658,7 +673,7 @@ async function openDrawer(id, given = null, section = null) {
     p.google?.suggested && Math.abs(p.google.suggested - p.price) >= 0.01 ? h('p', { class: 'note' }, `Google-Preisvorschlag: ${eur.format(p.google.suggested)}${p.google.conversions_change != null ? `, erwartet ${p.google.conversions_change > 0 ? '+' : ''}${Math.round(p.google.conversions_change * 100)} % Verkäufe in Shopping` : ''}.`) : null,
     secHead('preise', 'Preisverlauf'), histBox,
     secHead('kanal', 'Preise je Kanal', d.config.ebay ? ['eBay', 'ebay'] : null), channelBox(p),
-    d.config.idealo || p.idealo ? [secHead('idealo', 'Bei idealo', ['Mitbewerber', 'mitbewerber']), idealoBox(p)] : null,
+    mk().length || p.market ? [secHead('markt', mk().length > 1 ? 'Am Markt' : `Bei ${mkName()}`, ['Mitbewerber', 'mitbewerber']), marketBox(p)] : null,
     secHead('google', 'Bei Google (letzte 28 Tage)', d.config.gsc ? ['Sichtbarkeit', 'sichtbarkeit'] : null), seoDrawerBox(p.id),
     secHead('keywords', 'Keywords', ['Keyword-Monitoring', 'keywords']), keywordBox(p),
     p.url ? [secHead('seo', 'Seiten-Check (SEO)', ['Seiten-Check', 'seitencheck']), seoAuditBox(p.id)] : null,
@@ -722,11 +737,12 @@ function sigChips(id, sig, { omit = [] } = {}) {
     else if (pr.kind === 'undercut') out.push(chip('bad', `+${nf1.format(pr.gap_pct)} % Preis`, 'mitbewerber', `${pr.competitor} ist günstiger (${eur.format(pr.min)})`));
     if (pr.oos) out.push(chip('good', `${pr.oos}× Mitbewerber ausverkauft`, 'mitbewerber'));
   }
-  if (!omit.includes('idealo') && sig.idealo?.found) {
-    const i = sig.idealo;
-    if (i.kind === 'dearer') out.push(chip('bad', `idealo +${nf1.format(i.gap_pct)} %`, 'idealo', `${i.min_shop} ab ${eur.format(i.min_total)} inkl. Versand${i.own_rank ? `, du auf Platz ${i.own_rank} von ${i.offers}` : ', du bist dort nicht gelistet'}`));
-    else if (i.kind === 'cheapest') out.push(chip('good', i.own_rank === 1 ? `idealo Platz 1${i.headroom_pct >= 5 ? ` (+${nf1.format(i.headroom_pct)} % Luft)` : ''}` : 'idealo günstigster', 'idealo', `${i.offers} Händler auf idealo`));
-    else out.push(chip('', `idealo ab ${eur.format(i.min_total)}`, 'idealo', `${i.offers} Händler auf idealo`));
+  if (!omit.includes('market') && sig.market) {
+    const i = sig.market;
+    const n = srcName(i.source);
+    if (i.kind === 'dearer') out.push(chip('bad', `${n} +${nf1.format(i.gap_pct)} %`, 'markt', `${i.min_shop} ab ${eur.format(i.min_total)} inkl. Versand${i.own_rank ? `, du auf Platz ${i.own_rank} von ${i.offers}` : `, du bist bei ${n} nicht gelistet`}`));
+    else if (i.kind === 'cheapest') out.push(chip('good', i.own_rank === 1 ? `${n} Platz 1${i.headroom_pct >= 5 ? ` (+${nf1.format(i.headroom_pct)} % Luft)` : ''}` : `${n} günstigster`, 'markt', `${i.offers} Händler bei ${n}`));
+    else out.push(chip('', `${n} ab ${eur.format(i.min_total)}`, 'markt', `${i.offers} Händler bei ${n}`));
   }
   if (!omit.includes('sales') && sig.sales) out.push(chip('', `${nf.format(sig.sales.units_90)} verkauft`, 'kanal', 'Verkäufe der letzten 90 Tage (Shopware)'));
   if (!omit.includes('gsc') && sig.gsc) out.push(chip(sig.gsc.position <= 3 ? 'good' : sig.gsc.position <= 10 ? 'cool' : 'warn', `Google ${fmtPos(sig.gsc.position)} · ${nf.format(sig.gsc.impressions)} Impr.`, 'google', 'Ø Position und Impressionen der letzten 28 Tage'));
@@ -1018,24 +1034,25 @@ function googleCompetitorsPanel() {
   return box;
 }
 
-/** Händler, die auf idealo dieselben Artikel anbieten, aber noch nicht als Mitbewerber angelegt sind. */
-function idealoShopsPanel() {
+/** Händler aus den Marktquellen (idealo …), die dieselben Artikel anbieten, aber noch nicht als Mitbewerber angelegt sind. */
+function marketShopsPanel() {
   const box = h('div', { class: 'panel', hidden: true });
-  if (!state.data.config.idealo) return box;
+  if (!mk().length) return box;
   const MP = { amazon: 'Amazon', ebay: 'eBay', kaufland: 'Kaufland', otto: 'Otto', manomano: 'ManoMano' };
   const guess = (shop) => { const t = shop.trim().toLowerCase(); return /\.[a-z]{2,}$/.test(t) && !/\s/.test(t) ? t.replace(/^www\./, '') : `${t.replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\b(gmbh|ug|kg|ag|e\.k\.)\b/g, '').replace(/[^a-z0-9-]+/g, '')}.de`; };
-  api('/api/idealo').then((o) => {
-    if (!o.found) return;
+  api('/api/market').then((o) => {
+    const found = o.sources.reduce((n, x) => n + x.found, 0);
+    if (!found) return;
     box.hidden = false;
     const rows = o.shops.filter((x) => x.products >= 2 || x.cheaper >= 1);
-    box.replaceChildren(h('h3', {}, 'Weitere Mitbewerber laut idealo'),
-      h('p', { class: 'sub' }, `Händler, die auf idealo dieselben Artikel anbieten wie du (gleiche EAN), aber hier noch nicht angelegt sind. Grundlage: ${nf.format(o.found)} auf idealo gefundene Artikel. Prüfe die vorgeschlagene Domain vor dem Anlegen.`),
+    box.replaceChildren(h('h3', {}, `Weitere Mitbewerber laut ${mkName()}`),
+      h('p', { class: 'sub' }, `Händler, die ${onMk()} dieselben Artikel anbieten wie du (gleiche EAN), aber hier noch nicht angelegt sind. Grundlage: ${nf.format(found)} ${onMk()} gefundene Artikel. Prüfe die vorgeschlagene Domain vor dem Anlegen.`),
       rows.length ? h('div', { class: 'tablewrap', style: 'max-height:520px' }, h('table', { class: 'plain idshops' },
-        h('thead', {}, h('tr', {}, ['Händler auf idealo', 'Gemeinsame Artikel', 'Davon günstiger', 'Ø Abstand', 'Domain', ''].map((t) => h('th', {}, t)))),
+        h('thead', {}, h('tr', {}, [mk().length > 1 ? 'Händler (Quelle)' : `Händler bei ${mkName()}`, 'Gemeinsame Artikel', 'Davon günstiger', 'Ø Abstand', 'Domain', ''].map((t) => h('th', {}, t)))),
         h('tbody', {}, rows.slice(0, 40).map((x) => {
           const dom = h('input', { value: guess(x.shop), style: 'width:170px', 'aria-label': `Domain von ${x.shop}` });
           return h('tr', {},
-            h('td', {}, x.shop, x.marketplace ? h('span', { class: 'tag mute' }, `Marktplatz ${MP[x.marketplace] ?? ''}`) : null),
+            h('td', {}, x.shop, x.marketplace ? h('span', { class: 'tag mute' }, `Marktplatz ${MP[x.marketplace] ?? ''}`) : null, mk().length > 1 ? h('span', { class: 'tag mute' }, x.sources.map(srcName).join(', ')) : null),
             h('td', {}, nf.format(x.products)),
             h('td', { class: x.cheaper ? 'warmtxt' : '' }, nf.format(x.cheaper)),
             h('td', {}, x.avg_gap != null ? fmtPct(x.avg_gap) : '–'),
@@ -1046,8 +1063,8 @@ function idealoShopsPanel() {
                 try { const r = await api('/api/competitors/from-domain', { body: { domain: dom.value.trim() } }); toast(`${r.name} angelegt${r.sitemaps.length ? `, ${r.sitemaps.length} Sitemap(s) gefunden` : ', keine Sitemap gefunden'}`); await refresh(); }
                 finally { e.target.disabled = false; e.target.textContent = 'Anlegen'; }
               }) }, 'Anlegen'),
-              h('button', { class: 'linkbtn', title: 'Nicht mehr vorschlagen', onclick: guard(async (e) => { await api('/api/idealo/dismiss', { body: { shop: x.shop } }); e.target.closest('tr').remove(); }) }, 'ausblenden')));
-        })))) : h('p', { class: 'pmeta' }, 'Alle Händler, die öfter mit dir auf idealo stehen, sind bereits angelegt.'));
+              h('button', { class: 'linkbtn', title: 'Nicht mehr vorschlagen', onclick: guard(async (e) => { await api('/api/market/dismiss', { body: { shop: x.shop } }); e.target.closest('tr').remove(); }) }, 'ausblenden')));
+        })))) : h('p', { class: 'pmeta' }, `Alle Händler, die öfter mit dir ${onMk()} stehen, sind bereits angelegt.`));
   }).catch(() => {});
   return box;
 }
@@ -1056,7 +1073,7 @@ function renderCompetitors(root) {
   root.append(h('h2', {}, 'Mitbewerber'),
     h('p', { class: 'sub' }, 'Jeder Mitbewerber braucht eine Such-URL (Suche per EAN oder Herstellernummer) und/oder Sitemap-URLs (Zuordnung über Marke und Name). Alternativ trägst du Produkt-URLs direkt im Import oder in der Detailansicht ein. Die robots.txt der Shops wird immer beachtet.'),
     googleCompetitorsPanel(),
-    idealoShopsPanel(),
+    marketShopsPanel(),
     quickSetupPanel(),
     ...state.data.competitors.map((c) => competitorPanel(c)),
     h('h3', {}, 'Neuen Mitbewerber hinzufügen'), competitorPanel(null));
@@ -1152,7 +1169,7 @@ async function renderStart(root) {
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => setTab('einstellungen') }, 'Eigene Sitemap hinterlegen'), h('button', { class: 'btn', onclick: () => setTab('import') }, 'CSV oder Shopware'))));
     return;
   }
-  const [a, imp, opps, ido] = await Promise.all([api('/api/analysis'), api('/api/import/sitemap/status').catch(() => null), api('/api/opportunities').catch(() => null), d.config.idealo ? api('/api/idealo').catch(() => null) : null]);
+  const [a, imp, opps, ido] = await Promise.all([api('/api/analysis'), api('/api/import/sitemap/status').catch(() => null), api('/api/opportunities').catch(() => null), mk().length ? api('/api/market').catch(() => null) : null]);
   lastAnalysis = a;
   const k = a.kpi;
   const real = a.rows.filter((r) => !r.warning);
@@ -1222,13 +1239,14 @@ async function renderStart(root) {
       h('dt', {}, 'Shopware'), h('dd', {}, d.config.shopware ? (d.config.swSynced ? `Abgleich ${dt.format(new Date(d.config.swSynced))}` : 'verbunden, Abgleich steht aus') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht verbunden (Verkäufe, Einkaufspreise)')),
       h('dt', {}, 'Google'), h('dd', {}, d.config.gsc ? h('button', { class: 'linkbtn', onclick: () => setTab('sichtbarkeit') }, 'Search Console verbunden, zur Sichtbarkeit') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'Search Console noch nicht verbunden')),
       h('dt', {}, 'E-Mail'), h('dd', {}, h('button', { class: 'linkbtn', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('mail-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'Tägliche Zusammenfassung einstellen')),
-      h('dt', {}, 'idealo'), h('dd', {}, !d.config.idealo ? h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht eingerichtet')
+      h('dt', {}, 'Marktquellen'), h('dd', {}, !mk().length ? h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht eingerichtet (idealo über Apify)')
         : !ido ? '–'
-          : [ido.error ? h('div', { class: 'warmtxt' }, `Fehler: ${ido.error.message}`) : null,
-            !ido.selected ? [h('button', { class: 'linkbtn', onclick: () => setTab('preise') }, 'noch keine Artikel vorgemerkt'), ' (in der Preisliste „idealo“ je Artikel oder für gefilterte Artikel)']
-            : ido.checked ? [`${nf.format(ido.selected)} Artikel vorgemerkt, ${nf.format(ido.found)} von ${nf.format(ido.checked)} abgeglichenen auf idealo`, ido.dearer ? [', ', h('button', { class: 'linkbtn', onclick: () => goPrices('idealoDear') }, `${nf.format(ido.dearer)} dort teurer`)] : null, ido.due ? `, ${nf.format(ido.due)} stehen noch aus` : '']
-              : ido.job.running ? `erster Abgleich läuft: ${ido.job.done} von ${ido.job.total}` : 'erster Abgleich startet in Kürze',
-            h('div', { class: 'pmeta' }, `${ido.spend.usd.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} von ${ido.budget.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} Budget in diesem Monat`)]),
+          : ido.sources.filter((x) => x.enabled || x.selected || x.checked).map((x) => h('div', { class: 'mksrc' }, h('b', {}, `${x.name}: `),
+            x.error ? h('span', { class: 'warmtxt' }, `Fehler: ${x.error.message}. `) : null,
+            !x.selected ? [h('button', { class: 'linkbtn', onclick: () => setTab('preise') }, 'noch keine Artikel vorgemerkt'), ` (in der Preisliste „${x.name}“ je Artikel oder für gefilterte Artikel)`]
+              : x.checked ? [`${nf.format(x.selected)} vorgemerkt, ${nf.format(x.found)} von ${nf.format(x.checked)} abgeglichenen gefunden`, x.dearer ? [', ', h('button', { class: 'linkbtn', onclick: () => goPrices('marketDear') }, `${nf.format(x.dearer)} dort teurer`)] : null, x.due ? `, ${nf.format(x.due)} stehen noch aus` : '']
+                : x.job.running ? `erster Abgleich läuft: ${x.job.done} von ${x.job.total}` : 'erster Abgleich startet in Kürze',
+            h('div', { class: 'pmeta' }, `${x.spend.usd.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} von ${x.budget.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} Budget in diesem Monat`)))),
       h('dt', {}, 'KI'), h('dd', {}, d.config.ai
         ? [h('div', { class: 'aimeter', title: `${d.config.aiUsage.today} von ${d.config.aiUsage.limit} KI-Anfragen heute` }, h('div', { style: `width:${Math.min(100, (d.config.aiUsage.today / Math.max(1, d.config.aiUsage.limit)) * 100)}%` })),
           `${d.config.aiUsage.today.toLocaleString('de-DE')} von ${d.config.aiUsage.limit.toLocaleString('de-DE')} Anfragen heute${d.config.aiUsage.today >= d.config.aiUsage.limit ? ' (Grenze erreicht, weiter ohne KI)' : ''}`]
@@ -1240,7 +1258,7 @@ async function renderStart(root) {
   const top = [...firstOfType, ...items.filter((i) => !firstOfType.includes(i))].slice(0, 6).sort((x, y) => (y.value ?? 0) - (x.value ?? 0));
   const chancen = opps?.items?.length ? h('section', { class: 'list wide' },
     h('div', { class: 'list-h' }, h('h3', {}, 'Wichtigste Chancen'), h('button', { class: 'linkbtn', onclick: () => setTab('chancen') }, `alle ${nf.format(opps.total ?? opps.items.length)}`)),
-    h('p', { class: 'pmeta' }, 'Aus Preisen, idealo, Google, Seiten-Check, Keywords, eBay und Lager, nach geschätztem Wert.'),
+    h('p', { class: 'pmeta' }, 'Aus Preisen, Marktquellen, Google, Seiten-Check, Keywords, eBay und Lager, nach geschätztem Wert.'),
     h('ol', {}, top.map((i) => h('li', { tabindex: 0, onclick: () => openDrawer(i.product_id, null, 'chancen'), onkeydown: (e) => e.key === 'Enter' && e.currentTarget.click() },
       h('div', { class: 'li-main' }, h('div', { class: 'pname' }, i.name), h('div', { class: 'pmeta' }, i.detail)),
       h('div', { class: 'li-side' }, h('span', { class: `ichip ${i.tone === 'bad' ? 'error' : i.tone === 'warn' ? 'warn' : 'ok'}` }, i.label)))))) : null;
@@ -1574,24 +1592,34 @@ function channelBox(p) {
   return box;
 }
 
-/** Händlerangebote auf idealo zu diesem Artikel (über die EAN, abgerufen per Apify). */
-function idealoBox(p) {
-  const box = h('div', { class: 'idbox' }, miniRadar('idealo wird geladen', { small: true }));
-  const check = guard(async (e) => {
-    e.target.disabled = true; e.target.textContent = 'Wird abgeglichen …';
-    try { paint(await api(`/api/products/${p.id}/idealo`, { body: {} })); toast('idealo abgeglichen'); } finally { e.target.disabled = false; }
-  });
-  const btn = () => (state.data.config.idealo && p.ean ? h('button', { class: 'btn small', onclick: check }, 'Jetzt bei idealo abgleichen') : null);
-  const paint = (r) => {
-    if (!p.ean) return box.replaceChildren(h('p', { class: 'pmeta' }, 'Ohne EAN kein Abgleich mit idealo. Die EAN kommt aus Shopware oder dem Import.'));
-    if (!r) return box.replaceChildren(h('p', { class: 'pmeta' }, !state.data.config.idealo ? 'idealo ist noch nicht eingerichtet (Einstellungen → Preisabfrage → idealo).' : p.idealo_on ? 'Noch nicht abgeglichen. Der Artikel ist vorgemerkt und kommt automatisch an die Reihe.' : 'Dieser Artikel wird nicht automatisch bei idealo abgefragt. Vormerken mit „Bei idealo abfragen“ oben, oder einmalig abgleichen:'), h('div', { class: 'row' }, btn()));
-    if (!r.found) return box.replaceChildren(h('p', { class: 'pmeta' }, `Auf idealo kein Produkt mit der EAN ${p.ean} gefunden (geprüft ${dt.format(new Date(r.checked_at))}). Erneuter Versuch nach 30 Tagen.`), h('div', { class: 'row' }, btn()));
+/** Händlerangebote aus allen Marktquellen zu diesem Artikel (über die EAN, abgerufen per Apify). */
+function marketBox(p) {
+  const box = h('div', { class: 'idbox' }, miniRadar('Marktdaten werden geladen', { small: true }));
+  const MPN = { amazon: 'Amazon', ebay: 'eBay', kaufland: 'Kaufland', otto: 'Otto', manomano: 'ManoMano' };
+  const one = (src) => {
+    const r = src.data;
+    const wrap = h('div', { class: 'idsrc' });
+    const check = guard(async (e) => {
+      e.target.disabled = true; e.target.textContent = 'Wird abgeglichen …';
+      try { paint(await api(`/api/products/${p.id}/market/${src.key}`, { body: {} })); toast(`${src.name} abgeglichen`); } finally { e.target.disabled = false; }
+    });
+    const active = mk().some((x) => x.key === src.key);
+    const btn = () => (active && p.ean ? h('button', { class: 'btn small', onclick: check }, `Jetzt bei ${src.name} abgleichen`) : null);
+    const head = Object.keys(srcAll).length > 1 ? h('h4', { class: 'idsrc-h' }, src.name) : null;
+    if (!r) {
+      wrap.append(head ?? '', h('p', { class: 'pmeta' }, !active ? `${src.name} ist noch nicht eingerichtet (Einstellungen → Preisabfrage → Marktquellen).` : src.selected ? 'Noch nicht abgeglichen. Der Artikel ist vorgemerkt und kommt automatisch an die Reihe.' : `Dieser Artikel wird nicht automatisch bei ${src.name} abgefragt. Vormerken mit „Bei ${src.name} abfragen“ oben, oder einmalig abgleichen:`), h('div', { class: 'row' }, btn()));
+      return wrap;
+    }
+    if (!r.found) {
+      wrap.append(head ?? '', h('p', { class: 'pmeta' }, `Bei ${src.name} kein Produkt mit der EAN ${p.ean} gefunden (geprüft ${dt.format(new Date(r.checked_at))}). Erneuter Versuch nach 30 Tagen.`), h('div', { class: 'row' }, btn()));
+      return wrap;
+    }
     const ownPrice = r.own_total ?? p.price;
     const hist = r.history.filter((x) => x.min_total != null);
     const old = hist.length > 1 ? hist[0] : null;
-    box.replaceChildren(
+    wrap.append(head ?? '',
       h('p', { class: 'idsum' },
-        r.listed ? [`Du stehst auf `, h('b', {}, `Platz ${r.own_rank}`), ` von ${r.offers} mit ${eur.format(r.own_total)} inkl. Versand. `] : [h('b', {}, 'Nicht auf idealo gelistet. '), `${r.offers} Händler bieten an. `],
+        r.listed ? ['Du stehst auf ', h('b', {}, `Platz ${r.own_rank}`), ` von ${r.offers} mit ${eur.format(r.own_total)} inkl. Versand. `] : [src.canList ? h('b', {}, `Nicht bei ${src.name} gelistet. `) : '', `${r.offers} Händler bieten an. `],
         r.kind === 'dearer' ? h('span', { class: 'warmtxt' }, `${r.min_shop} ist mit ${eur.format(r.min_total)} ${nf1.format(r.gap_pct)} % günstiger${r.compare === 'shop' ? ' als dein Shop-Preis (ohne Versand)' : ''}.`)
           : r.kind === 'cheapest' ? h('span', { class: 'cooltxt' }, r.headroom_pct >= 5 ? `Günstigster, der nächste liegt ${nf1.format(r.headroom_pct)} % darüber (${eur.format(r.next_total)}).` : 'Günstigster Händler.') : null,
         old ? h('span', { class: 'pmeta' }, ` Bestpreis am ${dtd.format(new Date(old.day))}: ${eur.format(old.min_total)}.`) : null),
@@ -1599,17 +1627,25 @@ function idealoBox(p) {
         h('thead', {}, h('tr', {}, ['', 'Händler', 'Preis', 'Versand', 'Gesamt', 'Lieferung'].map((t) => h('th', {}, t)))),
         h('tbody', {}, r.offers_list.map((o, i) => h('tr', { class: o.own ? 'own' : '' },
           h('td', { class: 'pmeta' }, String(i + 1)),
-          h('td', {}, o.shop, o.own ? h('span', { class: 'tag' }, 'du') : o.competitor ? h('span', { class: 'tag mute', title: 'Als Mitbewerber angelegt' }, o.competitor) : null, o.marketplace ? h('span', { class: 'tag mute' }, { amazon: 'Amazon', ebay: 'eBay', kaufland: 'Kaufland', otto: 'Otto', manomano: 'ManoMano' }[o.marketplace]) : null),
+          h('td', {}, o.url ? h('a', { href: o.url, target: '_blank', rel: 'noopener noreferrer' }, o.shop) : o.shop, o.own ? h('span', { class: 'tag' }, 'du') : o.competitor ? h('span', { class: 'tag mute', title: 'Als Mitbewerber angelegt' }, o.competitor) : null, o.marketplace ? h('span', { class: 'tag mute' }, MPN[o.marketplace]) : null),
           h('td', {}, eur.format(o.price)),
           h('td', { class: 'pmeta' }, o.shipping == null ? '?' : o.shipping === 0 ? 'frei' : eur.format(o.shipping)),
           h('td', { class: !o.own && o.total < ownPrice - 0.005 ? 'warmtxt' : '' }, h('b', {}, eur.format(o.total))),
           h('td', { class: 'pmeta' }, o.delivery ?? '')))))),
       h('div', { class: 'row', style: 'margin-top:8px' },
-        h('span', { class: 'pmeta' }, `Stand ${dt.format(new Date(r.checked_at))}${p.idealo_on ? '' : ' · wird nicht mehr automatisch abgefragt'}`),
-        r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, 'Auf idealo öffnen') : null,
+        h('span', { class: 'pmeta' }, `Stand ${dt.format(new Date(r.checked_at))}${src.selected ? '' : ' · wird nicht automatisch abgefragt'}`),
+        r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, `Bei ${src.name} öffnen`) : null,
         h('span', { class: 'spacer' }), btn()));
+    return wrap;
   };
-  api(`/api/products/${p.id}/idealo`).then(paint).catch((e) => box.replaceChildren(h('p', { class: 'pmeta' }, e.message)));
+  let srcAll = {};
+  const paint = (res) => {
+    if (!p.ean) return box.replaceChildren(h('p', { class: 'pmeta' }, 'Ohne EAN kein Abgleich mit Marktquellen. Die EAN kommt aus Shopware oder dem Import.'));
+    // eingerichtete Quellen immer, andere nur, wenn es von früher Daten gibt
+    srcAll = Object.fromEntries(Object.entries(res.sources).filter(([k, v]) => mk().some((x) => x.key === k) || v.data));
+    box.replaceChildren(...Object.values(srcAll).map(one));
+  };
+  api(`/api/products/${p.id}/market`).then(paint).catch((e) => box.replaceChildren(h('p', { class: 'pmeta' }, e.message)));
   return box;
 }
 
@@ -1938,60 +1974,78 @@ function ebaySettingsPanel(cur, f) {
   return form;
 }
 
-function idealoSettingsPanel(cur, f) {
-  const c = cur.idealo;
+function marketSettingsPanel(cur, f) {
+  const c = cur.market;
   const out = h('div', { class: 'result', hidden: true });
-  const known = c.actors.some((a) => a.id === c.actor);
-  const custom = h('div', { class: 'field', style: known ? 'display:none' : '' }, h('label', {}, 'Actor-ID'), h('input', { name: 'idealo_actor_custom', value: known ? '' : c.actor, placeholder: 'anbieter~actor-name' }),
-    h('span', { class: 'hint' }, 'Ein anderer idealo-Actor von apify.com. Er muss EANs annehmen und Angebote mit Händler und Preis liefern.'));
-  const actorHint = h('span', { class: 'hint' });
-  const costHint = h('span', { class: 'hint' });
-  const updHints = () => {
-    const a = c.actors.find((x) => x.id === actorSel.value);
-    actorHint.textContent = a ? a.note : 'Kosten geschätzt wie beim Actor von s-r';
-    const n = Number(form.querySelector('[name=idealo_per_day]')?.value || 0);
-    costHint.textContent = n > 0 ? `Etwa ${(n * 30 * (a?.per1000 ?? 4.4) / 1000).toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} im Monat bei vollem Tageskontingent. Nie geprüfte und wichtige Artikel zuerst.` : 'Mit 0 läuft kein automatischer Abgleich, nur auf Knopfdruck.';
-    costHint.textContent += ' Abgefragt werden nur Artikel, die du in der Preisliste für idealo vorgemerkt hast.';
+  const hooks = [];
+  /** Felder einer Quelle; Namen <quelle>_<feld> wie in den Einstellungen. */
+  const srcFields = (x) => {
+    const k = x.key;
+    const known = x.actors.some((a) => a.id === x.actor);
+    const custom = h('div', { class: 'field', style: known ? 'display:none' : '' }, h('label', {}, 'Actor-ID'), h('input', { name: `${k}_actor_custom`, value: known ? '' : x.actor, placeholder: 'anbieter~actor-name' }),
+      h('span', { class: 'hint' }, `Ein anderer Actor von apify.com für ${x.name}. Er muss EANs annehmen und Angebote mit Händler und Preis liefern.`));
+    const actorHint = h('span', { class: 'hint' });
+    const costHint = h('span', { class: 'hint' });
+    const actorSel = h('select', { name: `${k}_actor`, onchange: (e) => { custom.style.display = e.target.value === '_custom' ? '' : 'none'; upd(); } },
+      x.actors.map((a) => h('option', { value: a.id, selected: a.id === x.actor }, a.label)), h('option', { value: '_custom', selected: !known }, 'Eigener Actor …'));
+    const perDay = f('Artikel pro Tag', `${k}_per_day`, x.per_day, { type: 'number' });
+    perDay.append(costHint);
+    const upd = () => {
+      const a = x.actors.find((y) => y.id === actorSel.value);
+      actorHint.textContent = a ? a.note : 'Kosten geschätzt wie beim teuersten bekannten Actor';
+      const n = Number(perDay.querySelector('input').value || 0);
+      costHint.textContent = (n > 0 ? `Etwa ${(n * 30 * (a?.per1000 ?? 4.4) / 1000).toLocaleString('de-DE', { style: 'currency', currency: 'USD' })} im Monat bei vollem Tageskontingent.` : 'Mit 0 läuft kein automatischer Abgleich, nur auf Knopfdruck.') + ` Abgefragt werden nur Artikel, die du für ${x.name} vorgemerkt hast.`;
+    };
+    perDay.querySelector('input').addEventListener('input', upd);
+    hooks.push(upd);
+    return h('fieldset', { class: 'mkfs' }, h('legend', {}, x.name), h('p', { class: 'pmeta', style: 'margin:0 0 10px' }, x.about),
+      h('div', { class: 'grid' },
+        h('div', { class: 'field' }, h('label', {}, 'Actor'), actorSel, actorHint),
+        custom,
+        x.countries.length > 1 ? h('div', { class: 'field' }, h('label', {}, 'Land'), h('select', { name: `${k}_country` }, x.countries.map(([v, l]) => h('option', { value: v, selected: v === x.country }, l)))) : null,
+        perDay,
+        f('Abstand Prüf-Stufe A (Tage)', `${k}_days_a`, x.days_a, { type: 'number', hint: 'Artikel, die täglich bei Mitbewerbern geprüft werden' }),
+        f('Abstand übrige Artikel (Tage)', `${k}_days`, x.days, { type: 'number' }),
+        f('Monatsbudget (US-Dollar)', `${k}_budget`, x.budget, { type: 'number', hint: 'Geschätzt nach dem Tarif des Actors. Die genaue Abrechnung steht im Apify-Konto.' }),
+        h('label', { class: 'row', style: 'align-self:end' }, h('input', { type: 'checkbox', name: `${k}_enabled`, checked: x.enabled }), 'Automatisch abgleichen')));
   };
-  const actorSel = h('select', { name: 'idealo_actor', onchange: (e) => { custom.style.display = e.target.value === '_custom' ? '' : 'none'; updHints(); } },
-    c.actors.map((a) => h('option', { value: a.id, selected: a.id === c.actor }, a.label)), h('option', { value: '_custom', selected: !known }, 'Eigener Actor …'));
   const body = () => {
     const b = Object.fromEntries(new FormData(form));
-    if (b.idealo_actor === '_custom') b.idealo_actor = b.idealo_actor_custom || '';
-    delete b.idealo_actor_custom;
-    b.idealo_enabled = form.querySelector('[name=idealo_enabled]').checked;
+    for (const x of c.sources) {
+      if (b[`${x.key}_actor`] === '_custom') b[`${x.key}_actor`] = b[`${x.key}_actor_custom`] || '';
+      delete b[`${x.key}_actor_custom`];
+      b[`${x.key}_enabled`] = form.querySelector(`[name=${x.key}_enabled]`).checked;
+    }
     return b;
   };
-  const form = h('form', { class: 'panel', id: 'idealo-settings', onsubmit: (ev) => ev.preventDefault() },
-    h('h3', {}, 'idealo'),
-    h('p', { class: 'sub' }, 'Holt zu jeder EAN alle Händlerangebote von idealo.de mit Preis, Versand und Gesamtpreis. Preisradar fragt idealo nicht selbst ab: Das übernimmt ein Scraper bei Apify, der pro Artikel bezahlt wird. So findest du auch Händler, die du noch nicht als Mitbewerber angelegt hast.'),
+  const form = h('form', { class: 'panel', id: 'market-settings', onsubmit: (ev) => ev.preventDefault() },
+    h('h3', {}, 'Marktquellen über Apify'),
+    h('p', { class: 'sub' }, `Holt zu jeder EAN die Angebote anderer Händler, zurzeit von ${c.sources.map((x) => x.name).join(', ')}. Preisradar fragt diese Seiten nicht selbst ab: Das übernimmt je Quelle ein Scraper bei Apify, der pro Artikel bezahlt wird. So findest du auch Händler, die du noch nicht als Mitbewerber angelegt hast.`),
     h('details', { class: 'howto' }, h('summary', {}, 'So richtest du den Zugang ein'),
       h('ol', { class: 'plainlist' },
-        h('li', {}, 'Auf apify.com ein Konto anlegen. Ohne bezahlten Tarif liefern die meisten Actors nur wenige Ergebnisse pro Lauf, für den Dauerbetrieb also einen Tarif mit Guthaben wählen.'),
-        h('li', {}, 'Unter „Settings → API & Integrations“ das persönliche API-Token kopieren und hier eintragen. Es wird verschlüsselt gespeichert.'),
-        h('li', {}, 'Actor wählen und ein Monatsbudget festlegen. Ist das Budget erreicht, pausiert der Abgleich bis zum Monatsende.'),
-        h('li', {}, 'Unter „Dein Shop auf idealo“ steht, woran Preisradar dein eigenes Angebot erkennt. Meist passt der Vorschlag.'))),
+        h('li', {}, 'Auf apify.com ein Konto anlegen. Der kostenlose Tarif enthält ein kleines Monatsguthaben; manche Actors liefern dort aber weniger Ergebnisse pro Lauf.'),
+        h('li', {}, 'Unter „Settings → API & Integrations“ das persönliche API-Token kopieren und hier eintragen. Es gilt für alle Quellen und wird verschlüsselt gespeichert.'),
+        h('li', {}, 'Je Quelle Actor, Tageskontingent und Monatsbudget festlegen. Ist ein Budget erreicht, pausiert diese Quelle bis zum Monatsende.'),
+        h('li', {}, 'In der Preisliste die Artikel je Quelle vormerken. Nur vorgemerkte Artikel werden automatisch abgefragt.'))),
     h('div', { class: 'grid' },
       f('Apify-Token', 'apify_token', '', { type: 'password', ph: c.token_set ? (c.from_env ? 'aus der Umgebung' : 'gespeichert (leer lassen = behalten)') : 'apify_api_…' }),
-      h('div', { class: 'field' }, h('label', {}, 'Actor'), actorSel, actorHint),
-      custom,
-      (() => { const el = f('Artikel pro Tag', 'idealo_per_day', c.per_day, { type: 'number' }); el.querySelector('input').addEventListener('input', updHints); el.append(costHint); return el; })(),
-      f('Abstand Prüf-Stufe A (Tage)', 'idealo_days_a', c.days_a, { type: 'number', hint: 'Artikel, die täglich bei Mitbewerbern geprüft werden' }),
-      f('Abstand übrige Artikel (Tage)', 'idealo_days', c.days, { type: 'number' }),
-      f('Monatsbudget (US-Dollar)', 'idealo_budget', c.budget, { type: 'number', hint: 'Geschätzt nach dem Tarif des Actors. Die genaue Abrechnung steht im Apify-Konto.' }),
-      f('Dein Shop auf idealo', 'idealo_own_names', c.own_names, { hint: 'Händlername bzw. Domain, mit Komma getrennt' }),
-      h('label', { class: 'row', style: 'align-self:end' }, h('input', { type: 'checkbox', name: 'idealo_enabled', checked: c.enabled }), 'Automatisch abgleichen')),
+      f('Dein Shop bei den Quellen', 'market_own_names', c.own_names, { hint: 'Händlername bzw. Domain, mit Komma getrennt. Daran erkennt Preisradar dein eigenes Angebot.' })),
+    ...c.sources.map(srcFields),
     h('div', { class: 'row', style: 'margin-top:12px' },
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
         await api('/api/settings', { method: 'PUT', body: body() });
         out.hidden = false; out.textContent = 'Zugang wird geprüft …';
-        try { const r = await api('/api/idealo/test', { body: {} }); out.textContent = `Apify-Konto ${r.username ?? ''} erreichbar${r.plan ? ` (Tarif ${r.plan})` : ''}. ${r.actor.error ? `Actor: ${r.actor.error}` : `Actor „${r.actor.title}“ gefunden.`}`; await refresh(); } catch (er) { out.textContent = er.message; }
+        try {
+          const r = await api('/api/market/test', { body: {} });
+          out.textContent = `Apify-Konto ${r.username ?? ''} erreichbar${r.plan ? ` (Tarif ${r.plan})` : ''}. ` + r.actors.map((x) => (x.error ? `${x.name}: ${x.error}` : `${x.name}: Actor „${x.title}“ gefunden`)).join('. ') + '.';
+          await refresh();
+        } catch (er) { out.textContent = er.message; }
       }) }, 'Speichern und testen'),
-      c.token_set && !c.from_env ? h('button', { class: 'btn danger', type: 'button', onclick: guard(async () => { if (confirm('Apify-Token löschen? Der idealo-Abgleich stoppt, die bisherigen Daten bleiben.')) { await api('/api/settings', { method: 'PUT', body: { apify_remove: true } }); toast('Token gelöscht'); render(); } }) }, 'Token löschen') : null,
+      c.token_set && !c.from_env ? h('button', { class: 'btn danger', type: 'button', onclick: guard(async () => { if (confirm('Apify-Token löschen? Alle Marktquellen stoppen, die bisherigen Daten bleiben.')) { await api('/api/settings', { method: 'PUT', body: { apify_remove: true } }); toast('Token gelöscht'); await refresh(); render(); } }) }, 'Token löschen') : null,
       h('span', { class: 'spacer' }),
-      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: body() }); toast('idealo gespeichert'); await refresh(); }) }, 'Speichern')),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: body() }); toast('Marktquellen gespeichert'); await refresh(); }) }, 'Speichern')),
     out);
-  updHints();
+  hooks.forEach((fn) => fn());
   return form;
 }
 
@@ -2411,7 +2465,7 @@ function renderHelp(root) {
     ['h-abruf', 'Wann und wie oft abgefragt wird'],
     ['h-zusammen', 'Wie alles zusammenhängt'],
     ['h-ebay', 'Verkaufskanäle, eBay und Chancen'],
-    ['h-idealo', 'idealo: alle Händler zu deinen Artikeln'],
+    ['h-markt', 'Marktquellen: idealo und weitere Händler'],
     ['h-seitencheck', 'Seiten-Check: SEO der eigenen Produktseiten'],
     ['h-keywords', 'Keyword-Monitoring'],
     ['h-ki', 'Was die KI macht und was sie kostet'],
@@ -2474,13 +2528,13 @@ function renderHelp(root) {
       p(h('b', {}, 'Zusammenspiel mit JTL: '), 'Preisradar setzt die eBay-SKU immer auf die Artikelnummer. Im Angebotsimport von JTL („Plattformen → eBay → Angebotsimport“) ordnet JTL das Angebot darüber automatisch dem vorhandenen Artikel zu, es entsteht keine Dublette. Wichtig: dort „Bestand beibehalten“ wählen und nie „Artikel aus Angebot neu erstellen“. Ab der Übernahme kümmert sich JTL um Bestand, Preis und Aufträge; Preisradar ändert bestehende eBay-Angebote nie.'),
       p(h('b', {}, 'Chancen: '), 'Unter ', go('chancen', 'Chancen'), ' sammelt Preisradar, wo du mehr verkaufen oder verdienen kannst: Mitbewerber ausverkauft, fehlt auf eBay, eBay-Angebot zu teuer, bald ausverkauft, zu wenig Gewinn, Ladenhüter. Die Preisvorschläge gibt es als Datei für die JTL-Ameise. Dazu kommt ein Was-wäre-wenn-Rechner für Preis, Einkauf, Stückzahl und Werbung.')),
 
-    sec('h-idealo', 'idealo: alle Händler zu deinen Artikeln',
-      p('Zu jedem Artikel mit EAN holt Preisradar die Händlerangebote von idealo.de: Händler, Preis, Versand, Gesamtpreis und Lieferzeit. Damit siehst du auch Händler, die du noch gar nicht als Mitbewerber angelegt hast, und ob du auf idealo selbst gut dastehst.'),
-      p(h('b', {}, 'Woher die Daten kommen: '), 'Preisradar fragt idealo nicht selbst ab. Das übernimmt ein Scraper beim Dienst Apify, den du unter ', go('einstellungen', 'Einstellungen → Preisabfrage → idealo'), ' mit deinem Apify-Token einrichtest. Apify berechnet je Artikel einige Zehntel Cent. Preisradar schätzt die Kosten nach dem Tarif des gewählten Actors und hält ein Monatsbudget ein. Ist es erreicht, pausiert der Abgleich bis zum Monatsende.'),
-      p(h('b', {}, 'Welche Artikel: '), 'Nur Artikel, die du für idealo vormerkst. In der Preisliste hat jede Zeile dafür den Schalter „idealo“, in der Detailansicht „Bei idealo abfragen“. Unter „Weitere Filter“ kannst du alle gefilterten Artikel auf einmal vormerken oder herausnehmen, und der Filter „für idealo vorgemerkt“ zeigt, welche es sind. Nimmst du einen Artikel heraus, bleiben seine bisherigen idealo-Daten sichtbar, werden aber nicht mehr aktualisiert. Einmalig abgleichen geht in der Detailansicht auch ohne Vormerken.'),
-      p(h('b', {}, 'Wie oft: '), 'Das Tageskontingent wird über den Tag verteilt. Nie geprüfte Artikel kommen zuerst dran, dann die täglich geprüften (Prüf-Stufe A), dann die mit den meisten Verkäufen. Danach wird jeder Artikel im eingestellten Abstand erneut geprüft. Artikel, die es auf idealo nicht gibt, kommen erst nach 30 Tagen wieder dran. In der Detailansicht kannst du einen Artikel jederzeit sofort abgleichen.'),
-      p(h('b', {}, 'Was verglichen wird: '), 'Auf idealo zählt der Gesamtpreis inklusive Versand. Bist du dort gelistet (erkannt am Händlernamen unter „Dein Shop auf idealo“), vergleicht Preisradar deinen idealo-Gesamtpreis, sonst deinen Shop-Preis. Ein gelistetes Angebot ist also genauer als der Vergleich mit dem Shop-Preis, bei dem der Versand fehlt.'),
-      p(h('b', {}, 'Wo es auftaucht: '), 'In der Preisliste als eigene Spalte „idealo“ (sortierbar) und als Filter (auf idealo teurer, günstigster, Luft nach oben, nicht gelistet). In der Detailansicht als Abschnitt „Bei idealo“ mit allen Angeboten. Unter ', go('chancen', 'Chancen'), ' als „Auf idealo teurer“ und „Luft nach oben auf idealo“ mit Preisvorschlag, der nie unter die Preisuntergrenze geht. Unter ', go('mitbewerber', 'Mitbewerber'), ' als Liste der Händler, die noch nicht angelegt sind, mit einem Klick zum Anlegen. Marktplätze wie Amazon, eBay oder Kaufland werden dort nur angezeigt, für sie gibt es eigene Anbindungen.')),
+    sec('h-markt', 'Marktquellen: idealo und weitere Händler',
+      p('Zu jedem Artikel mit EAN holt Preisradar die Angebote anderer Händler aus Marktquellen, zurzeit idealo: Händler, Preis, Versand, Gesamtpreis und Lieferzeit. Damit siehst du auch Händler, die du noch gar nicht als Mitbewerber angelegt hast, und ob du dort selbst gut dastehst. Weitere Quellen kommen nach und nach dazu und funktionieren genauso.'),
+      p(h('b', {}, 'Woher die Daten kommen: '), 'Preisradar fragt diese Seiten nicht selbst ab. Das übernimmt je Quelle ein Scraper beim Dienst Apify, den du unter ', go('einstellungen', 'Einstellungen → Preisabfrage → Marktquellen'), ' mit deinem Apify-Token einrichtest. Ein Token gilt für alle Quellen. Apify berechnet je Artikel einige Zehntel Cent. Preisradar schätzt die Kosten nach dem Tarif des gewählten Actors und hält je Quelle ein Monatsbudget ein. Ist es erreicht, pausiert diese Quelle bis zum Monatsende.'),
+      p(h('b', {}, 'Welche Artikel: '), 'Nur Artikel, die du je Quelle vormerkst. In der Preisliste hat jede Zeile dafür einen Schalter mit dem Namen der Quelle (z. B. „idealo“), in der Detailansicht „Bei idealo abfragen“. Unter „Weitere Filter“ kannst du alle gefilterten Artikel auf einmal vormerken oder herausnehmen, und der Filter „vorgemerkt“ zeigt, welche es sind. Nimmst du einen Artikel heraus, bleiben seine bisherigen Daten sichtbar, werden aber nicht mehr aktualisiert. Einmalig abgleichen geht in der Detailansicht auch ohne Vormerken.'),
+      p(h('b', {}, 'Wie oft: '), 'Das Tageskontingent jeder Quelle wird über den Tag verteilt. Nie geprüfte Artikel kommen zuerst dran, dann die täglich geprüften (Prüf-Stufe A), dann die mit den meisten Verkäufen. Danach wird jeder Artikel im eingestellten Abstand erneut geprüft. Artikel, die es bei einer Quelle nicht gibt, kommen dort erst nach 30 Tagen wieder dran.'),
+      p(h('b', {}, 'Was verglichen wird: '), 'Gezählt wird der Gesamtpreis inklusive Versand. Bist du bei einer Quelle selbst gelistet (erkannt am Händlernamen unter „Dein Shop bei den Quellen“), vergleicht Preisradar deinen Gesamtpreis dort, sonst deinen Shop-Preis, bei dem dann der Versand fehlt. Über mehrere Quellen hinweg zählt der günstigste Marktpreis.'),
+      p(h('b', {}, 'Wo es auftaucht: '), 'In der Preisliste als eigene Spalte (sortierbar) und als Filter (teurer, günstigster, Luft nach oben, nicht gelistet, vorgemerkt). In der Detailansicht mit allen Angeboten je Quelle. Unter ', go('chancen', 'Chancen'), ' als „Am Markt teurer“ und „Luft nach oben am Markt“ mit Preisvorschlag, der nie unter die Preisuntergrenze geht. Unter ', go('mitbewerber', 'Mitbewerber'), ' als Liste der Händler, die noch nicht angelegt sind, mit einem Klick zum Anlegen. Marktplätze wie Amazon, eBay oder Kaufland werden dort nur angezeigt, für sie gibt es eigene Anbindungen.')),
 
     sec('h-seitencheck', 'Seiten-Check: SEO der eigenen Produktseiten',
       p('Der ', go('seitencheck', 'Seiten-Check'), ' ruft deine Produktseiten im Hintergrund ab und prüft, was Google braucht: Seitentitel und Meta-Beschreibung (fehlt, zu lang, doppelt), Hauptüberschrift, ob die Seite für Google gesperrt ist (noindex) oder auf eine andere zeigt (Canonical), die strukturierten Produktdaten mit Preis, Lieferbarkeit, EAN und Marke, den Umfang des Produkttexts, gleiche Texte auf mehreren Seiten, Bilder ohne Alternativtext und die Antwortzeit.'),
@@ -2540,7 +2594,7 @@ function renderHelp(root) {
 
     sec('h-daten', 'Deine Daten und faires Verhalten',
       p('Alle Daten liegen auf deinem eigenen Server. Die Oberfläche lädt nichts von fremden Servern (keine Schriften, kein Tracking). An OpenAI gehen nur der Inhalt öffentlicher Mitbewerberseiten und die Produktangaben deines Artikels (Name, Marke, Nummern), keine Kunden- oder Bestelldaten. Von Google liest Preisradar nur Statistiken aus Search Console und Merchant Center, aus Shopware nur Artikel und Bestellsummen, jeweils mit reinem Lesezugriff. Kundendaten werden nicht übernommen. Zugangsdaten werden verschlüsselt gespeichert.'),
-      p('Für idealo gehen nur die EANs deiner Artikel an Apify. Die Abfrage bei idealo erledigt der Actor des jeweiligen Anbieters nach dessen eigenen Regeln. Preisradar selbst ruft idealo nicht ab.'),
+      p('Für die Marktquellen (idealo …) gehen nur die EANs deiner Artikel an Apify. Die Abfrage erledigt der Actor des jeweiligen Anbieters nach dessen eigenen Regeln. Preisradar selbst ruft diese Seiten nicht ab.'),
       p('Über den Claude-Zugang (', go('einstellungen', 'Einstellungen'), ') kannst du Preisradar auch im Gespräch mit Claude abfragen und bedienen. Preise in deinem Shop werden auch dort nie geändert.'))));
 }
 
@@ -2977,7 +3031,7 @@ async function renderSettings(root) {
   const up = h('div', { id: 'userpanel' }, await userPanel());
   const groups = [
     { id: 'set-shop', title: 'Shop und Daten', sub: 'Eigener Shop, Sitemap und Shopware-Anbindung (Artikel, Einkaufspreise, Bestand, Verkäufe).', panels: [form] },
-    { id: 'set-abruf', title: 'Preisabfrage', sub: 'Wie oft und wie schonend die Mitbewerber abgefragt werden, die KI für schwierige Shops und der Abgleich mit idealo.', panels: [plan, ki, idealoSettingsPanel(cur, f)] },
+    { id: 'set-abruf', title: 'Preisabfrage', sub: 'Wie oft und wie schonend die Mitbewerber abgefragt werden, die KI für schwierige Shops und die Marktquellen (idealo …).', panels: [plan, ki, marketSettingsPanel(cur, f)] },
     { id: 'set-kanaele', title: 'Verkaufskanäle und eBay', sub: 'Gebühren und Versand je Kanal für die Gewinnrechnung, eBay-Anbindung zum Vergleichen und Einstellen.', panels: [await channelSettingsPanel(), ebaySettingsPanel(cur, f)] },
     { id: 'set-google', title: 'Google und SEO', sub: 'Search Console, Merchant Center und Keyword-Monitoring.', panels: [gsc, merchant, kwPanel] },
     { id: 'set-mail', title: 'Benachrichtigungen', sub: 'Tägliche Zusammenfassung per E-Mail.', panels: [mail] },

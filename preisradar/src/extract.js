@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio';
+import { timed } from './perf.js';
 import { normId, parsePrice } from './util.js';
 
 const asArray = (v) => (Array.isArray(v) ? v : v == null ? [] : [v]);
@@ -68,7 +69,10 @@ function mapAvailability(a) {
  * Produktdaten aus einer HTML-Seite lesen.
  * Reihenfolge: eigener CSS-Selektor, JSON-LD Product, Open-Graph/Meta, Microdata.
  */
-export function extractProduct(html, { priceSelector } = {}) {
+export function extractProduct(html, opts = {}) {
+  return timed(() => `Seite auswerten (${Math.round(html.length / 1024)} KB)`, () => extractProductInner(html, opts));
+}
+function extractProductInner(html, { priceSelector } = {}) {
   const $ = cheerio.load(html);
   const nodes = jsonLdNodes($);
   const product = nodes.find((n) => typesOf(n).includes('Product'));

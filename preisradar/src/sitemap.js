@@ -1,4 +1,5 @@
 import zlib from 'node:zlib';
+import { timed } from './perf.js';
 import { fetchText, robotsAllows } from './fetcher.js';
 import { tokens, jaccard, normId } from './util.js';
 
@@ -230,7 +231,7 @@ export function sitemapCategories(db, compId) {
 }
 
 function entries(db, compId) {
-  if (!cache.has(compId)) {
+  if (!cache.has(compId)) timed(`Sitemap-Index aufbauen (Mitbewerber ${compId})`, () => {
     const sel = selectedCategories(db, compId);
     const rows = db.prepare('SELECT url, slug FROM sitemap_urls WHERE competitor_id=?').all(compId).filter((r) => !sel.length || inCategories(categoryOf(r.url), sel));
     cache.set(compId, rows.map((r) => {
@@ -239,7 +240,7 @@ function entries(db, compId) {
       const parts = path.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
       return { url: r.url, slug: r.slug, tokens: tokens(r.slug), parts, norm: parts.join('') };
     }));
-  }
+  });
   return cache.get(compId);
 }
 
@@ -275,7 +276,10 @@ function idInUrl(e, id) {
  * Passende Produkt-URLs zu einem eigenen Artikel. Zuerst Treffer über EAN, Herstellernummer oder Artikelnummer
  * in der URL (eindeutig, unabhängig von der Schreibweise des Namens), danach die ähnlichsten Namen (Marke + Name gegen URL-Bezeichnung).
  */
-export function sitemapCandidates(db, compId, product, { limit = 5, min = 0.25 } = {}) {
+export function sitemapCandidates(db, compId, product, opts = {}) {
+  return timed(() => `Sitemap-Suche (Mitbewerber ${compId}, ${cache.get(compId)?.length ?? 'neu'} Adressen)`, () => sitemapCandidatesInner(db, compId, product, opts));
+}
+function sitemapCandidatesInner(db, compId, product, { limit = 5, min = 0.25 } = {}) {
   const want = tokens(`${product.manufacturer ?? ''} ${product.name}`);
   const brand = [...tokens(product.manufacturer)].slice(0, 1); // erstes Markenwort („HSK - Die Badexperten“ → hsk)
   const ids = productIds(product);

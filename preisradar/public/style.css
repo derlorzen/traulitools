@@ -975,3 +975,8 @@ span.sig.good { background: var(--good-bg); color: var(--good); cursor: default;
 .prices td.idcell.warmtxt small:last-child { color: var(--bad); }
 .prices td.idcell.cooltxt small:last-child { color: var(--good); }
 .idshops .tag { margin-left: 6px; }
+.mksrc + .mksrc { margin-top: 6px; }
+.idsrc + .idsrc { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.idsrc-h { margin: 0 0 6px; font-size: 14px; }
+.mkfs { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 14px; margin: 14px 0 0; min-width: 0; }
+.mkfs legend { font-weight: 700; padding: 0 6px; }

@@ -1,4 +1,5 @@
 import { fetchText, robotsAllows, pacingMs, notePace, paceInfo } from './fetcher.js';
+import { timed } from './perf.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { normId, sleep, tokens, jaccard } from './util.js';
 import { aiConfig } from './ai.js';
@@ -409,7 +410,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
           }
           if (!continuous || scrapeState.stop) break;
           if (Date.now() - t0 > RUN_MAX_MS) { scrapeState.backlog = true; break; }
-          queue = dueFor(comp, seen, Date.now(), { topUp: false }); // nachfüllen, solange etwas fällig ist (ohne Auffüllen mit nicht fälligen)
+          queue = timed(`Abruf nachfüllen (${comp.name})`, () => dueFor(comp, seen, Date.now(), { topUp: false })); // nachfüllen, solange etwas fällig ist (ohne Auffüllen mit nicht fälligen)
           scrapeState.total += queue.length;
         }
       }),

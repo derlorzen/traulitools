@@ -3,7 +3,8 @@
  * Die Auswertung aller Artikel wird kurz zwischengespeichert, damit das Nachladen beim Scrollen schnell bleibt.
  */
 import { auditFlags } from './seoaudit.js';
-import { idealoMap } from './idealo.js';
+import { marketMap } from './market.js';
+import { timed } from './perf.js';
 
 /*
  * Zwischenspeicher je Ausschnitt (beobachtet / alle), gültig solange sich der Datenstand nicht ändert.
@@ -18,7 +19,7 @@ function rowsFor(db, scope, key, { warm = false } = {}) {
   if (!warm) lastUsed.set(scope, Date.now());
   const c = caches.get(scope);
   if (c && c.key === key && Date.now() - c.at <= TTL) return c.rows;
-  const rows = build(db, scope);
+  const rows = timed(() => `Preisliste aufbauen (${scope})`, () => build(db, scope));
   caches.set(scope, { key, at: Date.now(), rows });
   return rows;
 }
@@ -50,12 +51,12 @@ function build(db, scope) {
   const mc = mcMap(db);
   const qs = queriesMap(db);
   const audit = auditFlags(db);
-  const ideal = idealoMap(db);
+  const market = marketMap(db);
   return products.map((p) => {
     const matches = byProduct.get(p.id) ?? {};
     const page = p.url ? keyOf(p.url) : null;
     const queries = page ? qs.get(page) ?? [] : [];
-    const r = { ...p, matches, seo: seoOf(seo, p.url), sales: sales.get(p.id) ?? null, google: mc.get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: audit.get(p.id) ?? null, idealo: ideal.get(p.id) ?? null };
+    const r = { ...p, matches, seo: seoOf(seo, p.url), sales: sales.get(p.id) ?? null, google: mc.get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: audit.get(p.id) ?? null, market: market.get(p.id) ?? null };
     if (r.seo && queries.length) r.seo.top = { query: queries[0].query, position: Math.round(queries[0].position * 10) / 10 };
     r.g = googleSignals(r);
     Object.defineProperty(r, 'qtext', { value: queries.map((q) => q.query.toLowerCase()), enumerable: false });
@@ -171,12 +172,12 @@ const CHIPS = {
   gInvisible: (r) => r.g.flags.includes('invisible'),
   gAdvice: (r) => r.g.advice.length > 0,
   gSeo: (r) => r.g.flags.includes('seoErrors'),
-  // idealo
-  idealoOn: (r) => Boolean(r.idealo_on),
-  idealoDear: (r) => r.idealo?.kind === 'dearer',
-  idealoCheapest: (r) => r.idealo?.kind === 'cheapest',
-  idealoHeadroom: (r) => r.idealo?.headroom_pct >= 5,
-  idealoUnlisted: (r) => r.idealo?.found && !r.idealo.listed,
+  // Marktquellen (idealo …)
+  marketOn: (r) => Boolean(r.market?.sel?.length),
+  marketDear: (r) => r.market?.best?.kind === 'dearer',
+  marketCheapest: (r) => r.market?.best?.kind === 'cheapest',
+  marketHeadroom: (r) => Boolean(r.market?.headroom),
+  marketUnlisted: (r) => Boolean(r.market?.unlisted),
 };
 
 const num = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -232,8 +233,8 @@ function sorter(key, dir) {
   if (key === 'position') return nullsLast((r) => r.seo?.position ?? null);
   if (key === 'ctr') return nullsLast((r) => r.seo?.ctr ?? null);
   if (key === 'query') return nullsLast((r) => r.seo?.top?.query ?? null);
-  if (key === 'idealo') return nullsLast((r) => r.idealo?.gap_pct ?? null);
-  if (key === 'idealomin') return nullsLast((r) => r.idealo?.min_total ?? null);
+  if (key === 'market') return nullsLast((r) => r.market?.best?.gap_pct ?? null);
+  if (key === 'marketmin') return nullsLast((r) => r.market?.best?.min_total ?? null);
   const m = /^comp:(\d+)$/.exec(key ?? '');
   if (m) return nullsLast((r) => { const x = r.matches[m[1]]; return x && (x.status === 'ok' || x.status === 'review') ? x.price : null; });
   return byName;
@@ -241,7 +242,7 @@ function sorter(key, dir) {
 
 // Datenstand: ändert sich bei jedem Abruf, Import oder jeder Zuordnung
 const dataVersion = (db) => db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(last_checked),'') || ':' || COALESCE(SUM(LENGTH(COALESCE(url,'')) + LENGTH(status)),0) FROM matches) || '|' ||
-    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) || ':' || COALESCE(SUM(idealo_on),0) FROM products) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM seo_audit) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM idealo_products) AS v`).get().v;
+    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) FROM products) || '|' || (SELECT COUNT(*) FROM market_select) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM seo_audit) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM market_products) AS v`).get().v;
 
 export function listProducts(db, q = {}) {
   const counts = db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get();
@@ -272,7 +273,7 @@ export function getProduct(db, id) {
     const prev = db.prepare('SELECT price FROM price_history WHERE match_id=? ORDER BY at DESC LIMIT 1 OFFSET 1').get(m.id);
     matches[m.competitor_id] = matchView(m, prev?.price);
   }
-  const r = { ...p, matches, seo: seoOf(seoMap(db), p.url), sales: salesMap(db).get(p.id) ?? null, google: mcMap(db).get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: auditFlags(db).get(p.id) ?? null, idealo: idealoMap(db).get(p.id) ?? null };
+  const r = { ...p, matches, seo: seoOf(seoMap(db), p.url), sales: salesMap(db).get(p.id) ?? null, google: mcMap(db).get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: auditFlags(db).get(p.id) ?? null, market: marketMap(db, [p.id]).get(p.id) ?? null };
   const q = r.seo ? db.prepare('SELECT query, position FROM seo_queries WHERE page=? ORDER BY clicks DESC, impressions DESC LIMIT 1').get(keyOf(p.url)) : null;
   if (q) r.seo.top = { query: q.query, position: Math.round(q.position * 10) / 10 };
   r.g = googleSignals(r);
