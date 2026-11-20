@@ -178,7 +178,7 @@ function renderPrices(root) {
   const reload = () => loadRows(true);
   let typingTimer;
   const typed = (key) => (e) => { state[key] = e.target.value; clearTimeout(typingTimer); typingTimer = setTimeout(reload, 250); };
-  const hasGoogle = Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit);
+  const hasGoogle = Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit || d.config.ads);
   const gview = hasGoogle && state.view === 'google';
   const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'marketOn', 'marketDear', 'marketCheapest', 'marketHeadroom', 'marketUnlisted'].includes(state.filter) ? 1 : 0);
   const reset = () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '', impMin: '', posMax: '' }); render(); };
@@ -186,7 +186,7 @@ function renderPrices(root) {
     state.view = v;
     try { localStorage.setItem('pr_view', v); } catch { /* egal */ }
     if (v === 'google' && ['name', 'number', 'gap', 'gappct', 'cheapest', 'price'].includes(state.sort)) Object.assign(state, { sort: 'potential', dir: 'desc' });
-    if (v === 'preise' && ['potential', 'position', 'ctr', 'query'].includes(state.sort)) Object.assign(state, { sort: 'name', dir: 'asc' });
+    if (v === 'preise' && ['potential', 'position', 'ctr', 'query', 'adscost', 'adsprofit'].includes(state.sort)) Object.assign(state, { sort: 'name', dir: 'asc' });
     render();
   };
   const sorts = [['name:asc', 'Name A–Z'], ['name:desc', 'Name Z–A'], ['number:asc', 'Artikelnummer'], ['gap:desc', 'Größter Rückstand in €'], ['gappct:desc', 'Größter Rückstand in %'], ['gap:asc', 'Größter Vorsprung'], ['price:desc', 'Preis absteigend'], ['price:asc', 'Preis aufsteigend'], ['cheapest:asc', 'Günstigster Mitbewerberpreis'], ['units:desc', 'Meistverkauft (30 Tage)'], ['revenue:desc', 'Meister Umsatz (90 Tage)'], ['margin:asc', 'Geringste Marge'], ['benchmark:desc', 'Am weitesten über Google-Vergleichspreis'], ['impressions:desc', 'Meiste Impressionen (Google)'], ['clicks:desc', 'Meiste Klicks (Google)'], ['potential:desc', 'Größtes Klickpotenzial (Google)'], ['position:asc', 'Beste Google-Position'], ['position:desc', 'Schlechteste Google-Position'], ['ctr:asc', 'Niedrigste Klickrate (Google)'], ['updated:desc', 'Zuletzt aktualisiert']];
@@ -278,7 +278,9 @@ function renderChips() {
     gc.merchant ? gchip('gSuggest', 'Google-Preisvorschlag', '', 'Google empfiehlt einen anderen Preis (Merchant Center)') : null,
     gchip('gSeo', 'SEO-Fehler', 'bad', 'Der Seiten-Check hat auf der Produktseite Fehler gefunden (z. B. noindex, fehlende Produktdaten, Preis in den Produktdaten weicht ab)'),
     gc.gsc ? gchip('gSoldHidden', 'verkauft, kaum sichtbar', '', 'In den letzten 90 Tagen verkauft, aber unter 20 Impressionen bei Google') : null,
-    gc.gsc ? gchip('gInvisible', 'nicht bei Google', '', 'Keine Impressionen in den letzten 28 Tagen') : null);
+    gc.gsc ? gchip('gInvisible', 'nicht bei Google', '', 'Keine Impressionen in den letzten 28 Tagen') : null,
+    gc.ads ? gchip('adsOn', 'mit Google-Ads-Kosten', '', 'In den letzten 30 Tagen über Shopping oder Performance Max beworben') : null,
+    gc.ads ? gchip('adsLoss', 'Werbung mit Verlust', 'bad', 'Werbekosten der letzten 30 Tage höher als der Gewinn aus den Verkäufen über die Werbung') : null);
   const sel = document.getElementById('brandsel');
   if (sel && sel.options.length <= 1 && list.brands.length) sel.append(...list.brands.map((b) => h('option', { value: b, selected: b === state.brand }, b)));
 }
@@ -330,12 +332,13 @@ function buildTable() {
   const wrap = document.getElementById('tablewrap');
   if (!wrap) return;
   const has = d.competitors.length > 0;
-  const gview = state.view === 'google' && Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit);
+  const gview = state.view === 'google' && Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit || d.config.ads);
   const table = gview ? h('table', { class: 'prices gview' },
     h('thead', {}, h('tr', {},
       h('th', { class: 'trackhead', title: 'Alle Artikel im aktuellen Filter beobachten bzw. nicht mehr beobachten' }, h('input', { type: 'checkbox', id: 'trackall', 'aria-label': 'Alle Artikel im Filter beobachten', onchange: guard(async (e) => { const on = e.target.checked; e.target.checked = !on; await track(null, on); }) })),
       sortHead(h('span', { id: 'prodcount' }, 'Produkt'), 'name', 'prod'),
       d.config.gsc ? [sortHead('Google-Position', 'position', 'gposh'), sortHead('Impressionen', 'impressions', '', 'desc'), sortHead('Klicks', 'clicks', '', 'desc'), sortHead('Klickrate', 'ctr'), sortHead('Klickpotenzial', 'potential', '', 'desc')] : null,
+      d.config.ads ? [sortHead('Werbekosten (30 T)', 'adscost', '', 'desc'), sortHead('Gewinn nach Werbung', 'adsprofit')] : null,
       h('th', { class: 'gtodo' }, 'Was tun'),
       sortHead(d.own.name, 'price', 'own', 'desc'),
       has ? sortHead('Preis-Platz', 'gappct', '', 'desc') : null,
@@ -375,7 +378,7 @@ async function loadRows(reset, { keep = false } = {}) {
     if (r.scope !== state.scope) state.scope = r.scope;
     const tbody = document.getElementById('rows');
     if (!tbody) return;
-    const els = r.rows.map((p) => (state.view === 'google' && (state.data.config.gsc || state.data.config.merchant || state.data.config.seoAudit) ? googleRowEl(p) : rowEl(p)));
+    const els = r.rows.map((p) => (state.view === 'google' && (state.data.config.gsc || state.data.config.merchant || state.data.config.seoAudit || state.data.config.ads) ? googleRowEl(p) : rowEl(p)));
     tbody.classList.toggle('still', Boolean(keep)); // beim Aktualisieren nicht erneut animieren
     if (reset) { list.rows = r.rows; tbody.replaceChildren(...els); if (!keep) document.getElementById('tablewrap').scrollTop = 0; }
     else { list.rows.push(...r.rows); tbody.append(...els); }
@@ -472,6 +475,10 @@ function googleRowEl(p) {
       h('td', { class: `mcell ${g.flags.includes('lowCtr') ? 'warmtxt' : ''}`, 'data-label': 'Klickrate' }, sx ? [`${nf1.format(sx.ctr * 100)} %`, g.expected != null ? h('small', { class: 'pmeta gexp' }, `üblich ${nf1.format(g.expected * 100)} %`) : null] : '–'),
       h('td', { class: 'mcell gpot', 'data-label': 'Klickpotenzial' }, sx && g.potential > 0 ? h('div', { class: 'potbox', title: `Etwa ${g.potential} Klicks mehr in 28 Tagen möglich` },
         h('b', {}, `+${nf.format(g.potential)}`), h('span', { class: 'potbar' }, h('i', { style: `width:${Math.max(3, Math.min(100, (g.potential / maxPot) * 100))}%` }))) : h('span', { class: 'tag mute' }, '–')),
+    ] : null,
+    state.data.config.ads ? [
+      h('td', { class: 'mcell', 'data-label': 'Werbekosten' }, p.ads?.cost ? [money(p.ads.cost), h('small', { class: 'pmeta gexp' }, p.ads.roas != null ? `ROAS ${nf1.format(p.ads.roas)} · ${nf1.format(p.ads.conversions)} Verk.` : `${nf.format(p.ads.clicks)} Klicks`)] : h('span', { class: 'tag mute' }, '–')),
+      h('td', { class: `mcell ${p.ads?.profit_after_ads < 0 ? 'warmtxt' : p.ads?.profit_after_ads > 0 ? 'goodtxt' : ''}`, 'data-label': 'Gewinn nach Werbung' }, p.ads?.profit_after_ads != null ? money(p.ads.profit_after_ads) : p.ads?.cost ? h('small', { class: 'pmeta' }, 'ohne Einkaufspreis') : h('span', { class: 'tag mute' }, '–')),
     ] : null,
     h('td', { class: 'gapcell gtodo', 'data-label': 'Was tun' }, g.advice.length
       ? h('ul', { class: 'todo' }, g.advice.slice(0, 2).map((x) => h('li', { class: x.kind }, x.text)))
@@ -591,7 +598,7 @@ async function pinFiltered(pin) {
 function replaceRow(p) {
   const i = list.rows.findIndex((x) => x.id === p.id);
   if (i >= 0) list.rows[i] = p;
-  const nr = state.view === 'google' && (state.data.config.gsc || state.data.config.merchant || state.data.config.seoAudit) ? googleRowEl(p) : rowEl(p);
+  const nr = state.view === 'google' && (state.data.config.gsc || state.data.config.merchant || state.data.config.seoAudit || state.data.config.ads) ? googleRowEl(p) : rowEl(p);
   nr.classList.add('flash');
   document.querySelector(`#rows tr[data-id="${p.id}"]`)?.replaceWith(nr);
 }
@@ -748,6 +755,7 @@ function sigChips(id, sig, { omit = [] } = {}) {
   if (!omit.includes('gsc') && sig.gsc) out.push(chip(sig.gsc.position <= 3 ? 'good' : sig.gsc.position <= 10 ? 'cool' : 'warn', `Google ${fmtPos(sig.gsc.position)} · ${nf.format(sig.gsc.impressions)} Impr.`, 'google', 'Ø Position und Impressionen der letzten 28 Tage'));
   if (!omit.includes('keywords') && sig.keywords) out.push(chip(sig.keywords.best <= 3 ? 'good' : sig.keywords.best <= 10 ? 'cool' : 'warn', `${sig.keywords.count} Keyword${sig.keywords.count > 1 ? 's' : ''} · bester Platz ${sig.keywords.best}`, 'keywords', `Bestes Keyword: ${sig.keywords.best_keyword}`));
   if (!omit.includes('audit') && sig.audit) out.push(sig.audit.errors ? chip('bad', `${sig.audit.errors} SEO-Fehler`, 'seo', sig.audit.top ?? '') : sig.audit.warns ? chip('warn', `${sig.audit.warns} SEO-Warnung${sig.audit.warns > 1 ? 'en' : ''}`, 'seo', sig.audit.top ?? '') : chip('good', 'SEO ok', 'seo'));
+  if (!omit.includes('ads') && sig.ads?.cost) out.push(chip(sig.ads.profit_after_ads != null ? (sig.ads.profit_after_ads < 0 ? 'bad' : 'good') : '', `Ads ${eur.format(sig.ads.cost)}${sig.ads.profit_after_ads != null ? ` · ${sig.ads.profit_after_ads < 0 ? 'Verlust' : 'Gewinn'} ${eur.format(Math.abs(sig.ads.profit_after_ads))}` : sig.ads.roas != null ? ` · ROAS ${nf1.format(sig.ads.roas)}` : ''}`, 'google', `Google Ads, letzte 30 Tage: ${eur.format(sig.ads.cost)} Kosten, ${nf.format(sig.ads.clicks)} Klicks, ${nf1.format(sig.ads.conversions)} Verkäufe, ${eur.format(sig.ads.value)} Umsatz`));
   if (!omit.includes('ebay') && sig.ebay) {
     const e = sig.ebay;
     if (e.listed) out.push(chip(e.market_min != null && e.price > e.market_min + 0.01 ? 'warn' : 'good', `eBay ${eur.format(e.price)}${e.market_min != null && e.price > e.market_min + 0.01 ? ` (ab ${eur.format(e.market_min)})` : ''}`, 'kanal'));
@@ -765,7 +773,7 @@ function contextBox(id) {
       sigChips(id, r.signals),
       r.opportunities.length ? h('div', { class: 'note chancen', id: 'sec-chancen' }, h('strong', {}, 'Chancen: '),
         h('ul', { class: 'todo' }, r.opportunities.map((o) => h('li', { class: o.tone === 'bad' ? 'price' : o.tone === 'warn' ? 'snippet' : 'content' }, h('b', {}, o.label), `: ${o.detail}. `, h('span', { class: 'pmeta' }, o.action),
-          o.type === 'ebay_missing' && state.data.config.ebayConnected ? [' ', h('button', { class: 'linkbtn', onclick: () => openListingEditor(id) }, 'einstellen')] : null)))) : null);
+          null)))) : null);
   }).catch(() => box.replaceChildren());
   return box;
 }
@@ -1253,6 +1261,7 @@ async function renderStart(root) {
       imp?.running ? [h('dt', {}, 'Import'), h('dd', {}, `läuft: ${imp.done} von ${imp.total}`)] : imp?.finishedAt ? [h('dt', {}, 'Letzter Import'), h('dd', {}, `${dt.format(new Date(imp.finishedAt))}, ${imp.created} neu, ${imp.updated} aktualisiert${imp.errors ? `, ${imp.errors} Fehler` : ''}`)] : null,
       h('dt', {}, 'Shopware'), h('dd', {}, d.config.shopware ? (d.config.swSynced ? [`Abgleich ${dt.format(new Date(d.config.swSynced))}`, d.config.swLast ? h('small', { class: 'pmeta' }, ` · ${swShort(d.config.swLast)}`) : null] : 'verbunden, Abgleich steht aus') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht verbunden (Verkäufe, Einkaufspreise)')),
       h('dt', {}, 'Google'), h('dd', {}, d.config.gsc ? h('button', { class: 'linkbtn', onclick: () => setTab('sichtbarkeit') }, 'Search Console verbunden, zur Sichtbarkeit') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'Search Console noch nicht verbunden')),
+      h('dt', {}, 'Google Ads'), h('dd', {}, d.config.ads ? h('button', { class: 'linkbtn', onclick: () => { setTab('sichtbarkeit'); setTimeout(() => document.getElementById('ads-sec')?.scrollIntoView({ behavior: 'smooth' }), 600); } }, d.config.adsSynced ? `Abgleich ${dt.format(new Date(d.config.adsSynced))}, zur Auswertung` : 'verbunden, Abgleich steht aus') : h('button', { class: 'linkbtn', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('ads-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'noch nicht verbunden (Gewinn nach Werbung)')),
       h('dt', {}, 'E-Mail'), h('dd', {}, h('button', { class: 'linkbtn', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('mail-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'Tägliche Zusammenfassung einstellen')),
       h('dt', {}, 'Marktquellen'), h('dd', {}, !mk().length ? h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht eingerichtet (idealo über Apify)')
         : !ido ? '–'
@@ -1417,17 +1426,83 @@ function pollSeo() {
 }
 
 async function renderSeo(root) {
-  const [o, mc] = await Promise.all([api('/api/seo'), api('/api/merchant')]);
+  const [o, mc, ads] = await Promise.all([api('/api/seo'), api('/api/merchant'), api('/api/ads')]);
   root.append(h('div', { class: 'pagehead' }, h('h2', {}, 'Sichtbarkeit')),
     h('p', { class: 'sub' }, 'Wie gut deine Artikel bei Google gefunden werden und wie deine Preise im Google-Shopping-Vergleich stehen.'));
-  if (!o.status.gsc.configured && !mc.configured) { root.append(seoSetupHint()); return; }
+  if (!o.status.gsc.configured && !mc.configured && !ads.configured) { root.append(seoSetupHint()); return; }
   root.append(h('div', { class: 'panel head' },
     h('div', {}, h('strong', {}, 'Je Artikel ansehen: '), 'Die Preisliste hat eine eigene Ansicht mit Google-Platz, Klickpotenzial und Hinweisen, was zu tun ist.'),
     h('span', { class: 'spacer' }),
     h('button', { class: 'btn primary', onclick: () => { state.view = 'google'; try { localStorage.setItem('pr_view', 'google'); } catch { /* egal */ } Object.assign(state, { sort: 'potential', dir: 'desc', filter: 'gAdvice' }); setTab('preise'); } }, 'Artikel mit Handlungsbedarf')));
   if (o.status.gsc.configured) renderGsc(root, o);
   if (mc.configured) renderMerchant(root, mc);
+  if (ads.configured) renderAds(root, ads);
 }
+
+/** Google Ads: Gewinn nach Werbung je Artikel, Kampagnenarten, Suchbegriffe. */
+function renderAds(root, a) {
+  const sec = h('section', { id: 'ads-sec' });
+  root.append(sec);
+  sec.append(h('h3', { class: 'sechead' }, 'Google Ads (letzte 30 Tage)'),
+    h('div', { class: 'syncbar' }, h('div', {}, h('b', {}, 'Google Ads '), h('span', { class: 'pmeta' }, a.synced_at ? `Konto ${String(a.customer).replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3')}, Stand ${dt.format(new Date(a.synced_at))}` : `Konto ${a.customer}, noch nicht abgeglichen`),
+      h('button', { class: 'btn small', disabled: a.job.running, onclick: guard(async () => { await api('/api/ads/sync', { method: 'POST', body: {} }); toast('Abgleich gestartet'); render(); const t = setInterval(guard(async () => { const x = await api('/api/ads'); if (!x.job.running) { clearInterval(t); toast(x.job.error ? `Fehlgeschlagen: ${x.job.error}` : 'Google Ads abgeglichen', Boolean(x.job.error)); if (state.tab === 'sichtbarkeit') render(); } }), 4000); }) }, a.job.running ? 'Abgleich läuft …' : 'Jetzt abgleichen')),
+      a.job.error ? h('div', { class: 'warmtxt' }, `Letzter Abgleich: ${a.job.error}`) : null,
+      a.job.result?.warnings?.length ? h('div', { class: 'pmeta' }, `Hinweise: ${a.job.result.warnings.join(' · ')}`) : null));
+  if (!a.synced_at) { sec.append(h('p', { class: 'pmeta' }, 'Noch keine Daten aus Google Ads. Der erste Abgleich startet automatisch innerhalb weniger Minuten.')); return; }
+  const t = a.total, pr = a.products;
+  const goChip = (filter) => { state.view = 'google'; try { localStorage.setItem('pr_view', 'google'); } catch { /* egal */ } Object.assign(state, { filter, sort: filter === 'adsLoss' ? 'adsprofit' : 'adscost', dir: filter === 'adsLoss' ? 'asc' : 'desc' }); setTab('preise'); };
+  sec.append(h('div', { class: 'kpis' },
+    kpiTile('Werbekosten', money(t.cost), `${nf.format(t.clicks)} Klicks, ${t.clicks ? `${money(t.cost / t.clicks)} je Klick` : '–'}`),
+    kpiTile('Umsatz über Werbung', money(t.value), `${nf1.format(t.conversions)} Verkäufe${t.roas != null ? `, ROAS ${nf1.format(t.roas)}` : ''}`),
+    kpiTile('Gewinn nach Werbung', pr.with_profit ? money(pr.profit_after_ads) : '–', pr.with_profit ? `bei ${nf.format(pr.with_profit)} beworbenen Artikeln mit Einkaufspreis` : 'braucht Einkaufspreise (Shopware)', pr.profit_after_ads < 0 ? 'warm' : ''),
+    kpiTile('Werbung mit Verlust', nf.format(pr.loss), pr.loss ? 'Artikel, bei denen die Werbung mehr kostet als sie bringt' : 'kein Artikel', pr.loss ? 'warm' : '')));
+
+  // Kampagnenarten
+  if (a.types.length) sec.append(h('div', { class: 'panel flush' },
+    h('div', { class: 'panelhead' }, h('h3', {}, 'Nach Kampagnenart'), h('p', { class: 'pmeta' }, 'Shopping und Performance Max werden je Artikel ausgewertet, Suchanzeigen je Suchbegriff.')),
+    h('table', { class: 'plain adtypes' }, h('thead', {}, h('tr', {}, ['Art', 'Kampagnen', 'Klicks', 'Kosten', 'Verkäufe', 'Umsatz', 'ROAS'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, a.types.map((x) => h('tr', {}, h('td', {}, x.name), h('td', {}, nf.format(x.campaigns)), h('td', {}, nf.format(x.clicks)), h('td', {}, money(x.cost)), h('td', {}, nf1.format(x.conversions)), h('td', {}, money(x.value)), h('td', {}, x.roas != null ? nf1.format(x.roas) : '–')))))));
+
+  // Artikel
+  if (pr.count) {
+    sec.append(h('div', { class: 'panel flush' },
+      h('div', { class: 'panelhead' }, h('h3', {}, 'Artikel in Shopping und Performance Max'),
+        h('p', { class: 'pmeta' }, `${nf.format(pr.count)} beworbene Produkte, ${nf.format(pr.matched)} davon deinen Artikeln zugeordnet (${money(pr.matched_cost)} von ${money(pr.cost)} Kosten). Gewinn nach Werbung = Gewinn je Verkauf × verkaufte Stück laut Werbung − Werbekosten.`),
+        h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: () => goChip('adsLoss') }, 'Werbung mit Verlust in der Preisliste'), h('button', { class: 'btn small', onclick: () => { opp.type = 'ads_potential'; setTab('chancen'); } }, 'Wo sich Werbung lohnen würde'))),
+      pr.items.length ? smartTable('ads-prod', {
+        rows: pr.items, sort: 'cost', dir: 'desc', maxHeight: 520, placeholder: 'Artikel oder Nummer suchen', onRow: (r) => openDrawer(r.id),
+        search: (r) => `${r.name} ${r.number ?? ''}`,
+        filters: [['loss', 'mit Verlust', (r) => r.profit_after_ads != null && r.profit_after_ads < 0], ['nosale', 'ohne Verkauf', (r) => r.conversions < 0.5 && r.cost > 0], ['win', 'mit Gewinn', (r) => r.profit_after_ads > 0]],
+        cols: [
+          { key: 'name', label: 'Artikel', cls: 'prod', first: 'asc', get: (r) => r.name, cell: (r) => [h('div', { class: 'pname' }, r.name), h('div', { class: 'pmeta' }, [r.number, r.types.map(typeLabel).join(', ')].filter(Boolean).join(' · '))] },
+          { key: 'clicks', label: 'Klicks', get: (r) => r.clicks, cell: (r) => nf.format(r.clicks) },
+          { key: 'cost', label: 'Kosten', get: (r) => r.cost, cell: (r) => money(r.cost) },
+          { key: 'conv', label: 'Verkäufe', get: (r) => r.conversions, cell: (r) => nf1.format(r.conversions) },
+          { key: 'value', label: 'Umsatz', get: (r) => r.value, cell: (r) => money(r.value) },
+          { key: 'roas', label: 'ROAS', get: (r) => r.roas, cell: (r) => (r.roas != null ? nf1.format(r.roas) : '–') },
+          { key: 'cpa', label: 'Max. je Verkauf', title: 'Gewinn je Verkauf vor Werbung: so viel darf Werbung je Verkauf höchstens kosten', get: (r) => r.max_cpa, cell: (r) => (r.max_cpa != null ? money(r.max_cpa) : '–') },
+          { key: 'profit', label: 'Gewinn nach Werbung', get: (r) => r.profit_after_ads, cell: (r) => (r.profit_after_ads != null ? h('span', { class: r.profit_after_ads < 0 ? 'warmtxt' : 'goodtxt' }, money(r.profit_after_ads)) : h('small', { class: 'pmeta' }, 'ohne Einkaufspreis')) },
+        ] }) : h('p', { class: 'list-empty', style: 'padding:0 16px 14px' }, 'Kein beworbenes Produkt passt zu einer Artikelnummer. Die Produkt-ID im Merchant Center muss der Artikelnummer entsprechen.')));
+  }
+
+  // Suchbegriffe
+  if (a.terms.count) sec.append(h('div', { class: 'panel flush' },
+    h('div', { class: 'panelhead' }, h('h3', {}, 'Suchbegriffe aus Suchanzeigen'),
+      h('p', { class: 'pmeta' }, `${nf.format(a.terms.count)} Suchbegriffe mit Klicks. Daneben der kostenlose Google-Platz aus der Search Console: Wo du schon unter den ersten drei stehst, zahlst du womöglich für Klicks, die du auch so bekämst${a.terms.paid_top3 ? ` (${nf.format(a.terms.paid_top3)} Begriffe)` : ''}.`)),
+    smartTable('ads-terms', {
+      rows: a.terms.items, sort: 'cost', dir: 'desc', maxHeight: 520, placeholder: 'Suchbegriff suchen',
+      search: (r) => r.term,
+      filters: [['top3', 'kostenlos in den Top 3', (r) => r.organic_position != null && r.organic_position <= 3], ['nosale', 'ohne Verkauf', (r) => r.conversions < 0.5], ['roas', 'ROAS unter 3', (r) => r.roas != null && r.roas < 3]],
+      cols: [
+        { key: 'term', label: 'Suchbegriff', cls: 'prod', first: 'asc', get: (r) => r.term, cell: (r) => r.term },
+        { key: 'clicks', label: 'Klicks', get: (r) => r.clicks, cell: (r) => nf.format(r.clicks) },
+        { key: 'cost', label: 'Kosten', get: (r) => r.cost, cell: (r) => money(r.cost) },
+        { key: 'conv', label: 'Verkäufe', get: (r) => r.conversions, cell: (r) => nf1.format(r.conversions) },
+        { key: 'roas', label: 'ROAS', get: (r) => r.roas, cell: (r) => (r.roas != null ? nf1.format(r.roas) : '–') },
+        { key: 'org', label: 'Kostenloser Platz', first: 'asc', get: (r) => r.organic_position, cell: (r) => (r.organic_position != null ? h('span', { class: r.organic_position <= 3 ? 'goodtxt' : '' }, nf1.format(r.organic_position)) : '–') },
+      ] })));
+}
+const typeLabel = (t) => ({ SHOPPING: 'Shopping', PERFORMANCE_MAX: 'Performance Max', SEARCH: 'Suche', DISPLAY: 'Display', VIDEO: 'Video', DEMAND_GEN: 'Demand Gen' }[t] ?? t);
 
 function renderMerchant(root, mc) {
   const pctTxt = (f) => (f == null ? '' : `${f > 0 ? '+' : ''}${nf.format(Math.round(f * 100))} %`);
@@ -1954,7 +2029,7 @@ async function renderChancen(root) {
         h('td', { class: 'mcell kurl', 'data-label': 'Warum' }, i.detail),
         h('td', { class: 'mcell', 'data-label': 'Wert', title: 'Grobe Schätzung in Euro, nur zum Sortieren' }, i.value ? money(i.value) : '–'),
         h('td', { class: 'mcell kurl', 'data-label': 'Was tun', onclick: (e) => i.type === 'ebay_missing' && e.stopPropagation() },
-          i.type === 'ebay_missing' && state.data.config.ebayConnected ? h('button', { class: 'btn small', onclick: () => openListingEditor(i.product_id) }, 'Auf eBay einstellen') : i.action)))))) : h('div', { class: 'panel empty' }, h('h3', {}, 'Keine Chancen in dieser Gruppe'), h('p', {}, 'Mit mehr Daten (Shopware-Verkäufe, Einkaufspreise, eBay) findet Preisradar mehr.')),
+          i.action)))))) : h('div', { class: 'panel empty' }, h('h3', {}, 'Keine Chancen in dieser Gruppe'), h('p', {}, 'Mit mehr Daten (Shopware-Verkäufe, Einkaufspreise, eBay) findet Preisradar mehr.')),
     list.length > 300 ? h('p', { class: 'pmeta' }, `Die ersten 300 von ${list.length}.`) : null,
     calcPanel);
   if (calcState.product) { calcState.product = null; setTimeout(() => document.getElementById('whatif')?.scrollIntoView({ behavior: 'smooth' }), 300); }
@@ -2632,6 +2707,7 @@ function renderHelp(root) {
       p(h('b', {}, 'Suche über Google-Suchbegriffe: '), 'Das Suchfeld findet auch Artikel, deren Seite bei Google über einen Begriff angezeigt wird, etwa „unterschrank weiß“, selbst wenn das Wort nicht im Artikelnamen steht. Unter dem Artikel steht dann, über welche Suchanfrage er gefunden wurde.'),
       p('In der Preisliste kannst du nach Impressionen oder Klicks sortieren, und in der Analyse die Empfehlungen nach „Nachfrage × Abstand“: Zuerst kommen die Artikel, bei denen ein besserer Preis die meisten Interessenten erreicht.'),
       p(h('b', {}, 'Merchant Center: '), 'Google kennt für viele Produkte den Preis, zu dem andere Händler sie in Shopping anbieten (Vergleichspreis), auch Händler, die du noch nicht beobachtest. Dazu kommen Googles Preisvorschläge mit geschätzter Wirkung auf Klicks und Verkäufe. Unter Mitbewerber zeigt Preisradar außerdem Shops, die in deinen Kategorien bei Google sichtbar sind, und legt sie auf Klick an.'),
+      p(h('b', {}, 'Google Ads: '), 'Ist Google Ads verbunden, holt Preisradar täglich Kosten, Klicks, Verkäufe und Umsatz der letzten 30 Tage: je Artikel aus Shopping und Performance Max (Zuordnung über die Produkt-ID = Artikelnummer), je Suchbegriff aus Suchanzeigen und je Kampagnenart. Mit dem Einkaufspreis rechnet Preisradar den Gewinn nach Werbung: Gewinn je Verkauf vor Werbung × verkaufte Stück laut Werbung − Werbekosten. Der Gewinn je Verkauf ist zugleich die Obergrenze, die Werbung je Verkauf kosten darf. Daraus entstehen drei Chancen: „Werbung frisst Gewinn“, „Werbung verpufft“ (beworben, obwohl ein Mitbewerber deutlich günstiger oder nichts auf Lager ist) und „Werbung lohnt sich“ (günstigster, gefragt, guter Gewinn, aber nicht beworben). Bei den Suchbegriffen steht der kostenlose Google-Platz daneben. Preisradar liest nur und ändert in Google Ads nichts.'),
       p(h('b', {}, 'Tägliche E-Mail: '), 'Auf Wunsch kommt jeden Morgen eine Zusammenfassung: wer seit gestern seine Preise geändert hat und wer jetzt unter deinem Preis liegt, die wichtigsten Preissenkungs-Kandidaten nach Umsatz und Nachfrage, neu offline gegangene Artikel und die Google-Zahlen. Einrichten unter ', go('einstellungen', 'Einstellungen'), '.')),
 
     sec('h-analyse', 'Wie die Empfehlungen entstehen',
@@ -3060,6 +3136,34 @@ async function renderSettings(root) {
     mcout,
     mcCur.synced_at ? h('p', { class: 'pmeta' }, `Letzter Abgleich: ${dt.format(new Date(mcCur.synced_at))}. Danach automatisch täglich.`) : null);
 
+  const adCur = cur.ads ?? {};
+  const adout = h('div', { class: 'result', hidden: true });
+  const adsForm = h('form', { class: 'panel', id: 'ads-settings', onsubmit: (e) => e.preventDefault() },
+    h('h3', {}, 'Google Ads'),
+    h('p', { class: 'sub' }, 'Holt Werbekosten, Klicks und Umsatz der letzten 30 Tage je Artikel (Shopping und Performance Max), je Suchbegriff (Suchanzeigen) und je Kampagnenart. Daraus rechnet Preisradar den Gewinn nach Werbung und zeigt, wo Werbung Geld verbrennt oder sich lohnen würde. Nur lesend, Preisradar ändert in Google Ads nichts.'),
+    h('details', { class: 'howto' }, h('summary', {}, 'So richtest du den Zugang ein'),
+      h('ol', { class: 'plainlist' },
+        h('li', {}, 'Zuerst oben unter „Google Search Console“ den Dienstkonto-Schlüssel hinterlegen. Google Ads nutzt dasselbe Dienstkonto.'),
+        h('li', {}, 'In der Google Cloud Console im Projekt dieses Dienstkontos die „Google Ads API“ aktivieren und unter „Google Ads API → Übersicht“ den Zugang beantragen. Für Preisradar reicht der Explorer-Zugang.'),
+        h('li', {}, ['In Google Ads unter „Verwaltung → Zugriff und Sicherheit → Nutzer“ über das Plus diese Adresse hinzufügen, Zugriffsebene „Nur Lesezugriff“: ', adCur.email ? copyCode(adCur.email) : h('em', {}, 'Adresse des Dienstkontos (erscheint hier, sobald der Schlüssel hinterlegt ist)')]),
+        h('li', {}, 'Die Kundennummer steht in Google Ads oben rechts neben dem Kontonamen (z. B. 123-456-7890). Läuft der Zugriff über ein Verwaltungskonto (MCC), dessen Kundennummer zusätzlich eintragen.'))),
+    h('div', { class: 'grid' },
+      f('Google-Ads-Kundennummer', 'ads_customer_id', adCur.customer ? adCur.customer.replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3') : '', { ph: '123-456-7890' }),
+      f('Verwaltungskonto (optional)', 'ads_login_customer_id', adCur.login ? adCur.login.replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3') : '', { ph: 'nur bei Zugriff über ein MCC', hint: 'Nur nötig, wenn das Dienstkonto im Verwaltungskonto statt im Werbekonto eingetragen ist.' }),
+      f('Entwickler-Token (optional)', 'ads_developer_token', '', { type: 'password', ph: adCur.dev_token_set ? 'gespeichert (leer lassen = behalten)' : 'meist nicht mehr nötig', hint: 'Google stellt auf Freigabe über das Cloud-Projekt um. Nur eintragen, falls Google ausdrücklich danach fragt.' })),
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
+        await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(adsForm)) });
+        adout.hidden = false; adout.textContent = 'Verbindung wird geprüft …';
+        try { const r = await api('/api/ads/test', { method: 'POST', body: {} }); adout.textContent = `Verbunden als ${r.email}${r.name ? `, Konto „${r.name}“` : ''}${r.currency ? ` (${r.currency})` : ''}.`; }
+        catch (e) { adout.textContent = e.message; }
+      }) }, 'Speichern und testen'),
+      adCur.configured ? h('button', { class: 'btn', type: 'button', onclick: guard(async () => { await api('/api/ads/sync', { method: 'POST', body: {} }); toast('Abgleich gestartet'); }) }, 'Jetzt abgleichen') : null,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', type: 'button', onclick: guard(async () => { await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(adsForm)) }); toast('Google Ads gespeichert'); await refresh(); }) }, 'Speichern')),
+    adout,
+    adCur.synced_at ? h('p', { class: 'pmeta' }, `Letzter Abgleich: ${dt.format(new Date(adCur.synced_at))}. Danach automatisch täglich.`) : null);
+
   const kc = cur.keywords;
   const kwout = h('div', { class: 'result', hidden: true });
   const sel = (label, name, opts, value, hint) => h('div', { class: 'field' }, h('label', {}, label), h('select', { name }, opts.map(([v, t]) => h('option', { value: v, selected: String(v) === String(value) }, t))), hint ? h('span', { class: 'hint' }, hint) : null);
@@ -3101,7 +3205,7 @@ async function renderSettings(root) {
     { id: 'set-shop', title: 'Shop und Daten', sub: 'Eigener Shop, Sitemap und Shopware-Anbindung (Artikel, Einkaufspreise, Bestand, Verkäufe).', panels: [form] },
     { id: 'set-abruf', title: 'Preisabfrage', sub: 'Wie oft und wie schonend die Mitbewerber abgefragt werden, die KI für schwierige Shops und die Marktquellen (idealo …).', panels: [ecoPanel, plan, ki, marketSettingsPanel(cur, f)] },
     { id: 'set-kanaele', title: 'Verkaufskanäle und eBay', sub: 'Gebühren und Versand je Kanal für die Gewinnrechnung, eBay-Anbindung zum Vergleichen und Einstellen.', panels: [await channelSettingsPanel(), ebaySettingsPanel(cur, f)] },
-    { id: 'set-google', title: 'Google und SEO', sub: 'Search Console, Merchant Center und Keyword-Monitoring.', panels: [gsc, merchant, kwPanel] },
+    { id: 'set-google', title: 'Google und SEO', sub: 'Search Console, Merchant Center, Google Ads und Keyword-Monitoring.', panels: [gsc, merchant, adsForm, kwPanel] },
     { id: 'set-mail', title: 'Benachrichtigungen', sub: 'Tägliche Zusammenfassung per E-Mail.', panels: [mail] },
     { id: 'set-zugang', title: 'Zugang und Sicherheit', sub: 'Benutzer, Passwort und der Zugang für Claude.', panels: [up, pw, mcp] },
   ];

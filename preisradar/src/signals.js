@@ -1,6 +1,7 @@
 import { pageKey } from './gsc.js';
 import { ISSUES } from './seoaudit.js';
 import { marketMap } from './market.js';
+import { adsByProduct } from './ads.js';
 
 /**
  * Gemeinsamer Blick auf einen Artikel über alle Bereiche hinweg: Preislage, Verkäufe, Google (Search Console,
@@ -46,6 +47,7 @@ export function productSignals(db, ids = null) {
   for (const m of db.prepare('SELECT product_id, min_total, offers FROM ebay_market').all()) if (want.has(m.product_id)) ebayMkt.set(m.product_id, m);
 
   const market = marketMap(db, ids);
+  const ads = adsByProduct(db);
 
   const out = new Map();
   for (const p of prods) {
@@ -63,6 +65,7 @@ export function productSignals(db, ids = null) {
       keywords: p.url ? kwByPage.get(pageKey(p.url)) ?? null : null,
       ebay: l || em ? { listed: Boolean(l), price: l?.price ?? null, pending_jtl: Boolean(l?.created_by_us && l.jtl_state === 'pending'), market_min: em?.min_total ?? null, offers: em?.offers ?? null } : null,
       market: market.get(p.id)?.best ? (({ source, offers, min_total, min_shop, own_rank, gap_pct, headroom_pct, kind, compare }) => ({ source, offers, min_total, min_shop, own_rank, gap_pct, headroom_pct, kind, compare }))(market.get(p.id).best) : null,
+      ads: ads.has(p.id) ? (({ cost, clicks, conversions, value, roas, profit_after_ads, types }) => ({ cost, clicks, conversions, value, roas, profit_after_ads, types }))(ads.get(p.id)) : null,
       offline: Boolean(p.offline_since),
     });
   }

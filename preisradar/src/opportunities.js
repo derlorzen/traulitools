@@ -5,6 +5,7 @@ import { ISSUES } from './seoaudit.js';
 import { expectedCtr } from './pricelist.js';
 import { marketMap } from './market.js';
 import { SOURCES } from './sources/index.js';
+import { adsByProduct } from './ads.js';
 
 /**
  * Chancenfinder (Regeln aus dem Marktschreier, angepasst an Shopware/JTL): Wo Marco mehr verkaufen oder mehr
@@ -25,6 +26,9 @@ export const TYPES = {
   keyword_drop: { label: 'Keyword verloren', tone: 'bad', hint: 'Ein beobachtetes Keyword ist in den letzten 7 Tagen deutlich abgerutscht. Seite und Preis prüfen, oft hat ein Mitbewerber nachgelegt.' },
   market_dear: { label: 'Am Markt teurer', tone: 'bad', hint: 'In einer Marktquelle (z. B. idealo) bietet ein anderer Händler dasselbe Produkt (gleiche EAN) inklusive Versand günstiger an. Dort entscheidet fast nur der Gesamtpreis.' },
   market_headroom: { label: 'Luft nach oben am Markt', tone: 'good', hint: 'Du bist in einer Marktquelle (z. B. idealo) der Günstigste, und der nächste Händler liegt deutlich darüber. Ein etwas höherer Preis kostet den ersten Platz nicht.' },
+  ads_loss: { label: 'Werbung frisst Gewinn', tone: 'bad', hint: 'Google Ads (Shopping/Performance Max): Die Werbekosten der letzten 30 Tage sind höher als der Gewinn aus den Verkäufen über die Werbung. Gebot senken, Zielwert (ROAS) anheben oder den Artikel aus der Kampagne nehmen.' },
+  ads_waste: { label: 'Werbung verpufft', tone: 'warn', hint: 'Für diesen Artikel wird bei Google Ads bezahlt, obwohl ein Mitbewerber deutlich günstiger ist oder kein Bestand da ist. Die Klicks kaufen dann meist woanders.' },
+  ads_potential: { label: 'Werbung lohnt sich', tone: 'good', hint: 'Du bist hier am günstigsten, der Artikel ist gefragt und bringt guten Gewinn, wird bei Google Ads aber nicht beworben. Ein Testbudget in Shopping oder Performance Max lohnt sich am ehesten hier.' },
   slow_mover: { label: 'Ladenhüter', tone: 'bad', hint: 'Bestand ohne Verkauf in 90 Tagen. Geld liegt im Lager: auf eBay anbieten, Preis senken oder als Aktion bewerben.' },
 };
 
@@ -118,9 +122,11 @@ export function findOpportunities(db) {
   const audits = new Map(db.prepare('SELECT product_id, issues FROM seo_audit').all().map((a) => [a.product_id, JSON.parse(a.issues || '[]')]));
   const a = analyse(db);
   const rowBy = new Map(a.rows.map((r) => [r.id, r]));
+  const ads = adsByProduct(db);
   for (const p of prods) {
     const g = p.url ? gsc.get(pageKey(p.url)) : null;
     const row = rowBy.get(p.id);
+    const cost = p.purchase_price > 0 ? p.purchase_price : null;
     const important = p.units_90 > 0 || p.tier === 'A' || (g?.impressions ?? 0) >= 100;
     if (g && row && row.gap_percent > a.rules.tolerance && g.impressions >= 100) {
       add('search_dear', p, { detail: `${Math.round(g.impressions).toLocaleString('de-DE')} Impressionen bei Google, ${String(row.gap_percent).replace('.', ',')} % teurer als ${row.cheapest_competitor} (${eur(row.cheapest)})`, value: r2(g.impressions * 0.02 * 0.03 * (p.price ?? 0)), action: row.suggested_price ? `Preis auf ${eur(row.suggested_price)} prüfen` : 'Preis prüfen', channel: 'shop', suggested_price: row.action === 'senken' ? row.suggested_price : null });
@@ -133,6 +139,25 @@ export function findOpportunities(db) {
     const errs = issues?.filter((i) => ISSUES[i.code]?.sev === 'error') ?? [];
     if (errs.length && important) {
       add('seo_error', p, { detail: errs.map((i) => `${ISSUES[i.code].label}${i.detail ? ` (${i.detail})` : ''}`).join(', '), value: r2(Math.max(20, (p.revenue_90 ?? 0) * 0.05)), action: 'Im Seiten-Check ansehen und im Shop beheben' });
+    }
+    // Google Ads: Gewinn nach Werbung, verpuffende Werbung, lohnende Werbung
+    const ad = ads.get(p.id);
+    const ct = (n) => String(n).replace('.', ',');
+    if (ad) {
+      const base = `${eur(ad.cost)} Werbekosten, ${eur(ad.value)} Umsatz über Werbung (30 T)`;
+      if (ad.cost >= 10 && ad.profit_after_ads != null && ad.profit_after_ads < 0) {
+        add('ads_loss', p, { detail: `${base}, ${eur(ad.profit_after_ads)} nach Werbung${ad.profit_per_sale != null ? `; je Verkauf bleiben ${eur(ad.profit_per_sale)} vor Werbung` : ''}`, value: r2(-ad.profit_after_ads), action: ad.profit_per_sale > 0 ? `Höchstens ${eur(ad.profit_per_sale)} Werbekosten je Verkauf (Ziel-ROAS mind. ${ct(Math.ceil((p.price / ad.profit_per_sale) * 10) / 10)})` : 'Aus der Kampagne nehmen' });
+      } else if (ad.cost >= 5) {
+        const why = [];
+        if (row?.gap_percent != null && row.gap_percent > Math.max(2, a.rules.tolerance)) why.push(`${row.cheapest_competitor} ist ${ct(row.gap_percent)} % günstiger`);
+        if (p.stock === 0) why.push('kein Bestand');
+        if (why.length) add('ads_waste', p, { detail: `${base}, aber ${why.join(' und ')}`, value: r2(ad.cost), action: p.stock === 0 ? 'Werbung pausieren, bis Ware da ist' : 'Preis prüfen oder Werbung für diesen Artikel bremsen' });
+      }
+    } else if (ads.size && cost && shopCh && p.price && (p.stock ?? 1) > 0 && row?.gap_percent != null && row.gap_percent <= 0 && (p.units_90 > 0 || (g?.impressions ?? 0) >= 100)) {
+      const per = profit(p.price, cost, shopCh, p.tax_rate ?? 19);
+      if (per != null && per >= Math.max(10, shopCh.min_profit * 3)) {
+        add('ads_potential', p, { detail: `Günstigster bei den Mitbewerbern, ${eur(per)} Gewinn je Verkauf${p.units_90 ? `, ${p.units_90} im Shop verkauft (90 T)` : ''}${g?.impressions ? `, ${Math.round(g.impressions).toLocaleString('de-DE')} Impressionen bei Google` : ''}`, value: r2(per * Math.max(1, (p.units_90 ?? 0) / 3) * 0.3), action: `Mit Testbudget bewerben, bis ${eur(per)} Werbekosten je Verkauf lohnen sich` });
+      }
     }
   }
   const since = new Date(Date.now() - 8 * 86400e3).toISOString().slice(0, 10);

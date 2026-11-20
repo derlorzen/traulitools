@@ -4,6 +4,7 @@
  */
 import { auditFlags } from './seoaudit.js';
 import { marketMap } from './market.js';
+import { adsByProduct } from './ads.js';
 import { timed } from './perf.js';
 import { eco } from './eco.js';
 
@@ -57,11 +58,12 @@ function build(db) {
   const qs = queriesMap(db);
   const audit = auditFlags(db);
   const market = marketMap(db);
+  const ads = adsByProduct(db);
   return products.map((p) => {
     const matches = byProduct.get(p.id) ?? {};
     const page = p.url ? keyOf(p.url) : null;
     const queries = page ? qs.get(page) ?? [] : [];
-    const r = { ...p, matches, seo: seoOf(seo, p.url), sales: sales.get(p.id) ?? null, google: mc.get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: audit.get(p.id) ?? null, market: market.get(p.id) ?? null };
+    const r = { ...p, matches, seo: seoOf(seo, p.url), sales: sales.get(p.id) ?? null, google: mc.get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: audit.get(p.id) ?? null, market: market.get(p.id) ?? null, ads: ads.get(p.id) ?? null };
     if (r.seo && queries.length) r.seo.top = { query: queries[0].query, position: Math.round(queries[0].position * 10) / 10 };
     r.g = googleSignals(r);
     Object.defineProperty(r, 'qtext', { value: queries.map((q) => q.query.toLowerCase()), enumerable: false });
@@ -183,6 +185,9 @@ const CHIPS = {
   marketCheapest: (r) => r.market?.best?.kind === 'cheapest',
   marketHeadroom: (r) => Boolean(r.market?.headroom),
   marketUnlisted: (r) => Boolean(r.market?.unlisted),
+  // Google Ads
+  adsOn: (r) => (r.ads?.cost ?? 0) > 0,
+  adsLoss: (r) => r.ads?.profit_after_ads != null && r.ads.profit_after_ads < 0,
 };
 
 const num = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -239,6 +244,8 @@ function sorter(key, dir) {
   if (key === 'ctr') return nullsLast((r) => r.seo?.ctr ?? null);
   if (key === 'query') return nullsLast((r) => r.seo?.top?.query ?? null);
   if (key === 'market') return nullsLast((r) => r.market?.best?.gap_pct ?? null);
+  if (key === 'adscost') return nullsLast((r) => r.ads?.cost ?? null);
+  if (key === 'adsprofit') return nullsLast((r) => r.ads?.profit_after_ads ?? null);
   if (key === 'marketmin') return nullsLast((r) => r.market?.best?.min_total ?? null);
   const m = /^comp:(\d+)$/.exec(key ?? '');
   if (m) return nullsLast((r) => { const x = r.matches[m[1]]; return x && (x.status === 'ok' || x.status === 'review') ? x.price : null; });
@@ -247,7 +254,7 @@ function sorter(key, dir) {
 
 // Datenstand: ändert sich bei jedem Abruf, Import oder jeder Zuordnung
 const dataVersion = (db) => db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(last_checked),'') || ':' || COALESCE(SUM(LENGTH(COALESCE(url,'')) + LENGTH(status)),0) FROM matches) || '|' ||
-    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) FROM products) || '|' || (SELECT COUNT(*) FROM market_select) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM seo_audit) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM market_products) AS v`).get().v;
+    (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') || ':' || COALESCE(SUM(tracked),0) || ':' || COUNT(offline_since) || ':' || COALESCE(SUM(tier='A'),0) || ':' || COALESCE(SUM(tier_pin),0) FROM products) || '|' || (SELECT COUNT(*) FROM market_select) || '|' || (SELECT COUNT(*) FROM competitors) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(impressions),0) FROM seo_pages) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM product_sales) || '|' || (SELECT COUNT(*) || ':' || COALESCE(SUM(benchmark),0) FROM mc_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM seo_audit) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(checked_at),'') FROM market_products) || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at),'') FROM ads_products) AS v`).get().v;
 
 export function listProducts(db, q = {}) {
   const counts = db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get();
@@ -278,7 +285,7 @@ export function getProduct(db, id) {
     const prev = db.prepare('SELECT price FROM price_history WHERE match_id=? ORDER BY at DESC LIMIT 1 OFFSET 1').get(m.id);
     matches[m.competitor_id] = matchView(m, prev?.price);
   }
-  const r = { ...p, matches, seo: seoOf(seoMap(db), p.url), sales: salesMap(db).get(p.id) ?? null, google: mcMap(db).get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: auditFlags(db).get(p.id) ?? null, market: marketMap(db, [p.id]).get(p.id) ?? null };
+  const r = { ...p, matches, seo: seoOf(seoMap(db), p.url), sales: salesMap(db).get(p.id) ?? null, google: mcMap(db).get(mcKey(p.number)) ?? null, a: evaluate(p, comps, matches), audit: auditFlags(db).get(p.id) ?? null, market: marketMap(db, [p.id]).get(p.id) ?? null, ads: adsByProduct(db).get(p.id) ?? null };
   const q = r.seo ? db.prepare('SELECT query, position FROM seo_queries WHERE page=? ORDER BY clicks DESC, impressions DESC LIMIT 1').get(keyOf(p.url)) : null;
   if (q) r.seo.top = { query: q.query, position: Math.round(q.position * 10) / 10 };
   r.g = googleSignals(r);

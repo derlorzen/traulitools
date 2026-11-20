@@ -26,12 +26,13 @@ import { gscSites, syncGsc, saveServiceAccount, gscConfig, pageKey as pageKeyOf 
 import { seoOverview, seoStatus, productSeo } from './seo.js';
 import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from './digest.js';
 import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
+import { adsConfig, adsTest, syncAds, adsSummary } from './ads.js';
 import { computeTiers, tierConfig, tierStatus } from './tiers.js';
 import { listChannels, updateChannel, channelView } from './channels.js';
 import { activeSources, marketOverview, apifyTest, apifyToken, startJob, jobs as marketJobs, marketTick, resetTicks, productMarket, lookupNow, discoveredShops, dismissShop, setSelected, marketSettings, saveMarketSettings } from './market.js';
 import { source as marketSource } from './sources/index.js';
 import { ebayConfig, ebayDeletionToken, authorizeUrl, exchangeCode, disconnect as ebayDisconnect, ebayTest, syncListings, startMarketJob, marketJob, marketCheck, ebayTick, suggestCategories, aspects as ebayAspects, policies as ebayPolicies, draft as ebayDraft, createListing, ebayOverview, resetAppToken, cleanDescription } from './ebay.js';
-import { ebayCheck, findOpportunities, jtlExport, productOpportunities } from './opportunities.js';
+import { ebayCheck, findOpportunities, jtlExport, productOpportunities, invalidateOpportunities } from './opportunities.js';
 import { productSignals, withSignals } from './signals.js';
 import { auditOverview, auditOf, auditProduct, startAudit, auditJob, auditTick, auditConfig, suggestMeta } from './seoaudit.js';
 import { kwConfig, kwTest, addKeywords, postChecks, collectChecks, refreshVolumes, kwOverview, kwDetail, suggestions, startSuggestionJob, kwTick, kwJob, MAX_KEYWORDS, normKeyword } from './keywords.js';
@@ -157,7 +158,7 @@ export function createApp(db, { dataDir = null } = {}) {
       tiers: tierStatus(db),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, market: activeSources(db), eco: refreshEco(db), seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), swLast: JSON.parse(getSetting(db, 'sw_last') || 'null'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, ads: adsConfig(db).configured, adsSynced: getSetting(db, 'ads_synced_at'), keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, market: activeSources(db), eco: refreshEco(db), seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), swLast: JSON.parse(getSetting(db, 'sw_last') || 'null'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -341,6 +342,13 @@ export function createApp(db, { dataDir = null } = {}) {
     res.json({ ok: true, dismissed: list.length });
   }));
 
+  app.get('/api/ads', wrap((_req, res) => res.json({ ...adsSummary(db), job: { ...adsJob } })));
+  app.post('/api/ads/test', wrap(async (_req, res) => res.json(await adsTest(db))));
+  app.post('/api/ads/sync', wrap((_req, res) => {
+    if (!adsConfig(db).configured) throw bad('Google Ads ist nicht eingerichtet (Einstellungen → Google und SEO)');
+    if (!startAdsJob(db)) throw bad('Es läuft bereits ein Abgleich', 409);
+    res.json({ ok: true, job: { ...adsJob } });
+  }));
   app.get('/api/merchant', wrap((_req, res) => res.json({ ...merchantSummary(db), job: { ...mcJob } })));
   app.post('/api/merchant/test', wrap(async (_req, res) => res.json(await merchantTest(db))));
   app.post('/api/merchant/sync', wrap((_req, res) => {
@@ -673,6 +681,7 @@ export function createApp(db, { dataDir = null } = {}) {
       shopware_from_env: !hasSetting(db, 'shopware_url') && Boolean(process.env.SHOPWARE_URL),
       mcp_enabled: mcpEnabled(db),
       seo: seoStatus(db),
+      ads: (() => { const a = adsConfig(db); return { customer: a.customer, login: a.login, dev_token_set: Boolean(a.devToken), configured: a.configured, email: a.email, synced_at: getSetting(db, 'ads_synced_at') }; })(),
       merchant: (() => { const m = merchantConfig(db); return { account: m.account, country: m.country, categories: m.categories.join(', '), configured: m.configured, synced_at: getSetting(db, 'mc_synced_at') }; })(),
       mail: (() => { const m = mailConfig(db); return { enabled: m.enabled, host: m.host, port: m.port, secure: m.secure, user: m.user, pass_set: Boolean(m.pass), from: m.from, to: m.to.join(', '), hour: m.hour, last_sent: getSetting(db, 'mail_last_sent') }; })(),
       min_margin: Number(getSetting(db, 'min_margin') ?? 10),
@@ -753,6 +762,15 @@ export function createApp(db, { dataDir = null } = {}) {
     if (b.mail_hour !== undefined && b.mail_hour !== '') { const n = Number(b.mail_hour); if (!Number.isInteger(n) || n < 0 || n > 23) throw bad('Uhrzeit: volle Stunde 0 bis 23'); setSetting(db, 'mail_hour', String(n)); }
     if (b.mail_secure !== undefined) setSetting(db, 'mail_secure', b.mail_secure === true || b.mail_secure === 'on' || b.mail_secure === '1' ? '1' : '0');
     if (b.mail_enabled !== undefined) setSetting(db, 'mail_enabled', b.mail_enabled === true || b.mail_enabled === 'on' || b.mail_enabled === '1' ? '1' : '0');
+    // Google Ads
+    for (const [k, label] of [['ads_customer_id', 'Google-Ads-Kundennummer'], ['ads_login_customer_id', 'Kundennummer des Verwaltungskontos']]) {
+      if (typeof b[k] !== 'string') continue;
+      const v = b[k].replace(/\D/g, '');
+      if (b[k].trim() && v.length !== 10) throw bad(`${label}: 10 Ziffern (z. B. 123-456-7890)`);
+      setSetting(db, k, v);
+    }
+    if (typeof b.ads_developer_token === 'string' && b.ads_developer_token.trim()) setSetting(db, 'ads_developer_token', b.ads_developer_token.trim(), { secret: true });
+    if (b.ads_developer_token_remove) setSetting(db, 'ads_developer_token', '');
     // Merchant Center
     if (typeof b.mc_account === 'string') { const v = b.mc_account.replace(/\D/g, ''); if (b.mc_account.trim() && !v) throw bad('Merchant-Center-Konto-ID: nur Ziffern'); setSetting(db, 'mc_account', v); }
     if (typeof b.mc_country === 'string' && /^[a-z]{2}$/i.test(b.mc_country.trim())) setSetting(db, 'mc_country', b.mc_country.trim().toUpperCase());
@@ -885,6 +903,18 @@ export function startMerchantJob(db) {
   return true;
 }
 
+/** Google-Ads-Abgleich im Hintergrund. */
+export const adsJob = { running: false, startedAt: null, finishedAt: null, result: null, error: null };
+export function startAdsJob(db) {
+  if (adsJob.running) return false;
+  Object.assign(adsJob, { running: true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null });
+  syncAds(db)
+    .then((r) => { adsJob.result = r; invalidateOpportunities(); })
+    .catch((e) => { adsJob.error = e.message; console.error('Google Ads:', e.message); })
+    .finally(() => { adsJob.running = false; adsJob.finishedAt = new Date().toISOString(); });
+  return true;
+}
+
 /** Shopware-Abgleich im Hintergrund. */
 export const swJob = { running: false, startedAt: null, finishedAt: null, result: null, error: null };
 export function startShopwareJob(db) {
@@ -928,6 +958,11 @@ export function startScheduler(db) {
       if (!mcJob.running && merchantConfig(db).configured && Date.now() - (Date.parse(getSetting(db, 'mc_synced_at') || 0) || 0) > 24 * 3600 * 1000 && Date.now() - (Date.parse(getSetting(db, 'mc_tried_at') || 0) || 0) > 6 * 3600 * 1000) {
         setSetting(db, 'mc_tried_at', new Date().toISOString());
         startMerchantJob(db);
+      }
+      // Google Ads täglich
+      if (!adsJob.running && adsConfig(db).configured && Date.now() - (Date.parse(getSetting(db, 'ads_synced_at') || 0) || 0) > 24 * 3600 * 1000 && Date.now() - (Date.parse(getSetting(db, 'ads_tried_at') || 0) || 0) > 6 * 3600 * 1000) {
+        setSetting(db, 'ads_tried_at', new Date().toISOString());
+        startAdsJob(db);
       }
       // Keyword-Monitoring: Aufträge abgeben und fertige abholen
       timed('Planer: Keywords', () => kwTick(db));
