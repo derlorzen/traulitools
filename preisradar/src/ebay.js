@@ -38,6 +38,12 @@ const base = (cfg, kind) => {
   if (kind === 'auth' && process.env.EBAY_AUTH_BASE) return process.env.EBAY_AUTH_BASE;
   return kind === 'auth' ? (cfg.sandbox ? 'https://auth.sandbox.ebay.com' : 'https://auth.ebay.com') : (cfg.sandbox ? 'https://api.sandbox.ebay.com' : 'https://api.ebay.com');
 };
+/** Prüftoken für die eBay-Kontolöschungs-Meldungen (32–80 Zeichen, wird einmal erzeugt). */
+export function ebayDeletionToken(db) {
+  let t = getSetting(db, 'ebay_deletion_token');
+  if (!t) { t = `preisradar-${crypto.randomBytes(20).toString('hex')}`; setSetting(db, 'ebay_deletion_token', t); }
+  return t;
+}
 function tokens(db) { try { return JSON.parse(getSetting(db, 'ebay_tokens') || 'null'); } catch { return null; } }
 const saveTokens = (db, t) => setSetting(db, 'ebay_tokens', JSON.stringify(t), { secret: true });
 

@@ -1999,7 +1999,8 @@ function ebaySettingsPanel(cur, f) {
     h('details', { class: 'howto' }, h('summary', {}, 'So richtest du den Zugang ein'),
       h('ol', { class: 'plainlist' },
         h('li', {}, 'Auf developer.ebay.com ein kostenloses Entwicklerkonto anlegen und unter „Application Keys“ ein Schlüsselpaar für „Production“ erzeugen: App ID (Client ID) und Cert ID (Client Secret).'),
-        h('li', {}, 'Damit laufen schon die Mitbewerberpreise. Für eigene Angebote und das Einstellen unter „User Tokens → Get a Token from eBay via Your Application“ eine Weiterleitung (RuName) anlegen. Als „Auth accepted URL“ diese Adresse eintragen: ', h('code', {}, e.callback || '/api/ebay/callback')),
+        h('li', {}, 'eBay schaltet die Production-Schlüssel erst frei, wenn Meldungen zu gelöschten eBay-Konten ankommen. Unter „Alerts & Notifications“ bei „Marketplace Account Deletion“ eine E-Mail-Adresse, diesen Endpunkt ', copyCode(e.deletion_endpoint), ' und dieses Prüftoken ', copyCode(e.deletion_token), ' eintragen, speichern und „Send Test Notification“ klicken.'),
+        h('li', {}, 'Damit laufen schon die Mitbewerberpreise. Für eigene Angebote unter „User Tokens → Get a Token from eBay via Your Application“ eine Weiterleitung (RuName) anlegen. Als „Auth accepted URL“ diese Adresse eintragen: ', copyCode(e.callback || '/api/ebay/callback')),
         h('li', {}, 'Den RuName (sieht aus wie „Firma-App-PRD-…“) hier eintragen, speichern und „Mit eBay verbinden“ klicken. Marco meldet sich bei eBay an und stimmt zu.'),
         h('li', {}, 'Im eBay-Konto müssen Rahmenbedingungen (Versand, Zahlung, Rücknahme) eingerichtet sein. Nach dem Verbinden hier auswählen.'))),
     h('div', { class: 'grid' },
@@ -2660,6 +2661,11 @@ function renderHelp(root) {
 const ACTION_TAG = { senken: ['Preis senken', 'err'], halten: ['Preis halten', 'mute'], 'erhöhen': ['Preis erhöhen', 'good'], 'prüfen': ['Prüfen', 'warn'] };
 const fmtPct = (v, d = 1) => (v == null ? '–' : `${v > 0 ? '+' : ''}${v.toFixed(d).replace('.', ',')} %`);
 const aState = { action: 'actionable', comp: '', brand: '', q: '', sort: 'gap' };
+
+/** Code mit Kopier-Knopf (für Werte, die woanders eingetragen werden). */
+function copyCode(text) {
+  return h('span', { class: 'copycode' }, h('code', {}, text), h('button', { type: 'button', class: 'btn small', onclick: guard(async () => { await navigator.clipboard.writeText(text); toast('Kopiert'); }) }, 'Kopieren'));
+}
 
 function kpiTile(label, value, sub, cls = '') {
   return h('div', { class: `kpi ${cls}` }, h('div', { class: 'kpi-v' }, value), h('div', { class: 'kpi-l' }, label), sub ? h('div', { class: 'kpi-s' }, sub) : null);

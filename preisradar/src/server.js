@@ -30,7 +30,7 @@ import { computeTiers, tierConfig, tierStatus } from './tiers.js';
 import { listChannels, updateChannel, channelView } from './channels.js';
 import { activeSources, marketOverview, apifyTest, apifyToken, startJob, jobs as marketJobs, marketTick, resetTicks, productMarket, lookupNow, discoveredShops, dismissShop, setSelected, marketSettings, saveMarketSettings } from './market.js';
 import { source as marketSource } from './sources/index.js';
-import { ebayConfig, authorizeUrl, exchangeCode, disconnect as ebayDisconnect, ebayTest, syncListings, startMarketJob, marketJob, marketCheck, ebayTick, suggestCategories, aspects as ebayAspects, policies as ebayPolicies, draft as ebayDraft, createListing, ebayOverview, resetAppToken, cleanDescription } from './ebay.js';
+import { ebayConfig, ebayDeletionToken, authorizeUrl, exchangeCode, disconnect as ebayDisconnect, ebayTest, syncListings, startMarketJob, marketJob, marketCheck, ebayTick, suggestCategories, aspects as ebayAspects, policies as ebayPolicies, draft as ebayDraft, createListing, ebayOverview, resetAppToken, cleanDescription } from './ebay.js';
 import { ebayCheck, findOpportunities, jtlExport, productOpportunities } from './opportunities.js';
 import { productSignals, withSignals } from './signals.js';
 import { auditOverview, auditOf, auditProduct, startAudit, auditJob, auditTick, auditConfig, suggestMeta } from './seoaudit.js';
@@ -96,6 +96,23 @@ export function createApp(db, { dataDir = null } = {}) {
   app.get('/healthz', (_req, res) => res.json({ ok: true, uptime_s: Math.round(process.uptime()), rss_mb: Math.round(process.memoryUsage().rss / 1048576), lag: loopLag }));
   const internalKey = crypto.randomBytes(24).toString('hex'); // nur für Aufrufe des MCP-Endpunkts an die eigenen Routen
   mountMcp(app, db, { ownName, schedule: () => scheduleConfig(db), internalKey }); // eigene Token-Prüfung, vor der Sitzungsprüfung
+  // eBay „Marketplace Account Deletion“: Pflicht, damit eBay die Produktions-Schlüssel freischaltet. Prüfaufruf (GET)
+  // mit SHA-256 aus challenge_code + Prüftoken + Endpunkt; Meldungen (POST) bestätigen und den Verkäufernamen aus den
+  // gespeicherten Preisvergleichen entfernen (andere Daten fremder eBay-Konten speichert Preisradar nicht).
+  const ebayDelEndpoint = () => `${getSetting(db, 'app_url') || ''}/ebay/account-deletion`;
+  app.get('/ebay/account-deletion', (req, res) => {
+    const code = String(req.query.challenge_code || '');
+    if (!code) return res.status(400).json({ error: 'challenge_code fehlt' });
+    res.json({ challengeResponse: crypto.createHash('sha256').update(code + ebayDeletionToken(db) + ebayDelEndpoint()).digest('hex') });
+  });
+  app.post('/ebay/account-deletion', (req, res) => {
+    const u = req.body?.notification?.data?.username;
+    if (u) {
+      db.prepare('UPDATE ebay_market SET min_seller=NULL WHERE min_seller=?').run(String(u));
+      db.prepare("DELETE FROM market_offers WHERE source LIKE 'ebay%' AND shop=?").run(String(u));
+    }
+    res.status(204).end();
+  });
   app.use(express.static(path.join(here, '..', 'public')));
 
   // Ab hier nur mit Anmeldung
@@ -659,7 +676,7 @@ export function createApp(db, { dataDir = null } = {}) {
       merchant: (() => { const m = merchantConfig(db); return { account: m.account, country: m.country, categories: m.categories.join(', '), configured: m.configured, synced_at: getSetting(db, 'mc_synced_at') }; })(),
       mail: (() => { const m = mailConfig(db); return { enabled: m.enabled, host: m.host, port: m.port, secure: m.secure, user: m.user, pass_set: Boolean(m.pass), from: m.from, to: m.to.join(', '), hour: m.hour, last_sent: getSetting(db, 'mail_last_sent') }; })(),
       min_margin: Number(getSetting(db, 'min_margin') ?? 10),
-      ebay: (() => { const e = ebayConfig(db); return { client_id: e.clientId, secret_set: Boolean(e.clientSecret), runame: e.runame, sandbox: e.sandbox, connected: e.connected, username: e.username, fulfillment_policy: e.policies.fulfillment, payment_policy: e.policies.payment, return_policy: e.policies.return, location: e.location, postal_code: e.postalCode, condition: e.condition, max_qty: e.maxQty, browse_per_day: e.perDay, callback: `${getSetting(db, 'app_url') || ''}/api/ebay/callback` }; })(),
+      ebay: (() => { const e = ebayConfig(db); return { client_id: e.clientId, secret_set: Boolean(e.clientSecret), runame: e.runame, sandbox: e.sandbox, connected: e.connected, username: e.username, fulfillment_policy: e.policies.fulfillment, payment_policy: e.policies.payment, return_policy: e.policies.return, location: e.location, postal_code: e.postalCode, condition: e.condition, max_qty: e.maxQty, browse_per_day: e.perDay, callback: `${getSetting(db, 'app_url') || ''}/api/ebay/callback`, deletion_endpoint: `${getSetting(db, 'app_url') || ''}/ebay/account-deletion`, deletion_token: ebayDeletionToken(db) }; })(),
       seo_pages_per_day: auditConfig(db).perDay,
       eco_mode: getSetting(db, 'eco_mode') === '1',
       market: marketSettings(db, { hasToken: Boolean(apifyToken(db)), fromEnv: !hasSetting(db, 'apify_token') && Boolean(process.env.APIFY_TOKEN) }),

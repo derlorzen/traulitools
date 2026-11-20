@@ -150,3 +150,27 @@ test('eBay: Verbinden, Angebote lesen, Mitbewerber, Einstellen, Chancen, JTL-Exp
   assert.match(csv, /^﻿Artikelnummer;Artikelname;Kanal/);
   assert.match(csv, /A2;Grohe Eurosmart;eBay;129,00;/);
 });
+
+test('eBay-Kontolöschung: Prüfaufruf liefert SHA-256, Meldung entfernt Verkäufernamen', async () => {
+  const { createApp } = await import('../src/server.js');
+  const crypto = await import('node:crypto');
+  initSecrets(null);
+  const db = openDb(':memory:');
+  setSetting(db, 'app_url', 'https://traulitools.example');
+  upsertProducts(db, [{ number: 'E1', name: 'Eins', price: 10 }], 'csv');
+  db.prepare("INSERT INTO ebay_market(product_id, checked_at, offers, min_total, min_seller) VALUES (1, '2026-01-01', 2, 9, 'fremder_haendler')").run();
+  const srv = createApp(db).listen(0);
+  await new Promise((r) => srv.once('listening', r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const tok = db.prepare("SELECT value FROM settings WHERE key='ebay_deletion_token'").get()?.value;
+    const r = await fetch(`${base}/ebay/account-deletion?challenge_code=abc123`).then((x) => x.json());
+    const tok2 = db.prepare("SELECT value FROM settings WHERE key='ebay_deletion_token'").get().value;
+    assert.ok(tok2.length >= 32 && tok2.length <= 80 && /^[A-Za-z0-9_-]+$/.test(tok2));
+    assert.ok(!tok || tok === tok2);
+    assert.equal(r.challengeResponse, crypto.createHash('sha256').update(`abc123${tok2}https://traulitools.example/ebay/account-deletion`).digest('hex'));
+    const p = await fetch(`${base}/ebay/account-deletion`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ metadata: { topic: 'MARKETPLACE_ACCOUNT_DELETION' }, notification: { data: { username: 'fremder_haendler', userId: 'x' } } }) });
+    assert.equal(p.status, 204);
+    assert.equal(db.prepare('SELECT min_seller FROM ebay_market WHERE product_id=1').get().min_seller, null);
+  } finally { srv.close(); }
+});
