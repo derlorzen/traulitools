@@ -1716,9 +1716,8 @@ async function renderEbay(root) {
           h('button', { class: 'linkish pname', onclick: () => openDrawer(i.product_id) }, i.name),
           h('div', { class: 'pmeta' }, [i.number, i.stock != null ? `${nf.format(i.stock)} Stück im Lager` : null].filter(Boolean).join(' · ')),
           h('div', { class: 'ebdetail' }, i.detail)),
-        c.connected
-          ? h('button', { class: 'btn', onclick: () => openListingEditor(i.product_id) }, 'Bei eBay einstellen')
-          : h('button', { class: 'btn', onclick: () => openDrawer(i.product_id) }, 'Details')))) : null,
+        // Vorerst nur Hinweis, eingestellt wird außerhalb von Preisradar
+        h('button', { class: 'btn', onclick: () => openDrawer(i.product_id) }, 'Details')))) : null,
       miss.count ? h('div', { class: 'ebfoot' },
         h('button', { class: 'btn primary', onclick: () => { opp.type = 'ebay_missing'; setTab('chancen'); } }, `Alle ${nf.format(miss.count)} in Chancen ansehen`)) : null));
   }
