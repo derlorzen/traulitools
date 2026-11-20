@@ -89,7 +89,7 @@ const TOOLS = [
     inputSchema: obj({ limit: { type: 'integer', minimum: 1 }, all: { type: 'boolean' }, tracked: { type: 'boolean' } }),
   },
   { name: 'stop_import', description: 'Laufenden Sitemap-Import stoppen.', inputSchema: obj() },
-  { name: 'import_shopware', description: 'Artikel über die Shopware-API importieren (Zugang muss unter Einstellungen eingerichtet sein).', inputSchema: obj() },
+  { name: 'import_shopware', description: 'Shopware-Abgleich sofort starten: legt neue aktive Artikel an, aktualisiert bekannte (Preis, Einkaufspreis, Bestand, Verkäufe), markiert in Shopware deaktivierte als offline. Vorhandene Links bleiben. Läuft sonst täglich automatisch.', inputSchema: obj() },
   { name: 'import_csv', description: 'Artikel aus CSV-Text importieren. Spalten: Artikelnummer, Name (Pflicht), EAN, Herstellernummer, Hersteller, Preis, URL.', inputSchema: obj({ text: { type: 'string' } }, ['text']) },
   { name: 'import_competitor_urls', description: 'Bekannte Mitbewerber-Produktlinks per CSV-Text setzen. Spalten: Artikelnummer, Mitbewerber, URL.', inputSchema: obj({ text: { type: 'string' } }, ['text']) },
   {

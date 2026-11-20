@@ -51,61 +51,6 @@ export async function testShopware(cfg) {
   return { products: res.total ?? 0 };
 }
 
-export async function fetchShopwareProducts(cfg) {
-  if (!cfg.configured) throw new Error('Shopware-Zugang fehlt (Einstellungen → Shopware)');
-  const tok = await api(cfg, '/oauth/token', {
-    body: { grant_type: 'client_credentials', client_id: cfg.clientId, client_secret: cfg.clientSecret },
-  });
-  const token = tok.access_token;
-  if (!token) throw new Error('Shopware: Kein Zugriffstoken erhalten');
-
-  const all = [];
-  for (let page = 1; page < 200; page++) {
-    const res = await api(cfg, '/search/product', {
-      token,
-      body: {
-        page,
-        limit: 500,
-        'total-count-mode': 1,
-        filter: [{ type: 'equals', field: 'active', value: true }],
-        associations: { manufacturer: {} },
-        includes: {
-          product: ['id', 'productNumber', 'ean', 'manufacturerNumber', 'active', 'price', 'parentId', 'childCount', 'name', 'translated', 'manufacturer'],
-          product_manufacturer: ['id', 'name', 'translated'],
-        },
-      },
-    });
-    const data = res.data ?? [];
-    all.push(...data);
-    if (all.length >= (res.total ?? 0) || data.length === 0) break;
-  }
-
-  const byId = new Map(all.map((p) => [p.id, p]));
-  const gross = (p) => {
-    const list = Array.isArray(p?.price) ? p.price : p?.price ? [p.price] : [];
-    const v = list[0]?.gross;
-    return typeof v === 'number' ? Math.round(v * 100) / 100 : null;
-  };
-  const rows = [];
-  for (const p of all) {
-    if (p.childCount > 0) continue; // Eltern-Produkte mit Varianten sind nicht kaufbar
-    const parent = p.parentId ? byId.get(p.parentId) : null;
-    const name = p.translated?.name || p.name || parent?.translated?.name || parent?.name;
-    const price = gross(p) ?? gross(parent);
-    if (!p.productNumber || !name) continue;
-    rows.push({
-      number: String(p.productNumber),
-      ean: p.ean || parent?.ean || null,
-      mpn: p.manufacturerNumber || parent?.manufacturerNumber || null,
-      name,
-      manufacturer: p.manufacturer?.translated?.name || p.manufacturer?.name || parent?.manufacturer?.translated?.name || null,
-      url: `${cfg.ownUrl || cfg.url}/detail/${p.id}`,
-      price,
-    });
-  }
-  return rows;
-}
-
 /*
  * Täglicher Abgleich mit Shopware 6.5 bis 6.7 (nur lesen; preisführend bleibt die Warenwirtschaft).
  * Ab 6.6 ist `stock` der verkaufbare Bestand (`availableStock` spiegelt ihn nur noch).
@@ -140,6 +85,46 @@ async function salesSince(cfg, tok, days) {
   return { units: read('units'), revenue: read('revenue') };
 }
 
+/**
+ * SEO-URLs der Produktseiten (kanonisch, nicht gelöscht) im Verkaufskanal der eigenen Domain.
+ * Braucht Leserechte auf seo_url und sales_channel_domain; fehlen sie, kommen neue Artikel ohne Link
+ * (die Sitemap trägt ihn nach) und der Abgleich läuft trotzdem.
+ */
+async function seoUrls(cfg, tok) {
+  const map = new Map();
+  try {
+    let host = null;
+    try { host = new URL(cfg.ownUrl).host.replace(/^www\./, ''); } catch { /* ohne eigene URL */ }
+    const doms = await api(cfg, '/search/sales-channel-domain', { token: tok, body: { limit: 200, includes: { sales_channel_domain: ['url', 'salesChannelId', 'languageId'] } } });
+    const hostOf = (u) => { try { return new URL(u).host.replace(/^www\./, ''); } catch { return null; } };
+    const list = doms.data ?? [];
+    const dom = list.find((d) => host && hostOf(d.url) === host && !/\/[a-z]{2}(-[a-z]{2})?\/?$/i.test(new URL(d.url).pathname)) ?? list.find((d) => host && hostOf(d.url) === host) ?? null;
+    const base = (dom?.url || cfg.ownUrl).replace(/\/+$/, '');
+    const filter = [
+      { type: 'equals', field: 'routeName', value: 'frontend.detail.page' },
+      { type: 'equals', field: 'isCanonical', value: true },
+      { type: 'equals', field: 'isDeleted', value: false },
+      ...(dom ? [{ type: 'equals', field: 'salesChannelId', value: dom.salesChannelId }, { type: 'equals', field: 'languageId', value: dom.languageId }] : []),
+    ];
+    let seen = 0;
+    for (let page = 1; page < 400; page++) {
+      const res = await api(cfg, '/search/seo-url', { token: tok, body: { page, limit: 500, 'total-count-mode': 1, filter, includes: { seo_url: ['foreignKey', 'seoPathInfo'] } } });
+      const data = res.data ?? [];
+      seen += data.length;
+      for (const u of data) if (u.foreignKey && u.seoPathInfo && !map.has(u.foreignKey)) map.set(u.foreignKey, `${base}/${String(u.seoPathInfo).replace(/^\/+/, '')}`);
+      if (seen >= (res.total ?? 0) || !data.length) break;
+    }
+    return { map, error: null };
+  } catch (e) {
+    return { map, error: e.message };
+  }
+}
+
+/**
+ * Täglicher Abgleich: aktualisiert bekannte Artikel, legt neue aktive Artikel an und markiert in Shopware
+ * deaktivierte als offline (nur diese hebt er bei Reaktivierung wieder auf; was die Sitemap als offline
+ * erkennt, bleibt Sache der Sitemap). Vorhandene Links werden nie überschrieben, nur leere gefüllt.
+ */
 export async function syncShopware(db) {
   const cfg = shopwareConfig(db);
   if (!cfg.configured) throw new Error('Shopware-Zugang fehlt (Einstellungen → Shopware)');
@@ -150,34 +135,63 @@ export async function syncShopware(db) {
       token: tok,
       body: {
         page, limit: 500, 'total-count-mode': 1,
-        associations: { tax: {} },
-        includes: { product: ['id', 'productNumber', 'active', 'price', 'purchasePrices', 'stock', 'availableStock', 'parentId', 'childCount', 'tax', 'taxId'], tax: ['taxRate'] },
+        associations: { tax: {}, manufacturer: {} },
+        includes: {
+          product: ['id', 'productNumber', 'active', 'price', 'purchasePrices', 'stock', 'availableStock', 'parentId', 'childCount', 'tax', 'taxId', 'name', 'translated', 'ean', 'manufacturerNumber', 'manufacturer'],
+          tax: ['taxRate'], product_manufacturer: ['name', 'translated'],
+        },
       },
     });
     const data = res.data ?? [];
     all.push(...data);
     if (all.length >= (res.total ?? 0) || !data.length) break;
   }
+  const seo = await seoUrls(cfg, tok);
   const byId = new Map(all.map((p) => [p.id, p]));
   const first = (v) => (Array.isArray(v) ? v[0] : v) ?? null;
-  const known = new Map(db.prepare('SELECT id, number, price FROM products').all().map((p) => [p.number, p]));
+  const nz = (v) => (v == null || v === '' ? null : String(v));
+  const known = new Map(db.prepare('SELECT id, number, price, offline_since, sw_inactive FROM products').all().map((p) => [p.number, p]));
   const now = new Date().toISOString();
-  const upd = db.prepare('UPDATE products SET sw_id=?, price=COALESCE(?, price), purchase_price=COALESCE(?, purchase_price), tax_rate=COALESCE(?, tax_rate), stock=?, updated_at=? WHERE id=?');
+  const upd = db.prepare(`UPDATE products SET sw_id=?, price=COALESCE(?, price), purchase_price=COALESCE(?, purchase_price), tax_rate=COALESCE(?, tax_rate), stock=?,
+    url=COALESCE(NULLIF(url,''), ?), ean=COALESCE(NULLIF(ean,''), ?), mpn=COALESCE(NULLIF(mpn,''), ?), manufacturer=COALESCE(NULLIF(manufacturer,''), ?), updated_at=? WHERE id=?`);
+  const off = db.prepare('UPDATE products SET offline_since=COALESCE(offline_since, ?), sw_inactive=1 WHERE id=?');
+  const on = db.prepare('UPDATE products SET offline_since=NULL, sw_inactive=0 WHERE id=?');
+  const ins = db.prepare(`INSERT INTO products(number, ean, mpn, name, manufacturer, url, price, active, source, updated_at, tracked, sw_id, purchase_price, tax_rate, stock)
+    VALUES (?,?,?,?,?,?,?,1,'shopware',?,1,?,?,?,?)`);
   const hist = db.prepare('INSERT INTO product_price_history(product_id, price, at) VALUES (?,?,?)');
   const swToLocal = new Map();
-  let updated = 0, unknown = 0, withPurchase = 0;
+  let updated = 0, created = 0, deactivated = 0, reactivated = 0, skipped = 0, withPurchase = 0, withUrl = 0;
   db.exec('BEGIN');
   try {
     for (const p of all) {
-      if (p.childCount > 0) continue;
-      const local = known.get(String(p.productNumber));
-      if (!local) { unknown++; continue; }
+      if (p.childCount > 0) continue; // Hauptartikel mit Varianten sind nicht kaufbar
+      if (!p.productNumber) { skipped++; continue; }
       const parent = p.parentId ? byId.get(p.parentId) : null;
       const price = money(first(p.price)?.gross ?? first(parent?.price)?.gross);
       const purchase = money(first(p.purchasePrices)?.net ?? first(parent?.purchasePrices)?.net);
       const tax = p.tax?.taxRate ?? parent?.tax?.taxRate ?? null;
-      upd.run(p.id, price, purchase && purchase > 0 ? purchase : null, tax, p.stock ?? p.availableStock ?? null, now, local.id);
+      const active = (p.active ?? parent?.active ?? true) !== false;
+      const name = p.translated?.name || p.name || parent?.translated?.name || parent?.name || null;
+      const ean = nz(p.ean ?? parent?.ean);
+      const mpn = nz(p.manufacturerNumber ?? parent?.manufacturerNumber);
+      const manu = p.manufacturer?.translated?.name || p.manufacturer?.name || parent?.manufacturer?.translated?.name || parent?.manufacturer?.name || null;
+      const url = seo.map.get(p.id) || (parent ? seo.map.get(parent.id) : null) || null;
+      const stock = p.stock ?? p.availableStock ?? null;
+      if (url) withUrl++;
+      const local = known.get(String(p.productNumber));
+      if (!local) {
+        if (!active || !name) { skipped++; continue; }
+        const r = ins.run(String(p.productNumber), ean, mpn, name, manu, url, price, now, p.id, purchase && purchase > 0 ? purchase : null, tax, stock);
+        if (price != null) hist.run(r.lastInsertRowid, price, now);
+        swToLocal.set(p.id, Number(r.lastInsertRowid));
+        if (purchase > 0) withPurchase++;
+        created++;
+        continue;
+      }
+      upd.run(p.id, price, purchase && purchase > 0 ? purchase : null, tax, stock, url, ean, mpn, manu, now, local.id);
       if (price != null && price !== local.price) hist.run(local.id, price, now);
+      if (!active) { if (!local.sw_inactive) deactivated++; off.run(now, local.id); }
+      else if (local.sw_inactive) { on.run(local.id); reactivated++; }
       if (purchase > 0) withPurchase++;
       swToLocal.set(p.id, local.id);
       updated++;
@@ -190,7 +204,7 @@ export async function syncShopware(db) {
   // Verkäufe
   const s30 = await salesSince(cfg, tok, 30);
   const s90 = await salesSince(cfg, tok, 90);
-  const ins = db.prepare('INSERT INTO product_sales(product_id, units_30, revenue_30, units_90, revenue_90, updated_at) VALUES (?,?,?,?,?,?)');
+  const insSales = db.prepare('INSERT INTO product_sales(product_id, units_30, revenue_30, units_90, revenue_90, updated_at) VALUES (?,?,?,?,?,?)');
   let sold = 0;
   db.exec('BEGIN');
   try {
@@ -198,7 +212,7 @@ export async function syncShopware(db) {
     for (const [swId, localId] of swToLocal) {
       const u90 = s90.units.get(swId) ?? 0;
       if (!u90) continue;
-      ins.run(localId, s30.units.get(swId) ?? 0, money(s30.revenue.get(swId) ?? 0), u90, money(s90.revenue.get(swId) ?? 0), now);
+      insSales.run(localId, s30.units.get(swId) ?? 0, money(s30.revenue.get(swId) ?? 0), u90, money(s90.revenue.get(swId) ?? 0), now);
       sold++;
     }
     db.exec('COMMIT');
@@ -206,7 +220,7 @@ export async function syncShopware(db) {
     db.exec('ROLLBACK');
     throw e;
   }
-  return { products: all.length, updated, unknown, with_purchase: withPurchase, sold_90: sold };
+  return { products: all.length, created, updated, deactivated, reactivated, unknown: skipped, with_purchase: withPurchase, with_url: withUrl, seo_error: seo.error, sold_90: sold };
 }
 
 /**

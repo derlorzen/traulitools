@@ -6,7 +6,7 @@ import { openDb, upsertProducts, tx } from './db.js';
 import { parseCsv, pick, parsePrice, csvEscape } from './util.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { fetchText, robotsAllows, paceInfo } from './fetcher.js';
-import { fetchShopwareProducts, shopwareConfig, testShopware, syncShopware, productDetails } from './shopware.js';
+import { shopwareConfig, testShopware, syncShopware, productDetails } from './shopware.js';
 import { aiConfig, testAi, chatJson, DEFAULT_MODEL } from './ai.js';
 import { analyse, RULES } from './analysis.js';
 import { autoSetup, detectSearchLink } from './autosetup.js';
@@ -140,7 +140,7 @@ export function createApp(db, { dataDir = null } = {}) {
       tiers: tierStatus(db),
       scrape: { ...scrapeState },
       lastRun: db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get() ?? null,
-      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, market: activeSources(db), eco: refreshEco(db), seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
+      config: { shopware: shopwareConfig(db).configured, scrapeHours: SCRAPE_HOURS, ai: Boolean(aiConfig(db).key), gsc: gscConfig(db).configured, merchant: merchantConfig(db).configured, keywords: kwConfig(db).configured, ebay: ebayConfig(db).app, ebayConnected: ebayConfig(db).connected, market: activeSources(db), eco: refreshEco(db), seoAudit: Boolean(db.prepare('SELECT 1 FROM seo_audit LIMIT 1').get()), swSynced: getSetting(db, 'sw_synced_at'), swLast: JSON.parse(getSetting(db, 'sw_last') || 'null'), aiModel: aiConfig(db).model, aiUsage: aiUsage(), rules: RULES },
     });
   }));
 
@@ -550,15 +550,19 @@ export function createApp(db, { dataDir = null } = {}) {
 
   // --- Import ---
   app.post('/api/import/shopware', wrap(async (_req, res) => {
-    const rows = await fetchShopwareProducts(shopwareConfig(db));
-    res.json({ total: rows.length, ...upsertProducts(db, rows, 'shopware') });
+    // Gleicher Weg wie der tägliche Abgleich: neue Artikel anlegen, bekannte aktualisieren, Links nie überschreiben
+    if (!shopwareConfig(db).configured) throw bad('Shopware-Zugang fehlt (Einstellungen → Shopware)');
+    if (!startShopwareJob(db)) throw bad('Es läuft bereits ein Shopware-Abgleich', 409);
+    await swJob.promise;
+    if (swJob.error) throw new Error(swJob.error);
+    res.json({ total: swJob.result.products, ...swJob.result });
   }));
   // Shopware-Abgleich (Preise, Einkaufspreise, Bestand, Verkäufe) im Hintergrund
   app.post('/api/shopware/sync', wrap((_req, res) => {
     if (!startShopwareJob(db)) throw bad('Es läuft bereits ein Shopware-Abgleich', 409);
-    res.json({ ok: true, job: { ...swJob } });
+    res.json({ ok: true, job: { ...swJob, promise: undefined } });
   }));
-  app.get('/api/shopware/status', wrap((_req, res) => res.json({ job: { ...swJob }, synced_at: getSetting(db, 'sw_synced_at'), last: JSON.parse(getSetting(db, 'sw_last') || 'null') })));
+  app.get('/api/shopware/status', wrap((_req, res) => res.json({ job: { ...swJob, promise: undefined }, synced_at: getSetting(db, 'sw_synced_at'), last: JSON.parse(getSetting(db, 'sw_last') || 'null') })));
   app.post('/api/import/csv', wrap((req, res) => {
     const parsed = parseCsv(req.body?.text);
     // Einkaufspreise (netto) dürfen auch allein kommen: Artikelnummer;Einkaufspreis
@@ -869,7 +873,7 @@ export const swJob = { running: false, startedAt: null, finishedAt: null, result
 export function startShopwareJob(db) {
   if (swJob.running) return false;
   Object.assign(swJob, { running: true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null });
-  syncShopware(db)
+  swJob.promise = syncShopware(db)
     .then((r) => { swJob.result = r; setSetting(db, 'sw_synced_at', new Date().toISOString()); setSetting(db, 'sw_last', JSON.stringify(r)); try { computeTiers(db, { force: true }); } catch { /* beim nächsten Lauf */ } })
     .catch((e) => { swJob.error = e.message; console.error('Shopware-Abgleich:', e.message); })
     .finally(() => { swJob.running = false; swJob.finishedAt = new Date().toISOString(); });

@@ -1092,15 +1092,30 @@ function fileButton(label, endpoint, doneMsg) {
   return h('span', {}, inp, h('button', { class: 'btn', onclick: () => inp.click() }, label));
 }
 
+/** Ergebnis eines Shopware-Abgleichs in einem Satz. */
+function swSummary(r) {
+  if (!r) return '';
+  const parts = [`${nf.format(r.created ?? 0)} neu angelegt`, `${nf.format(r.updated ?? 0)} aktualisiert`];
+  if (r.deactivated) parts.push(`${nf.format(r.deactivated)} in Shopware deaktiviert (jetzt offline)`);
+  if (r.reactivated) parts.push(`${nf.format(r.reactivated)} wieder aktiv`);
+  let t = `Fertig: ${parts.join(', ')}. ${nf.format(r.with_purchase ?? 0)} mit Einkaufspreis, ${nf.format(r.sold_90 ?? 0)} in 90 Tagen verkauft.`;
+  if (r.unknown) t += ` ${nf.format(r.unknown)} inaktive oder unvollständige Shopware-Artikel übersprungen.`;
+  if (r.seo_error) t += ` SEO-Links nicht lesbar (${r.seo_error}); neue Artikel bekommen ihren Link über die Sitemap.`;
+  return t;
+}
+function swShort(r) {
+  return [r.created ? `${nf.format(r.created)} neu` : null, `${nf.format(r.updated ?? 0)} aktualisiert`, r.deactivated ? `${nf.format(r.deactivated)} deaktiviert` : null].filter(Boolean).join(', ');
+}
+
 async function renderImport(root) {
   const d = state.data;
   root.append(h('h2', {}, 'Import & Läufe'),
     h('div', { class: 'panel' }, h('h3', {}, 'Eigene Produkte'),
       h('p', { class: 'sub' }, d.config.shopware
-        ? 'Der Shopware-Zugang ist eingerichtet. Der Import liest aktive Produkte mit Artikelnummer, EAN, Herstellernummer und Bruttopreis.'
+        ? 'Der Shopware-Zugang ist eingerichtet. Neue Artikel kommen mit dem täglichen Abgleich automatisch dazu (mit SEO-Link, EAN, Herstellernummer und Preis). Der Knopf startet diesen Abgleich sofort. Vorhandene Links werden nie überschrieben.'
         : 'Der Shopware-Zugang ist noch nicht eingerichtet: SHOPWARE_URL, SHOPWARE_CLIENT_ID und SHOPWARE_CLIENT_SECRET als Umgebungsvariablen setzen (Integration unter Einstellungen → System → Integrationen). Bis dahin geht der Import per CSV.'),
       h('div', { class: 'row' },
-        h('button', { class: 'btn primary', disabled: !d.config.shopware, onclick: guard(async (e) => { e.target.disabled = true; try { const r = await api('/api/import/shopware', { method: 'POST', body: {} }); toast(`${r.created} neu, ${r.updated} aktualisiert`); await refresh(); } finally { e.target.disabled = false; } }) }, 'Aus Shopware importieren'),
+        h('button', { class: 'btn primary', disabled: !d.config.shopware, onclick: guard(async (e) => { const b = e.currentTarget; b.disabled = true; b.textContent = 'Abgleich läuft …'; try { const r = await api('/api/import/shopware', { method: 'POST', body: {} }); toast(swSummary(r)); await refresh(); } finally { b.disabled = false; b.textContent = 'Jetzt mit Shopware abgleichen'; } }) }, 'Jetzt mit Shopware abgleichen'),
         fileButton('Produkt-CSV hochladen', '/api/import/csv', (r) => `${r.created} neu, ${r.updated} aktualisiert${r.purchase_prices ? `, ${r.purchase_prices} Einkaufspreise` : ''}`)),
       h('p', { class: 'pmeta', style: 'margin-top:8px' }, 'CSV-Spalten: Artikelnummer, Name, EAN, Herstellernummer, Hersteller, Preis (brutto), Einkaufspreis (netto), URL. Nur Einkaufspreise nachtragen (z. B. Export aus JTL-Wawi): Artikelnummer und Einkaufspreis genügen.')),
     h('div', { class: 'panel' }, h('h3', {}, 'Bekannte Mitbewerber-URLs'),
@@ -1236,7 +1251,7 @@ async function renderStart(root) {
       tiersFacts(d.tiers, sch),
       h('dt', {}, 'Artikel'), h('dd', {}, `${d.counts.all} gesamt, ${d.counts.tracked} beobachtet`),
       imp?.running ? [h('dt', {}, 'Import'), h('dd', {}, `läuft: ${imp.done} von ${imp.total}`)] : imp?.finishedAt ? [h('dt', {}, 'Letzter Import'), h('dd', {}, `${dt.format(new Date(imp.finishedAt))}, ${imp.created} neu, ${imp.updated} aktualisiert${imp.errors ? `, ${imp.errors} Fehler` : ''}`)] : null,
-      h('dt', {}, 'Shopware'), h('dd', {}, d.config.shopware ? (d.config.swSynced ? `Abgleich ${dt.format(new Date(d.config.swSynced))}` : 'verbunden, Abgleich steht aus') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht verbunden (Verkäufe, Einkaufspreise)')),
+      h('dt', {}, 'Shopware'), h('dd', {}, d.config.shopware ? (d.config.swSynced ? [`Abgleich ${dt.format(new Date(d.config.swSynced))}`, d.config.swLast ? h('small', { class: 'pmeta' }, ` · ${swShort(d.config.swLast)}`) : null] : 'verbunden, Abgleich steht aus') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht verbunden (Verkäufe, Einkaufspreise)')),
       h('dt', {}, 'Google'), h('dd', {}, d.config.gsc ? h('button', { class: 'linkbtn', onclick: () => setTab('sichtbarkeit') }, 'Search Console verbunden, zur Sichtbarkeit') : h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'Search Console noch nicht verbunden')),
       h('dt', {}, 'E-Mail'), h('dd', {}, h('button', { class: 'linkbtn', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('mail-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'Tägliche Zusammenfassung einstellen')),
       h('dt', {}, 'Marktquellen'), h('dd', {}, !mk().length ? h('button', { class: 'linkbtn', onclick: () => setTab('einstellungen') }, 'noch nicht eingerichtet (idealo über Apify)')
@@ -2820,7 +2835,7 @@ async function renderSettings(root) {
       f('Client-ID', 'shopware_client_id', cur.shopware_client_id),
       f('Client-Secret', 'shopware_client_secret', '', { type: 'password', ph: cur.shopware_secret_set ? '•••••••• (gespeichert)' : '', hint: cur.shopware_secret_set ? 'Leer lassen, um das gespeicherte Secret zu behalten' : '' }),
       f('Mindestmarge (%)', 'min_margin', cur.min_margin, { type: 'number', hint: 'Untergrenze für Preisvorschläge: Marge auf den Nettoverkaufspreis. Wirkt nur, wenn ein Einkaufspreis vorliegt (aus Shopware oder per CSV).' })),
-    h('p', { class: 'pmeta', id: 'swstatus' }, cur.sw_synced_at ? `Letzter Abgleich (Preise, Einkaufspreise, Bestand, Verkäufe): ${dt.format(new Date(cur.sw_synced_at))}. Danach automatisch täglich.` : 'Noch kein Abgleich. Er läuft nach dem Speichern automatisch einmal täglich.'),
+    h('p', { class: 'pmeta', id: 'swstatus' }, cur.sw_synced_at ? `Letzter Abgleich: ${dt.format(new Date(cur.sw_synced_at))}. Er läuft automatisch täglich, legt neue Artikel an, aktualisiert Preise, Einkaufspreise, Bestand und Verkäufe und markiert in Shopware deaktivierte Artikel als offline.` : 'Noch kein Abgleich. Er läuft nach dem Speichern automatisch einmal täglich und legt dabei auch neue Artikel an.'),
     h('div', { class: 'row', style: 'margin-top:14px' },
       h('button', { class: 'btn', type: 'button', onclick: guard(async () => {
         out.hidden = false; out.textContent = 'Verbindung wird geprüft …';
@@ -2834,7 +2849,7 @@ async function renderSettings(root) {
           const st = await api('/api/shopware/status');
           if (st.job.running) return;
           clearInterval(t);
-          out.textContent = st.job.error ? `Fehlgeschlagen: ${st.job.error}` : `Fertig: ${st.job.result.updated} Artikel aktualisiert, davon ${st.job.result.with_purchase} mit Einkaufspreis, ${st.job.result.sold_90} in 90 Tagen verkauft. ${st.job.result.unknown} Shopware-Artikel sind nicht im Preisradar.`;
+          out.textContent = st.job.error ? `Fehlgeschlagen: ${st.job.error}` : swSummary(st.job.result);
         }), 3000);
       }) }, 'Jetzt abgleichen') : null,
       h('span', { class: 'spacer' }),
