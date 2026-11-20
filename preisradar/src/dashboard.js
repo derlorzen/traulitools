@@ -98,8 +98,10 @@ export function dashboard(db, { user = null, opportunities = null } = {}) {
   const wEnd = addDays(t, -dow - 1), wStart = addDays(wEnd, -6);
   const iso = (() => { const d = new Date(`${wStart}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + 3); const y1 = new Date(Date.UTC(d.getUTCFullYear(), 0, 4)); return 1 + Math.round(((d - y1) / 86400000 - 3 + ((y1.getUTCDay() + 6) % 7)) / 7); })();
   const range = [`${wStart}T00:00:00`, `${addDays(wEnd, 1)}T00:00:00`];
-  const compChanges = db.prepare(`SELECT COUNT(*) AS n, COUNT(DISTINCT m.product_id) AS p FROM price_history h JOIN matches m ON m.id=h.match_id
-    WHERE h.at >= ? AND h.at < ? AND EXISTS (SELECT 1 FROM price_history h2 WHERE h2.match_id=h.match_id AND h2.at < h.at)`).get(...range);
+  // Preisverlauf speichert auch wöchentliche Stützpunkte ohne Änderung: nur echte Änderungen zum vorigen Eintrag zählen
+  const compChanges = db.prepare(`SELECT COUNT(*) AS n, COUNT(DISTINCT m.product_id) AS p FROM (
+      SELECT match_id, price, at, LAG(price) OVER (PARTITION BY match_id ORDER BY at) AS prev FROM price_history WHERE at >= ?
+    ) h JOIN matches m ON m.id=h.match_id WHERE h.at >= ? AND h.at < ? AND h.prev IS NOT NULL AND ABS(h.prev - h.price) >= 0.01`).get(addDays(wStart, -60), ...range);
   const ownChanges = db.prepare(`SELECT COUNT(DISTINCT product_id) AS n FROM product_price_history h WHERE at >= ? AND at < ?
     AND EXISTS (SELECT 1 FROM product_price_history h2 WHERE h2.product_id=h.product_id AND h2.at < h.at)`).get(...range).n;
   const wentOffline = db.prepare('SELECT COUNT(*) AS n FROM products WHERE offline_since >= ? AND offline_since < ?').get(...range).n;
