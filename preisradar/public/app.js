@@ -1694,11 +1694,58 @@ async function renderEbay(root) {
       h('span', { class: 'spacer' }),
       c.can_connect && !c.connected ? h('a', { class: 'btn primary', href: '/api/ebay/connect' }, 'Mit eBay verbinden') : h('button', { class: 'btn primary', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('ebay-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'eBay einrichten')));
   }
-  if (c.app) root.append(h('div', { class: 'kpis' },
-    kpiTile('Eigene Angebote', h('span', { 'data-count': o.listings.length }, nf.format(o.listings.length)), o.listings_at ? `abgeglichen ${dt.format(new Date(o.listings_at))}` : 'noch nicht abgeglichen'),
-    kpiTile('Mitbewerber geprüft', nf.format(o.market.checked), `${nf.format(o.market.with_offers)} mit Angeboten auf eBay`),
-    kpiTile('Übernahme in JTL', nf.format(o.pending_jtl), 'eingestellt, noch nicht übernommen', o.pending_jtl ? 'warm' : ''),
-    kpiTile('eBay-Gebühr', `${nf1.format(o.fees.fee_percent)} %`, `+ ${eur.format(o.fees.fee_fixed)} je Verkauf, anpassbar unter Einstellungen`)));
+  const k = o.check;
+  root.append(h('p', { class: 'sub' }, 'Was auf eBay fehlt, wo deine eBay-Angebote teurer sind als der Günstigste und ob sich Mitgehen nach eBay-Gebühren lohnt. Preise und Bestand auf eBay pflegt weiter JTL.'));
+  root.append(h('div', { class: 'kpis' },
+    kpiTile('Aktive Angebote', c.connected ? nf.format(k.active) : '–', c.connected ? `${nf.format(k.with_stock)} Artikel haben Bestand` : 'eBay nicht verbunden'),
+    kpiTile('Verkauft', c.connected ? nf.format(k.sold) : '–', c.connected ? 'über die aktiven Angebote, laut eBay' : 'kommt mit der Verbindung'),
+    kpiTile('Fehlen bei eBay', nf.format(k.missing.count), k.missing.units_90 ? `zusammen ${nf.format(k.missing.units_90)} Stück im Shop verkauft (90 T)` : 'obwohl Bestand da ist', k.missing.count ? 'warm' : ''),
+    kpiTile('Teurer als der Günstigste', c.connected ? nf.format(k.dearer.count) : '–', c.connected ? (k.dearer.count ? `bei ${nf.format(k.dearer.reachable)} lohnt sich Mitgehen` : `eBay-Gebühr ${nf1.format(o.fees.fee_percent)} % + ${eur.format(o.fees.fee_fixed)}`) : 'kommt mit der Verbindung', k.dearer.count ? 'warm' : '')));
+
+  // Angebots-Check: was fehlt
+  if (!k.channel_active) {
+    root.append(h('div', { class: 'panel head' }, h('div', {}, h('strong', {}, 'Der Kanal eBay ist ausgeschaltet. '), 'Mit eingeschaltetem Kanal (Einstellungen → Kanäle, mit Gebühren) rechnet Preisradar aus, welche Artikel sich auf eBay lohnen.')));
+  } else {
+    const miss = k.missing;
+    root.append(h('section', { class: 'panel ebsec' },
+      h('h3', {}, miss.count ? `Angebots-Check: ${nf.format(miss.count)} Artikel fehlen bei eBay` : 'Angebots-Check: nichts fehlt bei eBay'),
+      h('p', { class: 'pmeta ebintro' }, 'Artikel mit Bestand, die sich im Shop verkaufen oder täglich geprüft werden und auf eBay nach Gebühren mindestens den Mindestgewinn bringen. Der Vorschlag liegt knapp unter dem günstigsten eBay-Angebot, nie unter deiner Untergrenze.',
+        !c.connected ? h('strong', {}, ' Solange eBay nicht verbunden ist, kennt Preisradar deine eBay-Angebote nicht: Artikel, die schon auf eBay stehen, sind hier noch mit dabei.') : null),
+      miss.items.length ? h('ul', { class: 'eblist' }, miss.items.map((i) => h('li', {},
+        h('div', { class: 'ebmain' },
+          h('button', { class: 'linkish pname', onclick: () => openDrawer(i.product_id) }, i.name),
+          h('div', { class: 'pmeta' }, [i.number, i.stock != null ? `${nf.format(i.stock)} Stück im Lager` : null].filter(Boolean).join(' · ')),
+          h('div', { class: 'ebdetail' }, i.detail)),
+        c.connected
+          ? h('button', { class: 'btn', onclick: () => openListingEditor(i.product_id) }, 'Bei eBay einstellen')
+          : h('button', { class: 'btn', onclick: () => openDrawer(i.product_id) }, 'Details')))) : null,
+      miss.count ? h('div', { class: 'ebfoot' },
+        h('button', { class: 'btn primary', onclick: () => { opp.type = 'ebay_missing'; setTab('chancen'); } }, `Alle ${nf.format(miss.count)} in Chancen ansehen`)) : null));
+  }
+
+  // Preisvergleich: eigene Angebote teurer als der Günstigste
+  if (c.connected) {
+    const dr = k.dearer;
+    root.append(h('section', { class: 'panel ebsec' },
+      h('h3', {}, dr.count ? `Preisvergleich: bei ${nf.format(dr.count)} Angeboten bist du teurer` : 'Preisvergleich'),
+      h('p', { class: 'pmeta ebintro' }, 'Bei eBay gibt es keine Buy Box, aber viele Käufer sortieren nach dem günstigsten Preis inklusive Versand. Preisradar rechnet für jedes Angebot, ob sich Mitgehen nach eBay-Gebühren lohnt.'),
+      !o.market.checked ? h('p', {}, 'Noch keine Mitbewerberpreise auf eBay geprüft: oben „Mitbewerberpreise prüfen“ starten.')
+        : !dr.count ? h('p', { class: 'goodtxt' }, 'Bei keinem geprüften Angebot gibt es ein günstigeres Angebot auf eBay.')
+          : h('div', { class: 'ebcmps' }, dr.items.map((d) => h('div', { class: 'ebcmp' },
+            h('div', { class: 'ebcmphead' },
+              d.product_id ? h('button', { class: 'linkish pname', onclick: () => openDrawer(d.product_id) }, d.name) : h('span', { class: 'pname' }, d.name),
+              d.url ? h('a', { class: 'pmeta', href: d.url, target: '_blank', rel: 'noopener noreferrer' }, 'Angebot öffnen') : null),
+            h('div', { class: 'ebtiles' },
+              h('div', {}, h('small', {}, 'Dein eBay-Preis'), h('b', {}, money(d.price))),
+              h('div', {}, h('small', {}, `Günstigster Anbieter${d.cheapest_seller ? ` (${d.cheapest_seller})` : ''}`), h('b', {}, money(d.cheapest))),
+              h('div', {}, h('small', {}, 'Du bist teurer um'), h('b', { class: 'warmtxt' }, `+${money(d.gap)}`))),
+            h('div', { class: `ebadvice ${d.reachable ? 'good' : 'warn'}` }, d.reachable
+              ? `Auf ${money(d.target)} senken${d.profit_at_target != null ? `, dir bleiben dann noch ${money(d.profit_at_target)} pro Stück` : ''}.`
+              : `Mitgehen lohnt nicht: Deine Untergrenze liegt bei ${money(d.floor)}${d.profit_now != null ? `, heute bleiben ${money(d.profit_now)} pro Stück` : ''}.`)))),
+      dr.count ? h('div', { class: 'ebfoot' },
+        h('button', { class: 'btn primary', onclick: () => { opp.type = 'ebay_cheaper'; setTab('chancen'); } }, 'Preisvorschläge in Chancen'),
+        h('span', { class: 'pmeta' }, 'Die Preise änderst du in JTL, der Export für die JTL-Ameise steht unter Chancen.')) : null));
+  }
 
   // Übernahme in JTL
   const pending = o.listings.filter((l) => l.created_by_us && l.jtl_state === 'pending');
@@ -1712,13 +1759,9 @@ async function renderEbay(root) {
         h('td', {}, h('button', { class: 'btn small', onclick: guard(async () => { await api(`/api/ebay/listings/${l.item_id}/jtl`, { body: { state: 'imported' } }); toast('Als übernommen markiert'); render(); }) }, 'In JTL übernommen'))))))));
   }
 
-  // Chancen für eBay
-  if (c.connected) root.append(h('div', { class: 'panel head' }, h('div', {}, h('strong', {}, 'Was auf eBay fehlt: '), 'Artikel, die sich im Shop verkaufen und auf eBay nach Gebühren Gewinn bringen, stehen unter Chancen.'),
-    h('span', { class: 'spacer' }), h('button', { class: 'btn', onclick: () => { opp.type = 'ebay_missing'; setTab('chancen'); } }, 'Fehlt auf eBay ansehen')));
-
   // Eigene Angebote
   if (o.listings.length) {
-    root.append(h('h3', { class: 'sechead' }, 'Eigene Angebote'),
+    root.append(h('h3', { class: 'sechead' }, `Alle eigenen Angebote (${nf.format(o.listings.length)})`),
       h('div', { class: 'tablewrap kwwrap' }, h('table', { class: 'prices kwtable ebtable' },
         h('thead', {}, h('tr', {}, h('th', { class: 'prod' }, 'Angebot'), ...['Preis', 'Menge', 'Verkauft', 'Günstigster auf eBay', 'Gewinn', 'Marge', 'Hinweis'].map((t) => h('th', {}, t)))),
         h('tbody', {}, o.listings.map((l) => h('tr', { tabindex: 0, onclick: () => l.product_id && openDrawer(l.product_id) },

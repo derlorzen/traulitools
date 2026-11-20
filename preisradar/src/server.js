@@ -31,7 +31,7 @@ import { listChannels, updateChannel, channelView } from './channels.js';
 import { activeSources, marketOverview, apifyTest, apifyToken, startJob, jobs as marketJobs, marketTick, resetTicks, productMarket, lookupNow, discoveredShops, dismissShop, setSelected, marketSettings, saveMarketSettings } from './market.js';
 import { source as marketSource } from './sources/index.js';
 import { ebayConfig, authorizeUrl, exchangeCode, disconnect as ebayDisconnect, ebayTest, syncListings, startMarketJob, marketJob, marketCheck, ebayTick, suggestCategories, aspects as ebayAspects, policies as ebayPolicies, draft as ebayDraft, createListing, ebayOverview, resetAppToken, cleanDescription } from './ebay.js';
-import { findOpportunities, jtlExport, productOpportunities } from './opportunities.js';
+import { ebayCheck, findOpportunities, jtlExport, productOpportunities } from './opportunities.js';
 import { productSignals, withSignals } from './signals.js';
 import { auditOverview, auditOf, auditProduct, startAudit, auditJob, auditTick, auditConfig, suggestMeta } from './seoaudit.js';
 import { kwConfig, kwTest, addKeywords, postChecks, collectChecks, refreshVolumes, kwOverview, kwDetail, suggestions, startSuggestionJob, kwTick, kwJob, MAX_KEYWORDS, normKeyword } from './keywords.js';
@@ -200,7 +200,7 @@ export function createApp(db, { dataDir = null } = {}) {
   }));
 
   // --- eBay ---
-  app.get('/api/ebay', wrap((_req, res) => { const o = ebayOverview(db); res.json({ ...o, listings: withSignals(db, o.listings, 'product_id') }); }));
+  app.get('/api/ebay', wrap((_req, res) => { const o = ebayOverview(db); res.json({ ...o, check: ebayCheck(db), listings: withSignals(db, o.listings, 'product_id') }); }));
   app.get('/api/ebay/connect', wrap((_req, res) => res.redirect(authorizeUrl(db))));
   app.post('/api/ebay/disconnect', wrap((_req, res) => { ebayDisconnect(db); res.json({ ok: true }); }));
   app.post('/api/ebay/test', wrap(async (_req, res) => res.json(await ebayTest(db))));

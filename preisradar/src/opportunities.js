@@ -188,6 +188,43 @@ export function productOpportunities(db, productId) {
 }
 export const invalidateOpportunities = () => { cache = null; };
 
+/**
+ * eBay auf einen Blick (wie der eBay-Bereich in AdPilot): was fehlt, wo eigene Angebote teurer sind als der
+ * Günstigste, und ob sich Mitgehen nach Gebühren lohnt. Nutzt die 60-Sekunden-Zwischenspeicherung der Chancen.
+ */
+export function ebayCheck(db, { limit = 8 } = {}) {
+  if (!cache || Date.now() - cache.at > 60000) cache = { at: Date.now(), data: findOpportunities(db) };
+  const ch = channel(db, 'ebay');
+  const missing = cache.data.items.filter((i) => i.type === 'ebay_missing').sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+  const listings = db.prepare(`SELECT l.item_id, l.title, l.price, l.sold, l.quantity, l.url, l.product_id, p.number, p.name, p.purchase_price, p.tax_rate, p.stock,
+      m.min_total, m.min_seller, m.offers FROM ebay_listings l LEFT JOIN products p ON p.id=l.product_id LEFT JOIN ebay_market m ON m.product_id=l.product_id
+    WHERE l.status='active'`).all();
+  const dearer = [];
+  for (const l of listings) {
+    if (l.min_total == null || l.price == null || l.price <= l.min_total + 0.01) continue;
+    const vat = l.tax_rate ?? 19;
+    const cost = l.purchase_price > 0 ? l.purchase_price : null;
+    const floor = cost && ch ? floorPrice(cost, ch, vat) : null;
+    const target = r2(Math.max(floor ?? 0, l.min_total - 0.01));
+    dearer.push({
+      item_id: l.item_id, url: l.url, product_id: l.product_id, number: l.number, name: l.name || l.title, sold: l.sold ?? 0,
+      price: l.price, cheapest: l.min_total, cheapest_seller: l.min_seller, offers: l.offers, gap: r2(l.price - l.min_total),
+      floor, target, reachable: floor == null || floor <= l.min_total,
+      profit_now: cost && ch ? profit(l.price, cost, ch, vat) : null,
+      profit_at_target: cost && ch ? profit(target, cost, ch, vat) : null,
+    });
+  }
+  dearer.sort((a, b) => (b.reachable - a.reachable) || (b.gap * Math.max(1, b.sold)) - (a.gap * Math.max(1, a.sold)));
+  const withStock = db.prepare('SELECT COUNT(*) AS n FROM products WHERE active=1 AND offline_since IS NULL AND stock > 0').get().n;
+  const sold = listings.reduce((a, l) => a + (l.sold ?? 0), 0);
+  return {
+    channel_active: Boolean(ch?.active),
+    active: listings.length, with_stock: withStock, sold,
+    missing: { count: missing.length, units_90: missing.reduce((a, i) => a + (i.units_90 ?? 0), 0), items: missing.slice(0, limit) },
+    dearer: { count: dearer.length, reachable: dearer.filter((d) => d.reachable).length, items: dearer.slice(0, limit) },
+  };
+}
+
 export function jtlExport(db, { channel: only = null } = {}) {
   const a = analyse(db);
   const rows = [];

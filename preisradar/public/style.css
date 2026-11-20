@@ -980,3 +980,30 @@ span.sig.good { background: var(--good-bg); color: var(--good); cursor: default;
 .idsrc-h { margin: 0 0 6px; font-size: 14px; }
 .mkfs { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 14px; margin: 14px 0 0; min-width: 0; }
 .mkfs legend { font-weight: 700; padding: 0 6px; }
+
+/* eBay: Angebots-Check und Preisvergleich */
+.ebsec h3 { margin: 0 0 4px; font-size: 17px; }
+.ebintro { margin: 0 0 12px; max-width: 95ch; line-height: 1.5; font-size: 13px; }
+.eblist { list-style: none; margin: 0; padding: 0; }
+.eblist li { display: flex; gap: 14px; align-items: center; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--line); }
+.ebmain { min-width: 0; flex: 1; }
+.ebdetail { font-size: 13px; margin-top: 2px; }
+.linkish { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.linkish:hover { text-decoration: underline; }
+.linkish:focus-visible { outline: 2px solid var(--petrol, var(--ink)); outline-offset: 2px; }
+.ebfoot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--line); }
+.ebcmps { display: flex; flex-direction: column; }
+.ebcmp { padding: 12px 0; border-top: 1px solid var(--line); }
+.ebcmphead { display: flex; gap: 12px; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.ebtiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ebtiles > div { background: var(--sunk, var(--bg)); border-radius: 8px; padding: 6px 10px; display: flex; flex-direction: column; min-width: 0; }
+.ebtiles small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ebtiles b { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ebadvice { margin-top: 8px; padding: 7px 10px; border-radius: 8px; font-size: 13px; font-weight: 600; }
+.ebadvice.good { background: var(--good-bg); color: var(--good); }
+.ebadvice.warn { background: var(--warn-bg); color: var(--ink); }
+@media (max-width: 640px) {
+  .eblist li { flex-direction: column; align-items: stretch; }
+  .ebtiles { grid-template-columns: 1fr 1fr; }
+  .ebtiles > div:last-child { grid-column: span 2; }
+}
