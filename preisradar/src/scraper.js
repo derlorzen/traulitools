@@ -56,7 +56,17 @@ function recordPrice(db, matchId, price, now) {
   }
 }
 
-async function loadPage(url) {
+/** Auslese-Vorlage des Mitbewerbers (JSON in competitors.extract_tpl) oder null. */
+export function compTemplate(comp) {
+  if (!comp?.extract_tpl) return null;
+  try { return JSON.parse(comp.extract_tpl); } catch { return null; }
+}
+/** Seite eines Mitbewerbers auslesen: Regeln plus dessen Auslese-Vorlage. */
+export function extractFor(comp, html) {
+  return extractProduct(html, { priceSelector: comp.price_selector, tpl: compTemplate(comp) });
+}
+
+export async function loadPage(url) {
   if (!(await robotsAllows(url))) return { blocked: true };
   const t0 = Date.now();
   const r = await fetchText(url);
@@ -155,7 +165,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
 
   /** Eine geladene Produktseite bewerten: Regeln, dann Vorlagen, erst im Notfall KI (fehlender Preis bzw. unsicherer Treffer). */
   const evalPage = async (cp) => {
-    let ext = withTemplates(cp.r.text, extractProduct(cp.r.text, { priceSelector: comp.price_selector }));
+    let ext = withTemplates(cp.r.text, extractFor(comp, cp.r.text));
     let v = ext.found ? verify(product, ext) : 'no';
     let note = null;
     if (ai && (!ext.found || (v === 'maybe' && ai.mode === 'always'))) {
@@ -179,7 +189,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
       const p = await loadPage(match.url);
       if (p.blocked) return fail('blocked', 'robots.txt des Mitbewerbers untersagt den Abruf dieser Seite');
       if (!p.gone) {
-        const ext = withTemplates(p.r.text, extractProduct(p.r.text, { priceSelector: comp.price_selector }));
+        const ext = withTemplates(p.r.text, extractFor(comp, p.r.text));
         const verdict = match.status === 'review' ? 'maybe' : 'match';
         if (!ext.found) {
           const a = await aiRead(p.r.finalUrl, p.r.text);
@@ -250,7 +260,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
       await sleep(pacingMs(comp.base_url, comp.delay_ms));
 
       // Direkttreffer: Suche leitet direkt auf eine Produktseite weiter
-      const direct = extractProduct(sp.r.text, { priceSelector: comp.price_selector });
+      const direct = extractFor(comp, sp.r.text);
       const cands = [];
       if (direct.found && direct.isProductPage && sp.r.finalUrl !== su) cands.push({ url: sp.r.finalUrl, ext: direct });
       for (const url of findCandidates(sp.r.text, sp.r.finalUrl, { resultSelector: comp.result_selector })) {
@@ -283,7 +293,7 @@ async function processItemInner(db, comp, product, match, now, ai) {
             pages++;
             await sleep(pacingMs(comp.base_url, comp.delay_ms));
             if (!cp.blocked && !cp.gone) {
-              const ext = withTemplates(cp.r.text, extractProduct(cp.r.text, { priceSelector: comp.price_selector }));
+              const ext = withTemplates(cp.r.text, extractFor(comp, cp.r.text));
               // Zweite KI-Anfrage nur, wenn Regeln und Vorlagen keinen Preis finden; sonst reicht das Urteil der Auswahl
               const a = ext.found ? null : await aiRead(cp.r.finalUrl, cp.r.text);
               if (a?.price != null) learn(cp.r.finalUrl, cp.r.text, a.price);

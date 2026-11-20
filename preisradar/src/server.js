@@ -23,6 +23,7 @@ import { hashPassword, verifyPassword, createSession, destroySession, currentUse
 import { startScrape, scrapeState, closeStaleRuns, checkProductNow } from './scraper.js';
 import { listProducts, getProduct, invalidatePriceList, warmPriceList } from './pricelist.js';
 import { loadTemplates, removeTemplate } from './templates.js';
+import { learnCompetitorTemplate, checkTemplate } from './tpllearn.js';
 import { gscSites, syncGsc, saveServiceAccount, gscConfig, pageKey as pageKeyOf } from './gsc.js';
 import { seoOverview, seoStatus, productSeo } from './seo.js';
 import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from './digest.js';
@@ -461,6 +462,24 @@ export function createApp(db, { dataDir = null } = {}) {
   app.delete('/api/competitors/:id/templates', wrap((req, res) => {
     removeTemplate(db, Number(req.params.id), String(req.body?.selector ?? ''));
     res.json({ ok: true, templates: loadTemplates(db, Number(req.params.id)) });
+  }));
+  // Auslese-Vorlage: einmal an einer Beispielseite anlernen, danach liest Preisradar den Shop ohne KI aus
+  app.post('/api/competitors/:id/extract-template', wrap(async (req, res) => {
+    const r = await learnCompetitorTemplate(db, Number(req.params.id), { url: String(req.body?.url ?? '').trim(), price: req.body?.price ?? null });
+    if (r.saved) invalidatePriceList();
+    res.json(r);
+  }));
+  app.post('/api/competitors/:id/extract-template/check', wrap(async (req, res) => {
+    const comp = db.prepare('SELECT * FROM competitors WHERE id=?').get(Number(req.params.id));
+    if (!comp?.extract_tpl) throw bad('Für diesen Mitbewerber ist keine Auslese-Vorlage hinterlegt', 404);
+    const tpl = JSON.parse(comp.extract_tpl);
+    tpl.check = await checkTemplate(db, comp, tpl, { exclude: [tpl.sample?.url] });
+    db.prepare('UPDATE competitors SET extract_tpl=? WHERE id=?').run(JSON.stringify(tpl), comp.id);
+    res.json({ tpl });
+  }));
+  app.delete('/api/competitors/:id/extract-template', wrap((req, res) => {
+    db.prepare('UPDATE competitors SET extract_tpl=NULL WHERE id=?').run(Number(req.params.id));
+    res.json({ ok: true });
   }));
   // Kategorien aus der Sitemap: nur in den gewählten wird nach Treffern gesucht
   app.get('/api/competitors/:id/categories', wrap((req, res) => res.json(sitemapCategories(db, Number(req.params.id)))));

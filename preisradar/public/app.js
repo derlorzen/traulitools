@@ -929,6 +929,7 @@ function competitorPanel(c) {
         }) }, 'Sitemap jetzt einlesen'), sm) : null,
         h('div', { class: 'row' }, discoverBtn(() => form.elements.base_url.value, form.elements.sitemap_url ? () => form.elements.sitemap_url : () => null)),
         c?.sitemap_count ? categoryPicker(c) : null),
+      c ? extractTemplateBox(c) : null,
       c ? templateList(c) : null,
       h('div', { class: 'field' }, h('label', {}, 'KI beim Auslesen'),
         h('select', { name: 'ai_mode' },
@@ -945,6 +946,58 @@ function competitorPanel(c) {
         h('div', { class: 'field' }, h('label', {}, 'Suche testen'), h('input', { name: 't_q', placeholder: 'EAN oder Herstellernummer' }), h('button', { class: 'btn small', type: 'button', onclick: () => test('search') }, 'Suche ausführen'))),
       out));
   return form;
+}
+
+/** Auslese-Vorlage: einmal an einer Beispielseite angelernt, danach liest Preisradar Preis, EAN und Herstellernummer ohne KI. */
+function extractTemplateBox(c) {
+  let tpl = null;
+  try { tpl = c.extract_tpl ? JSON.parse(c.extract_tpl) : null; } catch { /* leer */ }
+  const box = h('div', { class: 'field tplbox', style: 'grid-column:1/-1' });
+  const url = h('input', { type: 'url', placeholder: 'https://…/produkt', 'aria-label': 'Beispiel-Produktseite' });
+  const price = h('input', { type: 'text', inputmode: 'decimal', placeholder: 'z. B. 504,81', 'aria-label': 'Angezeigter Preis', style: 'max-width:9em' });
+  const res = h('div', { class: 'pmeta' });
+  const ruleText = (t) => [
+    t.price?.mode === 'jsonld' ? 'Preis aus den strukturierten Daten des Shops' : h('span', {}, 'Preis an der Stelle ', h('code', { translate: 'no' }, t.price?.selector ?? '?')),
+    ...(t.ids ?? []).map((r) => `${r.kind === 'ean' ? 'EAN' : 'Herstellernummer'} hinter „${r.label}“`),
+  ];
+  const checkText = (k) => k ? `Geprüft am ${dt.format(new Date(k.at))}: Preis auf ${k.ok} von ${k.total} weiteren Produktseiten erkannt${k.with_ids != null && (tpl?.ids ?? []).length ? `, EAN/Herstellernummer auf ${k.with_ids}` : ''}.` : '';
+  const pagesList = (k) => k?.pages?.length ? h('ul', { class: 'tplpages' }, k.pages.map((p) => h('li', { class: p.ok ? 'ok' : 'bad' },
+    p.ok ? '✓ ' : '✗ ', h('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, p.url.replace(/^https?:\/\/[^/]+/, '')),
+    ` · ${p.price != null ? eur.format(p.price) : p.error ?? 'kein Preis'}${p.expected != null ? ` (bisher ${eur.format(p.expected)})` : ''}${p.ean ? ` · EAN ${p.ean}` : ''}${p.mpn ? ` · Hersteller-Nr. ${p.mpn}` : ''}`))) : null;
+  const learn = guard(async () => {
+    if (!url.value.trim()) { toast('Bitte eine Produktseite des Shops angeben', true); return; }
+    res.replaceChildren('Seite wird geladen und ausgewertet, danach an weiteren Produktseiten geprüft …');
+    const r = await api(`/api/competitors/${c.id}/extract-template`, { body: { url: url.value.trim(), price: price.value.trim() || null } });
+    const nodes = [h('ul', {}, r.notes.map((n) => h('li', {}, n)))];
+    if (r.product) nodes.unshift(h('div', {}, `Eigener Artikel zur Seite: ${r.product}`));
+    if (r.message) nodes.push(h('div', { class: 'notice warn' }, r.message));
+    if (r.candidates?.length) nodes.push(h('div', {}, 'Preise auf der Seite (zum Übernehmen anklicken): ', ...r.candidates.map((k) => h('button', { class: 'linkbtn', type: 'button', title: k.context, onclick: () => { price.value = String(k.price).replace('.', ','); } }, eur.format(k.price)))));
+    if (r.check) nodes.push(h('div', {}, checkText(r.check)), pagesList(r.check));
+    res.replaceChildren(...nodes);
+    if (r.saved) { tpl = r.tpl; c.extract_tpl = JSON.stringify(r.tpl); draw(); toast('Auslese-Vorlage gespeichert'); }
+  });
+  const recheck = guard(async () => {
+    res.replaceChildren('Wird an weiteren Produktseiten geprüft …');
+    const r = await api(`/api/competitors/${c.id}/extract-template/check`, { method: 'POST', body: {} });
+    tpl = r.tpl; c.extract_tpl = JSON.stringify(tpl); draw(); res.replaceChildren(pagesList(tpl.check) ?? '');
+  });
+  const remove = guard(async () => {
+    if (!confirm('Auslese-Vorlage entfernen? Preise werden dann wieder nur über die allgemeinen Regeln (und bei Bedarf die KI) erkannt.')) return;
+    await api(`/api/competitors/${c.id}/extract-template`, { method: 'DELETE' });
+    tpl = null; c.extract_tpl = null; draw(); res.replaceChildren(); toast('Auslese-Vorlage entfernt');
+  });
+  const draw = () => box.replaceChildren(
+    h('label', {}, 'Auslese-Vorlage'),
+    tpl
+      ? h('div', { class: 'tplcur' },
+        h('ul', {}, ruleText(tpl).map((x) => h('li', {}, x))),
+        h('div', { class: 'pmeta' }, `Angelernt an `, h('a', { href: tpl.sample?.url, target: '_blank', rel: 'noopener noreferrer' }, 'dieser Seite'), tpl.sample?.price != null ? ` (${eur.format(tpl.sample.price)})` : '', `. ${checkText(tpl.check)}`),
+        h('div', { class: 'row' }, h('button', { class: 'btn small', type: 'button', onclick: recheck }, 'Erneut prüfen'), h('button', { class: 'linkbtn', type: 'button', onclick: remove }, 'entfernen')))
+      : h('span', { class: 'hint' }, 'Noch keine. Gib eine Produktseite des Shops an (und den dort angezeigten Preis, falls der Shop keine strukturierten Daten hat). Preisradar merkt sich, wo Preis, EAN und Herstellernummer stehen, und liest alle Seiten dieses Shops danach ohne KI aus. Mit EAN oder Herstellernummer auf der Seite gilt ein Treffer als sicher.'),
+    h('div', { class: 'row tpllearn' }, url, price, h('button', { class: 'btn small', type: 'button', onclick: learn }, tpl ? 'Neu anlernen' : 'Vorlage anlernen')),
+    res);
+  draw();
+  return box;
 }
 
 /** Von der KI gelernte Abruf-Vorlagen (Preis-Selektoren) eines Mitbewerbers. */

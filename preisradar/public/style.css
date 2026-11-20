@@ -1081,3 +1081,13 @@ span.sig.good { background: var(--good-bg); color: var(--good); cursor: default;
 .ovshoplist li { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line); }
 .ovshoplist li .pmeta { white-space: nowrap; }
 @media (max-width: 640px) { .ovshoplist li { grid-template-columns: 1fr auto; } .ovshoplist li .pmeta { grid-column: 1 / -1; order: 3; } }
+
+/* Auslese-Vorlage */
+.tplbox .tplcur ul { margin: 4px 0; padding-left: 18px; }
+.tplbox .tpllearn { gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.tplbox .tpllearn input[type=url] { flex: 1 1 260px; min-width: 0; }
+.tplbox ul.tplpages { list-style: none; padding: 0; margin: 4px 0; font-size: 12.5px; }
+.tplbox ul.tplpages li { overflow-wrap: anywhere; }
+.tplbox ul.tplpages li.ok { color: var(--good, #1a7f37); }
+.tplbox ul.tplpages li.bad { color: var(--bad, #b42318); }
+.tplbox ul.tplpages a { color: inherit; }

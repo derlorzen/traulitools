@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio';
+import { applyShopTemplate } from './shoptemplate.js';
 import { timed } from './perf.js';
 import { normId, parsePrice } from './util.js';
 
@@ -72,7 +73,7 @@ function mapAvailability(a) {
 export function extractProduct(html, opts = {}) {
   return timed(() => `Seite auswerten (${Math.round(html.length / 1024)} KB)`, () => extractProductInner(html, opts));
 }
-function extractProductInner(html, { priceSelector } = {}) {
+function extractProductInner(html, { priceSelector, tpl } = {}) {
   const $ = cheerio.load(html);
   const nodes = jsonLdNodes($);
   const product = nodes.find((n) => typesOf(n).includes('Product'));
@@ -99,7 +100,14 @@ function extractProductInner(html, { priceSelector } = {}) {
     availability = mapAvailability(o.availability);
   }
 
-  if (priceSelector) {
+  // Auslese-Vorlage des Shops (angelernt, ohne KI): Preisquelle und Stellen für EAN/Herstellernummer
+  if (tpl) {
+    const t = applyShopTemplate(html, tpl, source === 'jsonld' ? price : null);
+    if (t?.price != null) { price = t.price; source = 'vorlage'; }
+    for (const id of t?.ids ?? []) ids.add(id);
+  }
+
+  if (priceSelector && source !== 'vorlage') {
     const el = $(priceSelector).first();
     const p = parsePrice(el.attr('content') ?? el.text());
     if (p != null) {
@@ -152,7 +160,7 @@ function extractProductInner(html, { priceSelector } = {}) {
 
   return {
     found: price != null,
-    isProductPage: Boolean(product) || source === 'meta',
+    isProductPage: Boolean(product) || source === 'meta' || source === 'vorlage',
     title,
     price,
     currency,
