@@ -1074,3 +1074,10 @@ span.sig.good { background: var(--good-bg); color: var(--good); cursor: default;
 }
 .notice { border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; line-height: 1.5; }
 .notice.warn { background: var(--warn-bg); color: var(--ink); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
+.ovsplit { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--sunk); gap: 2px; margin: 10px 0 6px; }
+.ovsplit i { display: block; height: 100%; }
+.ovsplit .below { background: var(--cool); } .ovsplit .equal { background: var(--even); } .ovsplit .above { background: var(--warm); }
+.ovshoplist { list-style: none; margin: 10px 0; padding: 0; }
+.ovshoplist li { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line); }
+.ovshoplist li .pmeta { white-space: nowrap; }
+@media (max-width: 640px) { .ovshoplist li { grid-template-columns: 1fr auto; } .ovshoplist li .pmeta { grid-column: 1 / -1; order: 3; } }

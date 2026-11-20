@@ -350,6 +350,7 @@ function buildTable() {
       sortHead(d.own.name, 'price', 'own', 'desc'),
       d.competitors.map((c) => sortHead(`${c.name}${c.enabled ? '' : c.paused?.reason === 'bot_wall' ? ' (pausiert)' : ' (aus)'}`, `comp:${c.id}`)),
       mk().length ? sortHead(mkName(), 'market', 'idealoh', 'desc') : null,
+      d.config.merchant ? sortHead('Google Shopping', 'benchmark', 'idealoh', 'desc') : null,
       has ? [sortHead('Position (Platz)', 'gappct', 'posh', 'desc'), sortHead('Abstand zum günstigsten', 'gap', '', 'desc'), h('th', {}, '')] : null)),
     h('tbody', { id: 'rows' }));
   const status = h('div', { id: 'liststatus', class: 'liststatus' }, miniRadar('Preise werden geladen'));
@@ -414,6 +415,7 @@ function rowEl(p) {
     h('td', { class: `own ${position(p, a)?.tone ?? ''}`, 'data-label': d.own.name }, p.price != null ? eur.format(p.price) : '–'),
     a.cells.map((cell) => matchCell(p, a, cell)),
     mk().length ? marketCell(p) : null,
+    state.data.config.merchant ? googleCell(p) : null,
     d.competitors.length ? positionCell(p, a) : null,
     d.competitors.length ? h('td', { 'data-label': 'Abstand zum günstigsten', class: a.kind === 'undercut' ? 'gapcell gap bad' : a.kind === 'cheapest' ? 'gapcell gap good' : 'gapcell gap' },
       a.kind === 'undercut' ? [`+${eur.format(a.gap)}`, h('small', {}, `günstigster: ${a.ok.find(({ m }) => m.price === a.min)?.c.name ?? ''}`)]
@@ -439,6 +441,18 @@ function marketCell(p) {
     i.min_total != null ? eur.format(i.min_total) : '–',
     h('small', { title: `${i.offers} Händler bei ${srcName(i.source)}, Gesamtpreis inkl. Versand` }, `${mk().length > 1 ? `${srcName(i.source)}: ` : ''}${i.min_shop}${i.own_rank ? ` · du Platz ${i.own_rank}/${i.offers}` : ` · ${i.offers} Händler`}`),
     i.gap_pct != null ? h('small', {}, i.kind === 'dearer' ? `du ${fmtPct(i.gap_pct)}` : m.headroom ? `${fmtPct(Math.min(...Object.values(m.per).filter((v) => v.headroom_pct >= 5).map((v) => v.headroom_pct)))} Luft` : 'du günstigster') : null);
+}
+
+/** Google-Shopping-Vergleichspreis (Merchant Center): Preis anderer Händler für dasselbe Produkt bei Google. */
+function googleCell(p) {
+  const g = p.google;
+  const td = (cls, ...c) => h('td', { class: `mcell idcell ${cls}`, 'data-label': 'Google Shopping', title: 'Google-Shopping-Vergleichspreis: der Preis, zu dem andere Händler dasselbe Produkt bei Google anbieten (nach Klicks gewichtet)' }, ...c);
+  if (!g?.benchmark) return td('', h('span', { class: 'tag mute', title: g ? 'Google hat für dieses Produkt keinen Vergleichspreis (zu wenige Angebote oder Klicks)' : 'Produkt nicht im Merchant Center gefunden' }, g ? 'kein Vergleich' : '–'));
+  const gap = p.price ? ((p.price - g.benchmark) / g.benchmark) * 100 : null;
+  return td(gap != null && gap > 2 ? 'warmtxt' : gap != null && gap < -2 ? 'cooltxt' : '',
+    eur.format(g.benchmark),
+    gap != null ? h('small', {}, gap > 2 ? `du ${fmtPct(Math.round(gap * 10) / 10)}` : gap < -2 ? `du ${nf1.format(Math.abs(gap))} % günstiger` : 'du gleichauf') : null,
+    g.suggested && p.price && Math.abs(g.suggested - p.price) >= 0.01 ? h('small', { title: 'Preisvorschlag von Google mit erwarteter Wirkung auf Klicks und Verkäufe' }, `Vorschlag ${eur.format(g.suggested)}`) : null);
 }
 
 /** Treffer über einen Google-Suchbegriff (die Produktseite wird mit dieser Suchanfrage gefunden). */
@@ -1289,6 +1303,31 @@ async function renderOverview(root) {
         a.limit != null ? [h('i', { class: 'okzone', style: `width:${(Math.min(a.limit, max) / max) * 100}%` }), h('i', { class: 'badzone', style: `left:${(Math.min(a.limit, max) / max) * 100}%` })] : null,
         h('b', { class: 'needle', style: `left:${(Math.min(a.per_100, max) / max) * 100}%` })),
       h('div', { class: 'ovgaugelab pmeta' }, h('span', {}, '0 €'), a.limit != null ? h('span', { style: `left:${(Math.min(a.limit, max) / max) * 100}%` }, `${eur.format(a.limit)} = Grenze`) : null, h('span', {}, eur.format(max)))));
+  }
+
+  // Google-Shopping-Vergleichspreis
+  const gs = o.shopping;
+  if (!gs.connected) {
+    root.append(h('section', { class: 'panel ovsec ovshop' },
+      h('div', { class: 'list-h' }, h('h3', {}, 'Google-Shopping-Vergleichspreis')),
+      h('p', {}, 'Zeigt für jeden Artikel, zu welchem Preis andere Händler dasselbe Produkt bei Google anbieten, auch Shops, die Preisradar nicht selbst abfragen kann.'),
+      h('button', { class: 'btn', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('set-google')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'Merchant Center verbinden')));
+  } else {
+    const tot = gs.total || 0;
+    const seg = (n, cls) => (tot && n ? h('i', { class: cls, style: `width:${(n / tot) * 100}%` }) : null);
+    root.append(h('section', { class: 'panel ovsec ovshop' },
+      h('div', { class: 'list-h' }, h('h3', {}, 'Google-Shopping-Vergleichspreis'), gs.synced_at ? h('span', { class: 'pmeta' }, `Stand ${dt.format(new Date(gs.synced_at))}`) : null),
+      !tot ? h('p', { class: 'pmeta' }, gs.synced_at ? 'Google liefert noch für keinen deiner Artikel einen Vergleichspreis.' : 'Der erste Abgleich mit dem Merchant Center steht noch aus.') : [
+        h('p', {}, `Für ${nf.format(tot)} Artikel kennt Google den Preis anderer Händler. `, h('b', { class: gs.above ? 'warmtxt' : '' }, `${nf.format(gs.above)} liegen mehr als 2 % darüber`), `, ${nf.format(gs.below)} darunter, ${nf.format(gs.equal)} gleichauf.`),
+        h('div', { class: 'ovsplit', role: 'img', 'aria-label': `${gs.above} darüber, ${gs.equal} gleichauf, ${gs.below} darunter` }, seg(gs.below, 'below'), seg(gs.equal, 'equal'), seg(gs.above, 'above')),
+        h('div', { class: 'legend' }, h('span', {}, h('i', { style: 'background:var(--cool)' }), 'günstiger'), h('span', {}, h('i', { style: 'background:var(--even)' }), 'gleichauf'), h('span', {}, h('i', { style: 'background:var(--warm)' }), 'teurer')),
+        gs.top.length ? h('ul', { class: 'ovshoplist' }, gs.top.map((x) => h('li', {},
+          h('button', { class: 'linkish', onclick: () => openDrawer(x.id) }, x.name),
+          h('span', { class: 'pmeta' }, `du ${eur.format(x.own_price)} · Google ${eur.format(x.benchmark)}`),
+          h('b', { class: 'warmtxt' }, fmtPct(x.gap_percent))))) : null,
+        h('div', { class: 'row' },
+          gs.above ? h('button', { class: 'btn small', onclick: () => { Object.assign(state, { filter: 'gAboveBench', sort: 'benchmark', dir: 'desc' }); setTab('preise'); } }, `Alle ${nf.format(gs.above)} teureren in der Preisliste`) : null,
+          gs.suggestions ? h('button', { class: 'btn small', onclick: () => { Object.assign(state, { filter: 'gSuggest' }); setTab('preise'); } }, `${nf.format(gs.suggestions)} Preisvorschläge von Google`) : null)]));
   }
 
   // Rückblick letzte Woche

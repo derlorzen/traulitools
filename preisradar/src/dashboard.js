@@ -4,7 +4,7 @@ import { adsConfig, adsSummary } from './ads.js';
 import { ebayConfig } from './ebay.js';
 import { ebayCheck } from './opportunities.js';
 import { marketOverview } from './market.js';
-import { merchantConfig } from './merchant.js';
+import { merchantConfig, merchantSummary } from './merchant.js';
 
 /**
  * Übersicht (Startseite): was gestern passiert ist, wie die Kanäle stehen, die wichtigsten Chancen, Umsatz und
@@ -87,6 +87,14 @@ export function dashboard(db, { user = null, opportunities = null } = {}) {
     channels.push({ key: 'shopping', name: 'Google Shopping', connected: true, main: mc.n, main_label: 'Produkte', sub: `${mc.b} mit Vergleichspreis`, warn: false, share: null, tab: 'sichtbarkeit' });
   }
 
+  // Google-Shopping-Vergleichspreis (Merchant Center)
+  let shopping = { connected: merchantConfig(db).configured };
+  if (shopping.connected) {
+    const m = merchantSummary(db);
+    shopping = { connected: true, synced_at: m.synced_at, total: m.benchmark.total, above: m.benchmark.above, below: m.benchmark.below, equal: m.benchmark.total - m.benchmark.above - m.benchmark.below,
+      top: m.above_benchmark.slice(0, 5), suggestions: m.suggestions.length };
+  }
+
   // Chancen
   const o = opportunities;
   const opp = o ? { total: o.items.length, top: o.items[0] ? { type: o.items[0].type, label: o.items[0].label, name: o.items[0].name, detail: o.items[0].detail, product_id: o.items[0].product_id } : null,
@@ -112,7 +120,7 @@ export function dashboard(db, { user = null, opportunities = null } = {}) {
     fresh: { shop: getSetting(db, 'sw_daily_at'), ads: getSetting(db, 'ads_synced_at'), prices: db.prepare('SELECT MAX(last_checked) AS t FROM matches').get().t },
     has: { shop: sw, ads, sales: Boolean(db.prepare('SELECT 1 FROM shop_daily LIMIT 1').get()), ads_daily: Boolean(db.prepare('SELECT 1 FROM ads_daily LIMIT 1').get()) },
     yesterday_stats: { revenue: y.revenue, orders: y.orders, last_week: lw.revenue, delta: pct(y.revenue, lw.revenue) },
-    channels, opportunities: opp,
+    channels, opportunities: opp, shopping,
     numbers: { d7: p7, d30: p30 },
     ad_cost: adShare != null ? { per_100: adShare, limit: breakEven, ok: breakEven != null ? adShare < breakEven : null } : null,
     review: {
