@@ -348,7 +348,7 @@ function buildTable() {
       h('th', { class: 'trackhead', title: 'Alle Artikel im aktuellen Filter beobachten bzw. nicht mehr beobachten' }, h('input', { type: 'checkbox', id: 'trackall', 'aria-label': 'Alle Artikel im Filter beobachten', onchange: guard(async (e) => { const on = e.target.checked; e.target.checked = !on; await track(null, on); }) })),
       sortHead(h('span', { id: 'prodcount' }, 'Produkt'), 'name', 'prod'),
       sortHead(d.own.name, 'price', 'own', 'desc'),
-      d.competitors.map((c) => sortHead(`${c.name}${c.enabled ? '' : ' (aus)'}`, `comp:${c.id}`)),
+      d.competitors.map((c) => sortHead(`${c.name}${c.enabled ? '' : c.paused?.reason === 'bot_wall' ? ' (pausiert)' : ' (aus)'}`, `comp:${c.id}`)),
       mk().length ? sortHead(mkName(), 'market', 'idealoh', 'desc') : null,
       has ? [sortHead('Position (Platz)', 'gappct', 'posh', 'desc'), sortHead('Abstand zum günstigsten', 'gap', '', 'desc'), h('th', {}, '')] : null)),
     h('tbody', { id: 'rows' }));
@@ -888,6 +888,8 @@ function competitorPanel(c) {
     show(nodes.length ? nodes : 'Bitte eine Test-URL oder einen Suchbegriff eingeben.');
   });
   form.append(
+    c && !c.enabled && c.paused?.reason === 'bot_wall' ? h('div', { class: 'notice warn' }, h('strong', {}, 'Automatisch pausiert: '),
+      `Seit ${dt.format(new Date(c.paused.at))} lässt der Shop nur noch echte Browser durch (Bot-Schutz ${c.paused.wall ?? ''}). Preisradar umgeht das nicht und hat den Abruf angehalten, damit keine sinnlosen Anfragen entstehen. Die bisherigen Preise bleiben erhalten. Wenn der Shop wieder erreichbar ist oder Preisradar freigeschaltet hat, „Aktiv“ anhaken und speichern.`) : null,
     h('div', { class: 'grid' },
       f('Name', 'name', c?.name, { ph: 'z. B. Bad-Direkt' }),
       f('Shop-URL', 'base_url', c?.base_url, { type: 'url', ph: 'https://www.beispiel-shop.de' }),

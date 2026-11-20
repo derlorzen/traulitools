@@ -25,3 +25,26 @@ test('Tempo je Shop: Crawl-delay, Bremse bei 429, Erholung', async (t) => {
   for (let i = 0; i < 10; i++) notePace(url);
   assert.equal(paceInfo(url).factor, 1);
 });
+
+test('Bot-Schutz: Cloudflare-Challenge erkennen und Mitbewerber nach mehreren Treffern pausieren', async () => {
+  const { botWall } = await import('../src/fetcher.js');
+  const { noteBotWall, BOT_WALL_LIMIT } = await import('../src/scraper.js');
+  const { openDb } = await import('../src/db.js');
+  const { analyse } = await import('../src/analysis.js');
+  const hdr = (o = {}) => ({ get: (k) => o[k] ?? null });
+  assert.equal(botWall({ status: 403, headers: hdr({ 'cf-mitigated': 'challenge' }) }, ''), 'Cloudflare');
+  assert.equal(botWall({ status: 403, headers: hdr() }, '<html><title>Just a moment...</title>'), 'Cloudflare');
+  assert.equal(botWall({ status: 403, headers: hdr() }, '<html>Zugriff verweigert</html>'), null);
+  assert.equal(botWall({ status: 200, headers: hdr() }, 'challenge-platform'), null);
+  const db = openDb(':memory:');
+  db.prepare("INSERT INTO competitors(name, base_url, enabled) VALUES ('SSD','https://ssd.test',1)").run();
+  const comp = db.prepare('SELECT * FROM competitors').get();
+  for (let i = 1; i < BOT_WALL_LIMIT; i++) assert.equal(noteBotWall(db, comp, { error: true, botWall: 'Cloudflare' }), false);
+  noteBotWall(db, comp, { found: true }); // ein Erfolg zwischendurch setzt zurück
+  for (let i = 1; i < BOT_WALL_LIMIT; i++) noteBotWall(db, comp, { error: true, botWall: 'Cloudflare' });
+  assert.equal(db.prepare('SELECT enabled FROM competitors').get().enabled, 1);
+  assert.equal(noteBotWall(db, comp, { error: true, botWall: 'Cloudflare' }), true);
+  assert.equal(db.prepare('SELECT enabled FROM competitors').get().enabled, 0);
+  assert.match(JSON.parse(db.prepare("SELECT value FROM settings WHERE key='comp_paused_1'").get().value).wall, /Cloudflare/);
+  assert.ok(analyse(db).hints.some((x) => /SSD ist pausiert/.test(x.text)));
+});

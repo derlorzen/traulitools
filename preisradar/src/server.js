@@ -145,7 +145,7 @@ export function createApp(db, { dataDir = null } = {}) {
     const since24 = new Date(Date.now() - 86400e3).toISOString();
     const competitors = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM sitemap_urls s WHERE s.competitor_id=c.id) AS sitemap_count,
       (SELECT COUNT(*) FROM matches m WHERE m.competitor_id=c.id AND m.last_checked >= ?) AS checked_24h FROM competitors c ORDER BY position, id`).all(since24)
-      .map((c) => ({ ...c, pace: { ...paceInfo(c.base_url, c.delay_ms), live: scrapeState.comps?.[c.id] ?? null } }));
+      .map((c) => ({ ...c, paused: (() => { try { return JSON.parse(getSetting(db, `comp_paused_${c.id}`) || 'null'); } catch { return null; } })(), pace: { ...paceInfo(c.base_url, c.delay_ms), live: scrapeState.comps?.[c.id] ?? null } }));
     const counts = db.prepare('SELECT COUNT(*) AS "all", COALESCE(SUM(tracked),0) AS tracked FROM products WHERE active=1').get();
     // scope: tracked = beobachtete Artikel, all = komplette Artikelbasis; ohne Angabe beobachtete, sofern vorhanden
     const scope = req.query.scope === 'all' || (req.query.scope !== 'tracked' && !counts.tracked) ? 'all' : 'tracked';
@@ -480,6 +480,7 @@ export function createApp(db, { dataDir = null } = {}) {
     db.prepare('UPDATE competitors SET name=?, base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=?, sitemap_url=? WHERE id=?').run(...compFields(req.body), Number(req.params.id));
     setManualSearch(Number(req.params.id), req.body?.manual_search_url);
     clearSitemapCache(Number(req.params.id));
+    if (req.body?.enabled === true || req.body?.enabled === 1 || req.body?.enabled === 'on') setSetting(db, `comp_paused_${Number(req.params.id)}`, ''); // wieder eingeschaltet
     res.json({ ok: true });
   }));
   // Mitbewerber per Produktlink einrichten: analysieren (create=false) oder direkt anlegen (create=true)

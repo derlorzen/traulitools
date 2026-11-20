@@ -23,13 +23,29 @@ export async function fetchText(url, { timeout = 20000, headers = {}, raw = fals
     const buf = raw ? Buffer.from(await res.arrayBuffer()) : null;
     const text = raw ? '' : await res.text();
     if (res.status === 429 || res.status === 503) notePace(url, { status: res.status, retryAfter: res.headers.get('retry-after') });
-    return { status: res.status, text, buf, finalUrl: res.url || url, contentType: res.headers.get('content-type') || '' };
+    return { status: res.status, text, buf, finalUrl: res.url || url, contentType: res.headers.get('content-type') || '', botWall: botWall(res, text) };
   } catch (e) {
     if (e.name === 'AbortError') { notePace(url, { error: true }); throw new Error('Zeitüberschreitung beim Abruf'); }
     throw new Error(`Abruf fehlgeschlagen: ${e.cause?.code || e.message}`);
   } finally {
     clearTimeout(t);
   }
+}
+
+/**
+ * Bot-Schutz erkennen (Cloudflare-Challenge, „Just a moment…“, Captcha-Seiten). Dann lässt der Shop nur echte
+ * Browser durch; Preisradar umgeht das bewusst nicht.
+ */
+export function botWall(res, text = '') {
+  const st = res.status;
+  if (res.headers?.get?.('cf-mitigated') === 'challenge') return 'Cloudflare';
+  if (st !== 403 && st !== 503 && st !== 429) return null;
+  const t = String(text).slice(0, 20000);
+  if (/challenge-platform|cf-chl-|<title>Just a moment|Attention Required! \| Cloudflare/i.test(t)) return 'Cloudflare';
+  if (/_Incapsula_Resource|Incapsula incident/i.test(t)) return 'Imperva';
+  if (/datadome|captcha-delivery\.com/i.test(t)) return 'DataDome';
+  if (/px-captcha|perimeterx/i.test(t)) return 'PerimeterX';
+  return null;
 }
 
 function parseRobots(text) {

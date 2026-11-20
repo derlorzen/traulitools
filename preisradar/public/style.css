@@ -1072,3 +1072,5 @@ span.sig.good { background: var(--good-bg); color: var(--good); cursor: default;
   .ovopp { flex-direction: column; align-items: stretch; } .ovoppicon { display: none; }
   .ovtiles { grid-template-columns: 1fr; }
 }
+.notice { border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; line-height: 1.5; }
+.notice.warn { background: var(--warn-bg); color: var(--ink); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }

@@ -64,6 +64,7 @@ async function loadPage(url) {
   // Auch das Ziel einer Weiterleitung muss laut robots.txt erlaubt sein
   if (r.finalUrl && r.finalUrl !== url && !(await robotsAllows(r.finalUrl))) return { blocked: true };
   if (r.status === 404 || r.status === 410) { notePace(url, { ms }); return { gone: true }; }
+  if (r.botWall) throw Object.assign(new Error(`Bot-Schutz (${r.botWall}) lässt nur Browser durch (HTTP ${r.status})`), { botWall: r.botWall });
   if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
   notePace(url, { ms });
   return { r };
@@ -306,8 +307,30 @@ async function processItemInner(db, comp, product, match, now, ai) {
     if (sawBlocked) return fail('blocked', 'robots.txt des Mitbewerbers untersagt die Suche');
     return fail('not_found', 'Kein passendes Produkt gefunden');
   } catch (e) {
-    return fail('error', e.message);
+    return { ...fail('error', e.message), botWall: e.botWall ?? null };
   }
+}
+
+/**
+ * Bot-Schutz: Antwortet ein Mitbewerber mehrmals hintereinander nur mit einer Browser-Prüfung, wird er pausiert
+ * (enabled=0) und der Grund gespeichert. So entstehen keine tausend sinnlosen Anfragen am Tag. Ein Erfolg
+ * zwischendurch setzt den Zähler zurück. Wieder einschalten geht unter Mitbewerber.
+ */
+export const BOT_WALL_LIMIT = 5;
+const wallStreak = new Map(); // competitor_id -> Anzahl in Folge
+export function noteBotWall(db, comp, r) {
+  if (r?.botWall) {
+    const n = (wallStreak.get(comp.id) ?? 0) + 1;
+    wallStreak.set(comp.id, n);
+    if (n >= BOT_WALL_LIMIT) {
+      db.prepare('UPDATE competitors SET enabled=0 WHERE id=?').run(comp.id);
+      db.prepare("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(`comp_paused_${comp.id}`, JSON.stringify({ at: new Date().toISOString(), reason: 'bot_wall', wall: r.botWall }));
+      wallStreak.delete(comp.id);
+      console.warn(`${comp.name}: pausiert, Bot-Schutz (${r.botWall}) lässt nur Browser durch`);
+      return true;
+    }
+  } else if (r && !r.error) wallStreak.delete(comp.id);
+  return false;
 }
 
 
@@ -403,6 +426,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
             const ai = aiCfg.key && comp.ai_mode !== 'off' ? { cfg: aiCfg, mode: comp.ai_mode } : null;
             const t = Date.now();
             const r = await processItem(db, comp, p, m, undefined, ai);
+            if (noteBotWall(db, comp, r)) { scrapeState.done++; scrapeState.errors++; return; } // Mitbewerber pausiert: diese Warteschlange beenden
             scrapeState.done++;
             if (r.found) scrapeState.found++;
             if (r.error) scrapeState.errors++;

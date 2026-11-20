@@ -228,7 +228,15 @@ export function analyse(db, rules = RULES) {
   if (pendingTotal && stats.compared) hints.push({ level: 'info', text: `${pendingTotal} Prüfungen sind noch ausstehend, die Auswertung wird mit jedem Lauf genauer.` });
   const reviewTotal = competitors.reduce((s, c) => s + c.review, 0);
   if (reviewTotal) hints.push({ level: 'warn', text: `${reviewTotal} Treffer sind noch nicht bestätigt („zu prüfen“) und fließen nicht in die Analyse ein.` });
+  const paused = new Set();
+  for (const c of db.prepare("SELECT c.id, c.name, s.value FROM competitors c JOIN settings s ON s.key = 'comp_paused_' || c.id WHERE c.enabled=0").all()) {
+    let v = {};
+    try { v = JSON.parse(c.value); } catch { /* alt */ }
+    paused.add(c.name);
+    if (v.reason === 'bot_wall') hints.push({ level: 'warn', text: `${c.name} ist pausiert: Der Shop lässt seit ${new Date(v.at).toLocaleDateString('de-DE')} nur noch echte Browser durch (Bot-Schutz ${v.wall ?? ''}). Die bisherigen Preise bleiben erhalten. Unter Mitbewerber wieder einschalten, wenn sich das ändert.` });
+  }
   for (const c of competitors) {
+    if (paused.has(c.name)) continue;
     if (c.blocked) hints.push({ level: 'warn', text: `${c.name}: ${c.blocked} Seiten durch die robots.txt gesperrt.` });
     if (c.error > Math.max(3, c.ok)) hints.push({ level: 'warn', text: `${c.name}: ${c.error} Abrufe mit Fehler, die Einrichtung (Selektor, Sitemap, KI) prüfen.` });
     if (c.tracked >= 10 && c.ok + c.review + c.not_found + c.error + c.blocked > 0 && c.ok === 0) hints.push({ level: 'warn', text: `${c.name}: bisher keine bestätigten Preise.` });
