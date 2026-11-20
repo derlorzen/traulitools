@@ -150,8 +150,20 @@ export async function syncAds(db) {
     report.terms = by.size;
   });
 
+  await step('Verlauf je Tag', async () => {
+    const from = new Date(Date.now() - 100 * 86400000).toISOString().slice(0, 10), to = new Date().toISOString().slice(0, 10);
+    const rows = await search(cfg, `SELECT segments.date, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM customer WHERE segments.date BETWEEN '${from}' AND '${to}'`);
+    db.exec('BEGIN');
+    try {
+      const up = db.prepare('INSERT INTO ads_daily(day, impressions, clicks, cost, conversions, value, updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(day) DO UPDATE SET impressions=excluded.impressions, clicks=excluded.clicks, cost=excluded.cost, conversions=excluded.conversions, value=excluded.value, updated_at=excluded.updated_at');
+      for (const r of rows) { const d = r.segments?.date; if (!d) continue; const m = metric(r.metrics); up.run(d, m.impressions, m.clicks, r2(m.cost), m.conversions, r2(m.value), now); }
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    report.days = rows.length;
+  });
+
   // Wenn gar nichts ging, ist es ein Zugangsproblem: als Fehler melden statt als Hinweis
-  if (report.warnings.length === 3 && firstError) throw firstError;
+  if (report.warnings.length === 4 && firstError) throw firstError;
   setSetting(db, 'ads_synced_at', now);
   return report;
 }

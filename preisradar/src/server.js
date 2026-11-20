@@ -6,7 +6,8 @@ import { openDb, upsertProducts, tx } from './db.js';
 import { parseCsv, pick, parsePrice, csvEscape } from './util.js';
 import { extractProduct, findCandidates } from './extract.js';
 import { fetchText, robotsAllows, paceInfo } from './fetcher.js';
-import { shopwareConfig, testShopware, syncShopware, productDetails } from './shopware.js';
+import { shopwareConfig, testShopware, syncShopware, syncShopwareDaily, productDetails } from './shopware.js';
+import { dashboard } from './dashboard.js';
 import { aiConfig, testAi, chatJson, DEFAULT_MODEL } from './ai.js';
 import { analyse, RULES } from './analysis.js';
 import { autoSetup, detectSearchLink } from './autosetup.js';
@@ -28,11 +29,11 @@ import { mailConfig, digestData, digestHtml, sendDigest, maybeSendDigest } from 
 import { merchantConfig, merchantTest, syncMerchant, merchantSummary } from './merchant.js';
 import { adsConfig, adsTest, syncAds, adsSummary } from './ads.js';
 import { computeTiers, tierConfig, tierStatus } from './tiers.js';
-import { listChannels, updateChannel, channelView } from './channels.js';
+import { listChannels, updateChannel, channelView, channel as channelOf, profit as channelProfit } from './channels.js';
 import { activeSources, marketOverview, apifyTest, apifyToken, startJob, jobs as marketJobs, marketTick, resetTicks, productMarket, lookupNow, discoveredShops, dismissShop, setSelected, marketSettings, saveMarketSettings } from './market.js';
 import { source as marketSource } from './sources/index.js';
 import { ebayConfig, ebayDeletionToken, authorizeUrl, exchangeCode, disconnect as ebayDisconnect, ebayTest, syncListings, startMarketJob, marketJob, marketCheck, ebayTick, suggestCategories, aspects as ebayAspects, policies as ebayPolicies, draft as ebayDraft, createListing, ebayOverview, resetAppToken, cleanDescription } from './ebay.js';
-import { ebayCheck, findOpportunities, jtlExport, productOpportunities, invalidateOpportunities } from './opportunities.js';
+import { ebayCheck, findOpportunities, jtlExport, productOpportunities, invalidateOpportunities, cachedOpportunities } from './opportunities.js';
 import { productSignals, withSignals } from './signals.js';
 import { auditOverview, auditOf, auditProduct, startAudit, auditJob, auditTick, auditConfig, suggestMeta } from './seoaudit.js';
 import { kwConfig, kwTest, addKeywords, postChecks, collectChecks, refreshVolumes, kwOverview, kwDetail, suggestions, startSuggestionJob, kwTick, kwJob, MAX_KEYWORDS, normKeyword } from './keywords.js';
@@ -342,6 +343,14 @@ export function createApp(db, { dataDir = null } = {}) {
     res.json({ ok: true, dismissed: list.length });
   }));
 
+  app.get('/api/dashboard', wrap((req, res) => {
+    const opps = timed('Übersicht: Chancen', () => cachedOpportunities(db));
+    res.json(dashboard(db, { user: currentUser(db, req)?.username ?? null, opportunities: opps }));
+  }));
+  app.post('/api/dashboard/refresh', wrap(async (_req, res) => {
+    if (!shopwareConfig(db).configured) throw bad('Shopware ist nicht verbunden');
+    res.json(await runShopwareDaily(db));
+  }));
   app.get('/api/ads', wrap((_req, res) => res.json({ ...adsSummary(db), job: { ...adsJob } })));
   app.post('/api/ads/test', wrap(async (_req, res) => res.json(await adsTest(db))));
   app.post('/api/ads/sync', wrap((_req, res) => {
@@ -903,6 +912,19 @@ export function startMerchantJob(db) {
   return true;
 }
 
+/** Tageszahlen aus Shopware (Umsatz, Bestellungen, Gewinn je Tag) für die Übersicht. */
+let swDailyRunning = false;
+export async function runShopwareDaily(db) {
+  if (swDailyRunning) return { running: true };
+  swDailyRunning = true;
+  try {
+    const shop = channelOf(db, 'shop');
+    const r = await syncShopwareDaily(db, { profitOf: (unitGross, p) => (p.purchase_price > 0 && shop ? channelProfit(unitGross, p.purchase_price, shop, p.tax_rate ?? 19) : null) });
+    setSetting(db, 'sw_daily_at', new Date().toISOString());
+    return r;
+  } finally { swDailyRunning = false; }
+}
+
 /** Google-Ads-Abgleich im Hintergrund. */
 export const adsJob = { running: false, startedAt: null, finishedAt: null, result: null, error: null };
 export function startAdsJob(db) {
@@ -958,6 +980,11 @@ export function startScheduler(db) {
       if (!mcJob.running && merchantConfig(db).configured && Date.now() - (Date.parse(getSetting(db, 'mc_synced_at') || 0) || 0) > 24 * 3600 * 1000 && Date.now() - (Date.parse(getSetting(db, 'mc_tried_at') || 0) || 0) > 6 * 3600 * 1000) {
         setSetting(db, 'mc_tried_at', new Date().toISOString());
         startMerchantJob(db);
+      }
+      // Tageszahlen aus Shopware alle 3 Stunden (für die Übersicht)
+      if (shopwareConfig(db).configured && Date.now() - (Date.parse(getSetting(db, 'sw_daily_at') || 0) || 0) > 3 * 3600 * 1000 && Date.now() - (Date.parse(getSetting(db, 'sw_daily_tried') || 0) || 0) > 3600 * 1000) {
+        setSetting(db, 'sw_daily_tried', new Date().toISOString());
+        runShopwareDaily(db).catch((e) => console.error('Shopware-Tageszahlen:', e.message));
       }
       // Google Ads täglich
       if (!adsJob.running && adsConfig(db).configured && Date.now() - (Date.parse(getSetting(db, 'ads_synced_at') || 0) || 0) > 24 * 3600 * 1000 && Date.now() - (Date.parse(getSetting(db, 'ads_tried_at') || 0) || 0) > 6 * 3600 * 1000) {

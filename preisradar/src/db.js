@@ -123,6 +123,8 @@ CREATE TABLE IF NOT EXISTS idealo_offers (product_id INTEGER NOT NULL REFERENCES
 CREATE INDEX IF NOT EXISTS idx_idealo_offers_pid ON idealo_offers(product_id);
 CREATE INDEX IF NOT EXISTS idx_idealo_offers_shop ON idealo_offers(shop);
 CREATE TABLE IF NOT EXISTS idealo_history (product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, day TEXT NOT NULL, min_total REAL, own_total REAL, offers INTEGER, PRIMARY KEY(product_id, day));
+CREATE TABLE IF NOT EXISTS shop_daily (day TEXT PRIMARY KEY, revenue REAL, units INTEGER, orders INTEGER, profit REAL, profit_base REAL, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS ads_daily (day TEXT PRIMARY KEY, impressions INTEGER, clicks INTEGER, cost REAL, conversions REAL, value REAL, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS ads_types (type TEXT PRIMARY KEY, campaigns INTEGER, impressions INTEGER, clicks INTEGER, cost REAL, conversions REAL, value REAL, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS ads_products (item_id TEXT PRIMARY KEY, title TEXT, types TEXT, impressions INTEGER, clicks INTEGER, cost REAL, conversions REAL, value REAL, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS ads_terms (term TEXT PRIMARY KEY, impressions INTEGER, clicks INTEGER, cost REAL, conversions REAL, value REAL, updated_at TEXT);

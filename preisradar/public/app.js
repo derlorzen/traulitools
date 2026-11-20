@@ -64,7 +64,7 @@ function toast(msg, err = false) {
 }
 const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof AuthError)) toast(e.message, true); } };
 
-const state = { data: null, scope: null, tab: 'start', q: '', brand: '', filter: 'all', sort: 'name', dir: 'asc', comp: '', status: '', minP: '', maxP: '', gapMin: '', selected: null, runs: [], more: false, impMin: '', posMax: '', view: (() => { try { return localStorage.getItem('pr_view') === 'google' ? 'google' : 'preise'; } catch { return 'preise'; } })() };
+const state = { data: null, scope: null, tab: 'uebersicht', q: '', brand: '', filter: 'all', sort: 'name', dir: 'asc', comp: '', status: '', minP: '', maxP: '', gapMin: '', selected: null, runs: [], more: false, impMin: '', posMax: '', view: (() => { try { return localStorage.getItem('pr_view') === 'google' ? 'google' : 'preise'; } catch { return 'preise'; } })() };
 
 // ---------- Auswertung pro Produkt ----------
 function analyse(p, comps) {
@@ -325,7 +325,7 @@ function miniRadar(text = 'Wird geladen', { small = false } = {}) {
       h('b', { class: 'mr-core' })),
     h('div', { class: 'mr-text' }, text, h('span', { class: 'mr-dots' }, h('i'), h('i'), h('i'))));
 }
-const TAB_LOADING = { start: 'Lagebild wird gezeichnet', analyse: 'Analyse wird gerechnet', chancen: 'Chancen werden bewertet', sichtbarkeit: 'Google-Daten werden geladen', keywords: 'Keywords werden geladen', seitencheck: 'Seiten-Check wird geladen', ebay: 'eBay-Daten werden geladen', import: 'Läufe werden geladen', einstellungen: 'Einstellungen werden geladen' };
+const TAB_LOADING = { uebersicht: 'Übersicht wird zusammengestellt', start: 'Lagebild wird gezeichnet', analyse: 'Analyse wird gerechnet', chancen: 'Chancen werden bewertet', sichtbarkeit: 'Google-Daten werden geladen', keywords: 'Keywords werden geladen', seitencheck: 'Seiten-Check wird geladen', ebay: 'eBay-Daten werden geladen', import: 'Läufe werden geladen', einstellungen: 'Einstellungen werden geladen' };
 
 function buildTable() {
   const d = state.data;
@@ -1181,6 +1181,152 @@ function shortList(title, sub, items, empty, more) {
     sub ? h('p', { class: 'pmeta' }, sub) : null,
     items.length ? h('ol', {}, items) : h('p', { class: 'list-empty' }, empty));
 }
+
+// ---------- Übersicht (Startseite) ----------
+const ov = { period: (() => { try { return localStorage.getItem('pr_ov_period') === '30' ? 'd30' : 'd7'; } catch { return 'd7'; } })(), table: false };
+const capWord = (w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : '');
+const dLong = new Intl.DateTimeFormat('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+const tShort = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
+const eur0 = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
+const moneyR = (v) => (v == null ? '–' : Math.abs(v) >= 1000 ? eur0.format(v) : eur.format(v));
+
+/** Kleine Verlaufslinie (12 Wochen) unter einer Kennzahl. */
+function sparkline(values, color = 'var(--petrol)') {
+  const v = values.map((x) => x ?? 0);
+  if (v.length < 2 || v.every((x) => x === 0)) return null;
+  const W = 120, H = 28, min = Math.min(...v), max = Math.max(...v) || 1;
+  const X = (i) => 2 + (i / (v.length - 1)) * (W - 6), Y = (x) => H - 3 - ((x - min) / Math.max(1e-9, max - min)) * (H - 7);
+  const d = v.map((x, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(x).toFixed(1)}`).join(' ');
+  return s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'spark', 'aria-hidden': 'true', preserveAspectRatio: 'none' },
+    s('path', { d, fill: 'none', stroke: 'var(--even)', 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'vector-effect': 'non-scaling-stroke' }),
+    s('circle', { cx: X(v.length - 1), cy: Y(v[v.length - 1]), r: 3, fill: color }));
+}
+function deltaTxt(d, { lowerIsBetter = false, label = 'als im Zeitraum davor' } = {}) {
+  if (d == null) return h('span', { class: 'kpi-d' }, 'kein Vergleich');
+  if (Math.abs(d) < 1) return h('span', { class: 'kpi-d' }, 'fast gleich wie davor');
+  const good = lowerIsBetter ? d < 0 : d > 0;
+  return h('span', { class: `kpi-d ${good ? 'up' : 'down'}` }, `${d > 0 ? '▲' : '▼'} ${nf1.format(Math.abs(d))} % ${d > 0 ? 'mehr' : 'weniger'} ${label}`);
+}
+
+async function renderOverview(root) {
+  const o = await api('/api/dashboard');
+  const now = new Date();
+  const hr = now.getHours();
+  const greet = hr < 11 ? 'Guten Morgen' : hr < 18 ? 'Hallo' : 'Guten Abend';
+  const fresh = o.fresh.shop ? `Shopdaten von ${tShort.format(new Date(o.fresh.shop))} Uhr` : o.fresh.prices ? `Preise von ${dt.format(new Date(o.fresh.prices))}` : 'noch keine Daten';
+  const y = o.yesterday_stats;
+  const wd = new Intl.DateTimeFormat('de-DE', { weekday: 'long' }).format(new Date(`${o.yesterday}T12:00:00`));
+  const opp = o.opportunities;
+
+  // Kopf: Gestern und was zu tun ist
+  root.append(h('section', { class: 'ovhero' },
+    h('div', { class: 'ovmeta' }, h('span', {}, dLong.format(now)), h('span', {}, fresh)),
+    h('h2', {}, `${greet}${o.user ? `, ${capWord(o.user)}` : ''}.`),
+    h('p', {}, o.has.sales
+      ? [`Gestern hat der Shop `, h('b', {}, moneyR(y.revenue)), ` umgesetzt${y.orders ? ` (${nf.format(y.orders)} Bestellung${y.orders === 1 ? '' : 'en'})` : ''}`,
+        y.delta != null ? `, ${nf.format(Math.abs(Math.round(y.delta)))} % ${y.delta >= 0 ? 'mehr' : 'weniger'} als letzten ${wd}` : '', '. ']
+      : o.has.shop ? 'Die Umsätze aus Shopware werden gerade das erste Mal geholt. ' : 'Mit dem Shopware-Zugang stehen hier Umsatz und Gewinn je Tag. ',
+    opp?.total ? h('b', {}, `${nf.format(opp.total)} Chancen warten auf dich.`) : 'Gerade keine offenen Chancen.'),
+    opp?.total ? h('button', { class: 'btn ovcta', onclick: () => { opp_reset(); setTab('chancen'); } }, 'Chancen ansehen, wichtigste zuerst') : null));
+
+  // Kanäle
+  root.append(h('section', { class: 'panel ovsec' },
+    h('div', { class: 'list-h' }, h('h3', {}, 'Deine Kanäle')),
+    h('div', { class: 'ovchannels' }, o.channels.map((c) => h('button', { class: `ovch${c.connected ? '' : ' off'}`, onclick: () => setTab(c.tab) },
+      h('div', { class: 'ovchname' }, h('span', { class: `ovchdot ${c.key}`, 'aria-hidden': 'true' }, c.name.charAt(0)), c.name),
+      c.main != null ? h('div', { class: 'ovchmain' }, h('b', {}, nf.format(c.main)), ` ${c.main_label}`) : h('div', { class: 'ovchmain' }, h('b', {}, '–')),
+      h('div', { class: `ovchsub${c.warn ? ' warmtxt' : ''}` }, c.sub),
+      c.share != null ? h('div', { class: 'ovbar', role: 'img', 'aria-label': `${Math.round(c.share * 100)} %` }, h('i', { style: `width:${Math.max(2, Math.min(100, c.share * 100))}%` })) : h('div', { class: 'ovbar nobar' }))))));
+
+  // Chancenfinder
+  if (opp?.total) {
+    root.append(h('section', { class: 'ovopp' },
+      h('div', { class: 'ovoppicon', 'aria-hidden': 'true' }, s('svg', { viewBox: '0 0 24 24', width: 22, height: 22, fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, s('path', { d: 'M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2z' }))),
+      h('div', { class: 'ovopptxt' },
+        h('strong', {}, `Chancenfinder: ${nf.format(opp.total)} Chancen gefunden`),
+        opp.top ? h('p', {}, 'Ganz oben: ', h('button', { class: 'linkish', onclick: () => openDrawer(opp.top.product_id) }, opp.top.name), ` (${opp.top.label}): ${opp.top.detail}`) : null,
+        h('div', { class: 'ovoppgroups' }, opp.groups.map((g) => h('button', { class: 'chip', onclick: () => { opp_reset(g.type); setTab('chancen'); } }, h('b', {}, nf.format(g.count)), g.label)))),
+      h('button', { class: 'btn', onclick: () => { opp_reset(); setTab('chancen'); } }, 'Alle ansehen')));
+  }
+
+  // Artikel finden
+  const q = h('input', { type: 'search', placeholder: 'Name, Artikelnummer, EAN oder Google-Suchbegriff', 'aria-label': 'Artikel suchen' });
+  const go = () => { state.q = q.value.trim(); Object.assign(state, { filter: 'all', brand: '' }); setTab('preise'); };
+  q.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  root.append(h('section', { class: 'panel ovsearch' }, h('label', { class: 'pmeta' }, `Artikel finden (${nf.format(o.products)} Artikel)`), h('div', { class: 'row' }, q, h('button', { class: 'btn primary', onclick: go }, 'Suchen'))));
+
+  // Deine Zahlen
+  const per = o.numbers[ov.period];
+  const c = per.cur, dl = per.delta, wk = per.weeks;
+  const toggle = h('div', { class: 'seg', role: 'group', 'aria-label': 'Zeitraum' }, [['d7', '7 Tage'], ['d30', '30 Tage']].map(([k, l]) => h('button', { class: ov.period === k ? 'on' : '', 'aria-pressed': ov.period === k ? 'true' : 'false', onclick: () => { ov.period = k; try { localStorage.setItem('pr_ov_period', k === 'd30' ? '30' : '7'); } catch { /* egal */ } render(); } }, l)));
+  const tile = (label, value, d, spark, opts = {}) => h('div', { class: 'kpi ovkpi' }, h('div', { class: 'kpi-l' }, label), h('div', { class: `kpi-v${opts.cls ? ` ${opts.cls}` : ''}` }, value), d, spark);
+  const tiles = [];
+  if (o.has.sales) tiles.push(tile('Umsatz im Shop', moneyR(c.revenue), deltaTxt(dl.revenue), sparkline(wk.map((w) => w.revenue))));
+  else tiles.push(tile('Umsatz im Shop', '–', h('span', { class: 'kpi-d' }, o.has.shop ? 'wird geholt' : 'Shopware nicht verbunden'), null));
+  if (o.has.ads_daily) {
+    tiles.push(tile('davon durch Werbung', moneyR(c.ads_value), deltaTxt(dl.ads_value), sparkline(wk.map((w) => w.ads_value))));
+    tiles.push(tile('Werbekosten', moneyR(c.ads_cost), deltaTxt(dl.ads_cost, { lowerIsBetter: true }), sparkline(wk.map((w) => w.ads_cost), 'var(--warm)')));
+  } else {
+    tiles.push(tile('Bestellungen', o.has.sales ? nf.format(c.orders) : '–', o.has.sales ? deltaTxt(dl.orders) : h('span', { class: 'kpi-d' }, '–'), null));
+    tiles.push(tile('Werbekosten', '–', h('span', { class: 'kpi-d' }, o.has.ads ? 'Abgleich steht aus' : h('button', { class: 'linkbtn', onclick: () => { setTab('einstellungen'); setTimeout(() => document.getElementById('ads-settings')?.scrollIntoView({ behavior: 'smooth' }), 500); } }, 'Google Ads verbinden')), null));
+  }
+  tiles.push(tile(o.has.ads_daily ? 'Gewinn nach Werbung' : 'Rohertrag', c.profit_after_ads != null ? moneyR(o.has.ads_daily ? c.profit_after_ads : c.gross_profit) : '–',
+    c.profit_after_ads != null ? deltaTxt(dl.profit_after_ads) : h('span', { class: 'kpi-d' }, o.has.sales ? 'braucht Einkaufspreise' : '–'),
+    sparkline(wk.map((w) => w.profit_after_ads)), { cls: c.profit_after_ads != null && c.profit_after_ads < 0 ? 'warmtxt' : 'goodtxt' }));
+  root.append(h('section', { class: 'ovsec' },
+    h('div', { class: 'ovhead' }, h('div', {}, h('h3', {}, 'Deine Zahlen'), h('p', { class: 'pmeta' }, `${dt.format(new Date(`${per.from}T12:00:00`)).split(',')[0]} bis ${dt.format(new Date(`${per.to}T12:00:00`)).split(',')[0]}, Linien zeigen die letzten 12 Wochen${c.profit_coverage != null && c.profit_coverage < 95 ? `. Gewinn hochgerechnet: ${c.profit_coverage} % des Umsatzes haben einen Einkaufspreis` : ''}`)), toggle),
+    h('div', { class: 'kpis ovkpis' }, tiles)));
+
+  // Wie teuer ist die Werbung?
+  if (o.ad_cost) {
+    const a = o.ad_cost, max = Math.max(50, Math.ceil(((a.limit ?? 0) * 1.6) / 10) * 10, Math.ceil(a.per_100 / 10) * 10 + 10);
+    root.append(h('section', { class: 'panel ovsec' },
+      h('div', { class: 'list-h' }, h('h3', {}, 'Wie teuer ist die Werbung?'), a.ok != null ? h('span', { class: `tag ${a.ok ? 'good' : 'err'}` }, a.ok ? 'im grünen Bereich' : 'Werbung frisst den Gewinn') : null),
+      h('p', {}, 'Von 100 € Umsatz über Werbung gibst du ', h('b', {}, eur.format(a.per_100)), ' für die Werbung aus (30 Tage).', a.limit != null ? [' Die Grenze liegt bei ', h('b', {}, eur.format(a.limit)), ': So viel bleibt von 100 € Umsatz im Schnitt als Rohertrag. Darüber kostet die Werbung mehr, als die Verkäufe bringen.'] : ' Für die Grenze fehlen Einkaufspreise.'),
+      h('div', { class: 'ovgauge', role: 'img', 'aria-label': `${eur.format(a.per_100)} von 100 €${a.limit != null ? `, Grenze ${eur.format(a.limit)}` : ''}` },
+        a.limit != null ? [h('i', { class: 'okzone', style: `width:${(Math.min(a.limit, max) / max) * 100}%` }), h('i', { class: 'badzone', style: `left:${(Math.min(a.limit, max) / max) * 100}%` })] : null,
+        h('b', { class: 'needle', style: `left:${(Math.min(a.per_100, max) / max) * 100}%` })),
+      h('div', { class: 'ovgaugelab pmeta' }, h('span', {}, '0 €'), a.limit != null ? h('span', { style: `left:${(Math.min(a.limit, max) / max) * 100}%` }, `${eur.format(a.limit)} = Grenze`) : null, h('span', {}, eur.format(max)))));
+  }
+
+  // Rückblick letzte Woche
+  const r = o.review;
+  root.append(h('section', { class: 'panel ovsec' },
+    h('div', { class: 'pmeta ovkw' }, `Rückblick letzte Woche · KW ${r.week}`),
+    h('h3', { class: 'ovreview' }, r.comp_changes ? `Mitbewerber haben ${nf.format(r.comp_changes)}-mal ihre Preise geändert, bei ${nf.format(r.comp_products)} deiner Artikel.` : 'Bei den Mitbewerbern blieben die Preise ruhig.',
+      o.has.sales ? [' Der Shop hat ', h('span', { class: r.revenue_delta != null && r.revenue_delta < 0 ? 'warmtxt' : 'goodtxt' }, moneyR(r.revenue)), ` umgesetzt${r.revenue_delta != null ? ` (${r.revenue_delta >= 0 ? '+' : '−'}${nf.format(Math.abs(Math.round(r.revenue_delta)))} % zur Woche davor)` : ''}.`] : null),
+    h('div', { class: 'ovtiles' },
+      h('div', {}, h('b', {}, nf.format(r.comp_changes)), h('span', {}, 'Preisänderungen bei Mitbewerbern')),
+      h('div', {}, h('b', {}, nf.format(r.own_changes)), h('span', {}, 'deiner Preise geändert')),
+      h('div', {}, h('b', { class: r.went_offline ? 'warmtxt' : '' }, nf.format(r.went_offline)), h('span', {}, 'Artikel offline gegangen'))),
+    h('button', { class: 'linkbtn', onclick: () => { Object.assign(state, { filter: 'moved', sort: 'name', dir: 'asc' }); setTab('preise'); } }, 'Artikel mit Preisänderung ansehen')));
+
+  // Verlauf je Tag
+  if (o.has.sales || o.has.ads_daily) {
+    const days = o.daily.slice(ov.period === 'd7' ? -30 : -90);
+    const ser = [];
+    if (o.has.sales) ser.push({ name: 'Umsatz im Shop', color: 'var(--petrol)', points: days.map((d) => ({ date: `${d.day}T12:00:00`, value: d.revenue })) });
+    if (o.has.ads_daily) ser.push({ name: 'Umsatz durch Werbung', color: 'var(--cool)', points: days.map((d) => ({ date: `${d.day}T12:00:00`, value: d.ads_value })) }, { name: 'Werbekosten', color: 'var(--warm)', points: days.map((d) => ({ date: `${d.day}T12:00:00`, value: d.ads_cost })) });
+    const body = ov.table
+      ? h('div', { class: 'tablewrap ovtable' }, h('table', { class: 'plain' }, h('thead', {}, h('tr', {}, h('th', {}, 'Tag'), ser.map((x) => h('th', {}, x.name)), o.has.sales ? h('th', {}, 'Bestellungen') : null)),
+        h('tbody', {}, [...days].reverse().map((d) => h('tr', {}, h('td', {}, dLong.format(new Date(`${d.day}T12:00:00`))), o.has.sales ? h('td', {}, eur.format(d.revenue)) : null, o.has.ads_daily ? [h('td', {}, eur.format(d.ads_value)), h('td', {}, eur.format(d.ads_cost))] : null, o.has.sales ? h('td', {}, nf.format(d.orders)) : null)))))
+      : lineChart(ser, { height: 240, area: true, fmtY: (v) => eur0.format(v) });
+    root.append(h('section', { class: 'panel ovsec' },
+      h('div', { class: 'list-h' }, h('h3', {}, `${ser.map((x) => x.name).join(', ').replace(/, ([^,]*)$/, ' und $1')} je Tag`), h('button', { class: 'btn small', onclick: () => { ov.table = !ov.table; render(); } }, ov.table ? 'Als Diagramm' : 'Als Tabelle')),
+      body));
+  }
+
+  // Begriffe
+  root.append(h('details', { class: 'panel ovterms' }, h('summary', {}, 'Begriffe einfach erklärt'),
+    h('dl', { class: 'facts' },
+      h('dt', {}, 'Umsatz im Shop'), h('dd', {}, 'Summe der Bestellpositionen aus Shopware inklusive Mehrwertsteuer, ohne stornierte Bestellungen. Nach Bestelldatum, Stand alle 3 Stunden.'),
+      h('dt', {}, 'Rohertrag'), h('dd', {}, 'Was nach Mehrwertsteuer, Einkaufspreis, Zahlungsgebühren und Versandkosten (Einstellungen → Kanäle, Shop) übrig bleibt. Fehlt bei einem Artikel der Einkaufspreis, wird mit der Marge der übrigen hochgerechnet.'),
+      h('dt', {}, 'Umsatz durch Werbung'), h('dd', {}, 'Was Google Ads den Anzeigen als Verkaufswert zuschreibt (Conversion-Wert).'),
+      h('dt', {}, 'Gewinn nach Werbung'), h('dd', {}, 'Rohertrag minus Werbekosten im Zeitraum.'),
+      h('dt', {}, 'ROAS'), h('dd', {}, 'Umsatz durch Werbung geteilt durch Werbekosten. 5 heißt: 1 € Werbung bringt 5 € Umsatz.'),
+      h('dt', {}, 'Chancen'), h('dd', {}, 'Konkrete Hinweise aus allen Bereichen (Preise, Lager, Google, eBay, Werbung), sortiert nach geschätztem Wert in Euro.'))));
+}
+function opp_reset(type = '') { opp.type = type; }
 
 async function renderStart(root) {
   const d = state.data;
@@ -3291,7 +3437,7 @@ function render() {
     if (sameTab) { main.scrollTop = keepMain; window.scrollTo(0, keepWin); } else { main.scrollTop = 0; window.scrollTo(0, 0); }
   };
   const fail = (e) => { if (!(e instanceof AuthError)) toast(e.message, true); };
-  const asyncTabs = { start: renderStart, analyse: renderAnalysis, sichtbarkeit: renderSeo, keywords: renderKeywords, seitencheck: renderSeoCheck, ebay: renderEbay, chancen: renderChancen, einstellungen: renderSettings, import: renderImport };
+  const asyncTabs = { uebersicht: renderOverview, start: renderStart, analyse: renderAnalysis, sichtbarkeit: renderSeo, keywords: renderKeywords, seitencheck: renderSeoCheck, ebay: renderEbay, chancen: renderChancen, einstellungen: renderSettings, import: renderImport };
   const fn = asyncTabs[state.tab] ?? (state.tab === 'mitbewerber' ? null : asyncTabs.import);
   if (state.tab === 'preise' || state.tab === 'hilfe' || state.tab === 'mitbewerber') {
     main.replaceChildren();
@@ -3318,7 +3464,7 @@ async function refresh({ poll = false } = {}) {
   state.scope = state.data.scope;
   const typing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) && document.getElementById('main').contains(document.activeElement);
   if (state.tab === 'preise' && document.getElementById('rows')) { renderRunbar(); loadRows(true, { keep: true }); } // geladene Zeilen und Scrollposition behalten
-  else if (typing || (poll && state.tab !== 'start')) renderRunbar(); // Formulare nicht beim Abruf-Fortschritt neu aufbauen
+  else if (typing || (poll && !['start', 'uebersicht'].includes(state.tab))) renderRunbar(); // Formulare nicht beim Abruf-Fortschritt neu aufbauen
   else render();
   window.scrollTo(0, scrollY);
   clearInterval(pollTimer);

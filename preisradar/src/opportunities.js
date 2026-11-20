@@ -212,6 +212,11 @@ export function productOpportunities(db, productId) {
   return cache.data.items.filter((i) => i.product_id === productId);
 }
 export const invalidateOpportunities = () => { cache = null; };
+/** Alle Chancen, 60 Sekunden zwischengespeichert (für Übersicht und eBay-Seite). */
+export function cachedOpportunities(db) {
+  if (!cache || Date.now() - cache.at > 60000) cache = { at: Date.now(), data: findOpportunities(db) };
+  return cache.data;
+}
 
 /**
  * eBay auf einen Blick (wie der eBay-Bereich in AdPilot): was fehlt, wo eigene Angebote teurer sind als der

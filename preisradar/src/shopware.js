@@ -86,6 +86,69 @@ async function salesSince(cfg, tok, days) {
 }
 
 /**
+ * Umsatz, Stück und Gewinn je Tag (letzte 100 Tage) für die Übersicht. Zwei Abfragen über Tages-Histogramme
+ * (Bestellpositionen je Artikel und Bestellungen), stornierte Bestellungen zählen nicht.
+ * Gewinn je Position: Gewinn je Stück nach den Shop-Kanalregeln (Gebühren, Versand) mit dem Einkaufspreis;
+ * Positionen ohne Einkaufspreis zählen nur zum Umsatz (profit_base hält fest, wie viel Umsatz einen Gewinn hat).
+ */
+export async function syncShopwareDaily(db, { channelOf, profitOf } = {}) {
+  const cfg = shopwareConfig(db);
+  if (!cfg.configured) throw new Error('Shopware-Zugang fehlt');
+  const tok = await token(cfg);
+  const since = new Date(Date.now() - 100 * 86400000).toISOString().slice(0, 10);
+  const notCancelled = { type: 'not', operator: 'or', queries: [{ type: 'equals', field: 'order.stateMachineState.technicalName', value: 'cancelled' }] };
+  const li = await api(cfg, '/search/order-line-item', {
+    token: tok,
+    body: {
+      limit: 1,
+      filter: [{ type: 'equals', field: 'type', value: 'product' }, { type: 'range', field: 'order.orderDate', parameters: { gte: since } }, notCancelled],
+      aggregations: [
+        { name: 'qty', type: 'histogram', field: 'order.orderDate', interval: 'day', aggregation: { name: 'p', type: 'terms', field: 'productId', limit: 5000, aggregation: { name: 's', type: 'sum', field: 'quantity' } } },
+        { name: 'rev', type: 'histogram', field: 'order.orderDate', interval: 'day', aggregation: { name: 'p', type: 'terms', field: 'productId', limit: 5000, aggregation: { name: 's', type: 'sum', field: 'totalPrice' } } },
+      ],
+      includes: { order_line_item: ['id'] },
+    },
+  });
+  const ord = await api(cfg, '/search/order', {
+    token: tok,
+    body: {
+      limit: 1,
+      filter: [{ type: 'range', field: 'orderDate', parameters: { gte: since } }, { type: 'not', operator: 'or', queries: [{ type: 'equals', field: 'stateMachineState.technicalName', value: 'cancelled' }] }],
+      aggregations: [{ name: 'orders', type: 'histogram', field: 'orderDate', interval: 'day' }],
+      includes: { order: ['id'] },
+    },
+  });
+  const dayOf = (k) => String(k ?? '').slice(0, 10);
+  const days = new Map();
+  const get = (d) => { if (!days.has(d)) days.set(d, { revenue: 0, units: 0, orders: 0, profit: 0, base: 0 }); return days.get(d); };
+  const qty = new Map(); // Tag|Produkt -> Stück
+  for (const b of li.aggregations?.qty?.buckets ?? []) for (const x of b.p?.buckets ?? []) qty.set(`${dayOf(b.key)}|${x.key}`, Number(x.s?.sum ?? 0));
+  const bySw = new Map(db.prepare('SELECT id, sw_id, purchase_price, tax_rate FROM products WHERE sw_id IS NOT NULL').all().map((p) => [p.sw_id, p]));
+  for (const b of li.aggregations?.rev?.buckets ?? []) {
+    const d = dayOf(b.key);
+    if (!d) continue;
+    const row = get(d);
+    for (const x of b.p?.buckets ?? []) {
+      const rev = Number(x.s?.sum ?? 0), n = qty.get(`${d}|${x.key}`) ?? 0;
+      row.revenue += rev; row.units += n;
+      const p = bySw.get(x.key);
+      const per = p && n > 0 && profitOf ? profitOf(rev / n, p) : null;
+      if (per != null) { row.profit += per * n; row.base += rev; }
+    }
+  }
+  for (const b of ord.aggregations?.orders?.buckets ?? []) { const d = dayOf(b.key); if (d) get(d).orders = Number(b.count ?? 0); }
+  const now = new Date().toISOString();
+  db.exec('BEGIN');
+  try {
+    const up = db.prepare('INSERT INTO shop_daily(day, revenue, units, orders, profit, profit_base, updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(day) DO UPDATE SET revenue=excluded.revenue, units=excluded.units, orders=excluded.orders, profit=excluded.profit, profit_base=excluded.profit_base, updated_at=excluded.updated_at');
+    db.prepare('DELETE FROM shop_daily WHERE day >= ?').run(since);
+    for (const [d, v] of days) up.run(d, money(v.revenue), v.units, v.orders, money(v.profit), money(v.base), now);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return { days: days.size };
+}
+
+/**
  * SEO-URLs der Produktseiten (kanonisch, nicht gelöscht) im Verkaufskanal der eigenen Domain.
  * Braucht Leserechte auf seo_url und sales_channel_domain; fehlen sie, kommen neue Artikel ohne Link
  * (die Sitemap trägt ihn nach) und der Abgleich läuft trotzdem.
