@@ -180,7 +180,7 @@ function renderPrices(root) {
   const typed = (key) => (e) => { state[key] = e.target.value; clearTimeout(typingTimer); typingTimer = setTimeout(reload, 250); };
   const hasGoogle = Boolean(d.config.gsc || d.config.merchant || d.config.seoAudit);
   const gview = hasGoogle && state.view === 'google';
-  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'tierA', 'marketOn', 'marketDear', 'marketCheapest', 'marketHeadroom', 'marketUnlisted'].includes(state.filter) ? 1 : 0);
+  const extra = ['comp', 'status', 'minP', 'maxP', 'gapMin', 'impMin', 'posMax'].filter((k) => state[k] !== '').length + (['moved', 'problem', 'notFound', 'oos', 'equal', 'offline', 'marketOn', 'marketDear', 'marketCheapest', 'marketHeadroom', 'marketUnlisted'].includes(state.filter) ? 1 : 0);
   const reset = () => { Object.assign(state, { q: '', brand: '', filter: 'all', comp: '', status: '', minP: '', maxP: '', gapMin: '', impMin: '', posMax: '' }); render(); };
   const setView = (v) => {
     state.view = v;
@@ -255,10 +255,10 @@ function renderChips() {
   const gchipT = (key, label, cls, title) => { const b = chip(key, label, cls); b.title = title; return b; };
   document.getElementById('chips-main')?.replaceChildren(
     chip('all', 'alle'), chip('undercut', 'teurer als ein Mitbewerber', 'bad'), chip('cheapest', 'günstigster', 'good'),
-    chip('review', 'zu prüfen', 'warn'), chip('none', 'ohne Vergleichspreis'));
+    chip('review', 'zu prüfen', 'warn'), chip('none', 'ohne Vergleichspreis'), chip('tierA', 'täglich geprüft'));
   document.getElementById('chips-more')?.replaceChildren(
     chip('equal', 'gleichauf'), chip('moved', 'Preis geändert'), chip('problem', 'Fehler oder gesperrt', 'bad'),
-    chip('notFound', 'nicht gefunden'), chip('oos', 'Mitbewerber ausverkauft'), chip('offline', 'bei mir offline', 'warn'), chip('tierA', 'täglich geprüft'),
+    chip('notFound', 'nicht gefunden'), chip('oos', 'Mitbewerber ausverkauft'), chip('offline', 'bei mir offline', 'warn'),
     ...(mk().length || c.marketOn ? [
       gchipT('marketOn', `für ${mkName()} vorgemerkt`, '', `Diese Artikel werden automatisch ${mk().length > 1 ? 'bei mindestens einer Marktquelle' : `bei ${mkName()}`} abgefragt`),
       gchipT('marketDear', `${onMk()} teurer`, 'bad', `Ein anderer Händler bietet dieselbe EAN ${onMk()} inklusive Versand günstiger an`),
