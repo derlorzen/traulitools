@@ -131,7 +131,7 @@ export function learnShopTemplate(html, { known = {}, jsonld = null } = {}) {
 /** Auffällige Preise auf der Seite (für die Auswahl, wenn nichts eindeutig ist). */
 export function priceCandidates(html, limit = 6) {
   const $ = cheerio.load(html);
-  $('script, style, noscript, svg, header, footer, nav').remove();
+  $('script, style, noscript, svg, header, footer, nav, select, option, input, button').remove();
   const seen = new Map();
   $('body *').each((_, el) => {
     const $el = $(el);
