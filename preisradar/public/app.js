@@ -915,6 +915,7 @@ function competitorPanel(c) {
           const r = await api(`/api/competitors/${c.id}/search-link/detect`, { method: 'POST', body: {} });
           if (r.link) { form.elements.manual_search_url.value = r.link; toast('Suchlink erkannt und gespeichert'); } else toast('Kein Suchlink auf der Startseite gefunden', true);
         }) }, 'Suchlink erkennen')) : null),
+      f('Nur diese Marken (optional)', 'brands', c?.brands, { ph: 'z. B. HSK', hint: 'Mehrere mit Komma trennen. Gesucht und geprüft werden nur eigene Artikel dieser Hersteller. Leer: alle Artikel.' }),
       f('Ergebnis-Selektor (optional)', 'result_selector', c?.result_selector, { ph: 'a.product-name', hint: 'CSS-Selektor der Produktlinks auf der Suchseite' }),
       f('Preis-Selektor (optional)', 'price_selector', c?.price_selector, { ph: '.product-detail-price', hint: 'Nur nötig, wenn der Preis nicht automatisch erkannt wird' }),
       f('Pause zwischen Abrufen (ms)', 'delay_ms', c?.delay_ms ?? 2000, { type: 'number', hint: tempoHint(c) }),

@@ -56,6 +56,13 @@ function recordPrice(db, matchId, price, now) {
   }
 }
 
+/** Marken-Eingrenzung des Mitbewerbers (z. B. nur HSK): leer = alle Artikel. */
+export function brandFilter(comp) {
+  const list = String(comp?.brands ?? '').split(/[,;\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+  if (!list.length) return () => true;
+  return (p) => { const m = String(p.manufacturer ?? '').trim().toLowerCase(); return Boolean(m) && list.some((b) => m === b || m.startsWith(b + ' ')); };
+}
+
 /** Auslese-Vorlage des Mitbewerbers (JSON in competitors.extract_tpl) oder null. */
 export function compTemplate(comp) {
   if (!comp?.extract_tpl) return null;
@@ -369,7 +376,7 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
   const prods = db.prepare(`SELECT * FROM products WHERE active=1 ${productId ? 'AND id=?' : 'AND tracked=1 AND offline_since IS NULL'}`).all(...(productId ? [productId] : []));
   const ensure = db.prepare("INSERT OR IGNORE INTO matches(product_id, competitor_id, status) VALUES (?,?,'pending')");
   db.exec('BEGIN');
-  for (const c of comps) for (const p of prods) ensure.run(p.id, c.id);
+  for (const c of comps) { const ok = brandFilter(c); for (const p of prods) if (ok(p)) ensure.run(p.id, c.id); }
   db.exec('COMMIT');
 
   resetAiBudget();
@@ -382,7 +389,9 @@ export function startScrape(db, { trigger = 'manual', competitorId = null, produ
   const dueFor = (c, exclude = new Set(), at = now, { topUp = fill } = {}) => {
     const rows = db.prepare('SELECT * FROM matches WHERE competitor_id=?').all(c.id);
     const byProduct = new Map(rows.map((r) => [r.product_id, r]));
+    const brandOk = brandFilter(c);
     const items = prods
+      .filter(brandOk)
       .map((p) => ({ p, m: byProduct.get(p.id) }))
       .filter(({ m }) => m)
       .sort((a, b) => rank(a) - rank(b) || (a.m.last_checked ?? '').localeCompare(b.m.last_checked ?? ''));
@@ -481,7 +490,7 @@ export async function checkProductNow(db, productId, { competitorId = null } = {
   if (!p) throw Object.assign(new Error('Artikel nicht gefunden'), { status: 404 });
   checking.add(productId);
   try {
-    const comps = db.prepare(`SELECT * FROM competitors WHERE ${competitorId ? 'id=?' : 'enabled=1'} ORDER BY position, id`).all(...(competitorId ? [competitorId] : []));
+    const comps = db.prepare(`SELECT * FROM competitors WHERE ${competitorId ? 'id=?' : 'enabled=1'} ORDER BY position, id`).all(...(competitorId ? [competitorId] : [])).filter((c) => competitorId || brandFilter(c)(p));
     const aiCfg = aiConfig(db);
     const ensure = db.prepare("INSERT OR IGNORE INTO matches(product_id, competitor_id, status) VALUES (?,?,'pending')");
     const results = await Promise.all(comps.map(async (c) => {

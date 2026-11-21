@@ -493,11 +493,13 @@ export function createApp(db, { dataDir = null } = {}) {
     const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
     const r = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(...compFields(req.body), pos);
     setManualSearch(Number(r.lastInsertRowid), req.body?.manual_search_url);
+    if (req.body?.brands) db.prepare('UPDATE competitors SET brands=? WHERE id=?').run(String(req.body.brands).trim() || null, Number(r.lastInsertRowid));
     res.json({ id: Number(r.lastInsertRowid) });
   }));
   app.put('/api/competitors/:id', wrap((req, res) => {
     db.prepare('UPDATE competitors SET name=?, base_url=?, search_url=?, result_selector=?, price_selector=?, delay_ms=?, enabled=?, ai_mode=?, sitemap_url=? WHERE id=?').run(...compFields(req.body), Number(req.params.id));
     setManualSearch(Number(req.params.id), req.body?.manual_search_url);
+    if (req.body?.brands !== undefined) db.prepare('UPDATE competitors SET brands=? WHERE id=?').run(String(req.body.brands ?? '').trim() || null, Number(req.params.id));
     clearSitemapCache(Number(req.params.id));
     if (req.body?.enabled === true || req.body?.enabled === 1 || req.body?.enabled === 'on') setSetting(db, `comp_paused_${Number(req.params.id)}`, ''); // wieder eingeschaltet
     res.json({ ok: true });
@@ -515,6 +517,7 @@ export function createApp(db, { dataDir = null } = {}) {
       };
       const pos = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS p FROM competitors').get().p;
       const ins = db.prepare('INSERT INTO competitors(name, base_url, search_url, result_selector, price_selector, delay_ms, enabled, ai_mode, sitemap_url, position) VALUES (?,?,?,?,?,?,?,?,?,?)').run(...compFields(body), pos);
+      if (req.body?.brands) db.prepare('UPDATE competitors SET brands=? WHERE id=?').run(String(req.body.brands).trim(), Number(ins.lastInsertRowid));
       // Produktlink als bekannte URL ist nicht möglich (Zuordnung zu eigenem Artikel fehlt), daher nur der Mitbewerber
       return res.json({ ...r, created: true, id: Number(ins.lastInsertRowid) });
     }

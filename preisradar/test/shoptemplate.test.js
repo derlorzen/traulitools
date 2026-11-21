@@ -52,3 +52,13 @@ test('Beschriftete Werte lesen', () => {
   assert.equal(readLabeled('EAN: 4006501181238', { kind: 'ean', label: 'EAN' }), null);
   assert.equal(readLabeled('Hersteller-Nr.: E87120-41 Lieferzeit 3 Tage', { kind: 'mpn', label: 'Hersteller-Nr.' }), 'E87120-41');
 });
+
+test('Marken-Eingrenzung je Mitbewerber', async () => {
+  const { brandFilter } = await import('../src/scraper.js');
+  const ok = brandFilter({ brands: 'HSK, Kermi' });
+  assert.equal(ok({ manufacturer: 'HSK' }), true);
+  assert.equal(ok({ manufacturer: 'hsk Duschsysteme' }), true);
+  assert.equal(ok({ manufacturer: 'Grohe' }), false);
+  assert.equal(ok({ manufacturer: null }), false);
+  assert.equal(brandFilter({ brands: '' })({ manufacturer: 'Grohe' }), true);
+});
