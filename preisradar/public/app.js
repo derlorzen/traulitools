@@ -961,7 +961,7 @@ function extractTemplateBox(c) {
     t.price?.mode === 'jsonld' ? 'Preis aus den strukturierten Daten des Shops' : h('span', {}, 'Preis an der Stelle ', h('code', { translate: 'no' }, t.price?.selector ?? '?')),
     ...(t.ids ?? []).map((r) => `${r.kind === 'ean' ? 'EAN' : 'Herstellernummer'} hinter „${r.label}“`),
   ];
-  const checkText = (k) => k ? `Geprüft am ${dt.format(new Date(k.at))}: Preis auf ${k.ok} von ${k.total} weiteren Produktseiten erkannt${k.with_ids != null && (tpl?.ids ?? []).length ? `, EAN/Herstellernummer auf ${k.with_ids}` : ''}.` : '';
+  const checkText = (k) => k ? `Geprüft am ${dt.format(new Date(k.at))}: Preis auf ${k.ok} von ${k.total} weiteren Produktseiten erkannt${k.with_ids ? `, EAN/Herstellernummer auf ${k.with_ids}` : ''}.` : '';
   const pagesList = (k) => k?.pages?.length ? h('ul', { class: 'tplpages' }, k.pages.map((p) => h('li', { class: p.ok ? 'ok' : 'bad' },
     p.ok ? '✓ ' : '✗ ', h('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, p.url.replace(/^https?:\/\/[^/]+/, '')),
     ` · ${p.price != null ? eur.format(p.price) : p.error ?? 'kein Preis'}${p.expected != null ? ` (bisher ${eur.format(p.expected)})` : ''}${p.ean ? ` · EAN ${p.ean}` : ''}${p.mpn ? ` · Hersteller-Nr. ${p.mpn}` : ''}`))) : null;

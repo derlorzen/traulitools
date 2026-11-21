@@ -76,6 +76,7 @@ export function applyShopTemplate(html, tpl, jsonldPrice = null) {
     let els;
     try { els = $(tpl.price.selector); } catch { els = $(); }
     for (const el of els.toArray().slice(0, 5)) { const p = priceAt($, el); if (p != null) { out.price = p; break; } }
+    out.price ??= jsonldPrice; // Seite mit anderem Aufbau: strukturierte Daten als Ersatz
   }
   if (tpl.ids?.length) {
     const text = pageText(html);
@@ -97,16 +98,16 @@ export function applyShopTemplate(html, tpl, jsonldPrice = null) {
 export function learnShopTemplate(html, { known = {}, jsonld = null } = {}) {
   const tpl = { ids: [] };
   const notes = [];
-  // Preis
+  // Preis: alle passenden Preisquellen sammeln (strukturierte Daten, feste Stellen im HTML); welche auf den
+  // übrigen Seiten des Shops am besten trägt, entscheidet die Gegenprüfung.
   const want = known.price != null ? Number(known.price) : null;
-  if (jsonld?.price != null && (want == null || Math.abs(jsonld.price - want) < 0.01)) {
-    tpl.price = { mode: 'jsonld' };
-    notes.push(`Preis aus den strukturierten Daten des Shops (${jsonld.price.toFixed(2).replace('.', ',')} €)`);
-  } else if (want != null) {
-    const sels = deriveTemplates(html, want);
-    if (sels.length) { tpl.price = { mode: 'selector', selector: sels[0] }; notes.push(`Preis an fester Stelle im HTML: ${sels[0]}`); }
-    else notes.push(`Der Preis ${want.toFixed(2).replace('.', ',')} € steht so nicht auf der Seite (anderer Preis oder per JavaScript nachgeladen).`);
-  }
+  const options = [];
+  const ldOk = jsonld?.price != null && (want == null || Math.abs(jsonld.price - want) < 0.01);
+  if (ldOk) options.push({ mode: 'jsonld' });
+  const target = want ?? (ldOk ? jsonld.price : null);
+  if (target != null) for (const sel of deriveTemplates(html, target)) options.push({ mode: 'selector', selector: sel });
+  if (options.length) tpl.price = options[0];
+  else if (want != null) notes.push(`Der Preis ${want.toFixed(2).replace('.', ',')} € steht so nicht auf der Seite (anderer Preis oder per JavaScript nachgeladen).`);
   // EAN und Herstellernummer: welche Beschriftung liefert den richtigen Wert?
   const text = pageText(html);
   for (const kind of ['ean', 'mpn']) {
@@ -121,14 +122,20 @@ export function learnShopTemplate(html, { known = {}, jsonld = null } = {}) {
       }
     }
   }
-  if (!tpl.ids.length) notes.push('Keine EAN oder Herstellernummer auf der Seite gefunden: Treffer werden über den Namen geprüft.');
+  if (!tpl.ids.length && !known.structuredIds) notes.push('Keine EAN oder Herstellernummer auf der Seite gefunden: Treffer werden über den Namen geprüft.');
+  if (!tpl.ids.length && known.structuredIds) notes.push('EAN bzw. Herstellernummer stehen in den versteckten Produktangaben der Seite und werden von dort gelesen.');
   // Kandidaten, falls der Preis noch offen ist
   let candidates = [];
   if (!tpl.price) candidates = priceCandidates(html);
-  return { tpl: tpl.price ? tpl : null, partial: tpl, notes, candidates };
+  return { tpl: tpl.price ? tpl : null, options, partial: tpl, notes, candidates };
 }
 
 /** Auffällige Preise auf der Seite (für die Auswahl, wenn nichts eindeutig ist). */
+/** Text für eine Preisquelle. */
+export function priceRuleText(r) {
+  return r?.mode === 'jsonld' ? 'Preis aus den strukturierten Daten des Shops' : `Preis an fester Stelle im HTML: ${r?.selector}`;
+}
+
 export function priceCandidates(html, limit = 6) {
   const $ = cheerio.load(html);
   $('script, style, noscript, svg, header, footer, nav, select, option, input, button').remove();

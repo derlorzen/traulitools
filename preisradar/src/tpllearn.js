@@ -1,6 +1,6 @@
 import { loadPage } from './scraper.js';
 import { extractProduct } from './extract.js';
-import { learnShopTemplate, applyShopTemplate } from './shoptemplate.js';
+import { learnShopTemplate, applyShopTemplate, priceRuleText } from './shoptemplate.js';
 import { normId } from './util.js';
 
 /**
@@ -23,13 +23,24 @@ export async function learnCompetitorTemplate(db, compId, { url, price = null, s
   const known = { price: price != null && price !== '' ? Number(String(price).replace(',', '.')) : null };
   const prod = productFor(db, comp.id, url, base);
   if (prod) { known.ean = prod.ean; known.mpn = prod.mpn; }
+  const pid = [normId(prod?.ean), normId(prod?.mpn)].filter((x) => x.length >= 5);
+  known.structuredIds = pid.some((x) => base.ids.has(x));
 
   const learned = learnShopTemplate(html, { known, jsonld });
   const result = { url: page.r.finalUrl ?? url, notes: learned.notes, candidates: learned.candidates, product: prod?.name ?? null, saved: false };
   if (!learned.tpl) return { ...result, ok: false, message: known.price == null ? 'Kein eindeutiger Preis gefunden: bitte den angezeigten Preis angeben.' : 'Der angegebene Preis wurde auf der Seite nicht gefunden.' };
 
-  const tpl = { ...learned.tpl, sample: { url: result.url, price: known.price ?? jsonld?.price ?? null, ean: known.ean ?? null, mpn: known.mpn ?? null }, created: new Date().toISOString() };
-  tpl.check = await checkTemplate(db, comp, tpl, { exclude: [url, result.url], urls: checkUrls });
+  const sample = { url: result.url, price: known.price ?? jsonld?.price ?? null, ean: known.ean ?? null, mpn: known.mpn ?? null };
+  // Jede gefundene Preisquelle an denselben weiteren Seiten prüfen und die beste nehmen
+  const pages = await checkPages(db, comp, { exclude: [url, result.url], urls: checkUrls });
+  let best = null;
+  for (const price of learned.options) {
+    const cand = { ...learned.tpl, price };
+    const check = evaluate(cand, pages);
+    if (!best || check.ok > best.check.ok) best = { price, check };
+  }
+  const tpl = { ...learned.tpl, price: best.price, sample, created: new Date().toISOString(), check: best.check };
+  result.notes = [priceRuleText(best.price), ...learned.notes];
   result.check = tpl.check;
   result.tpl = tpl;
   result.ok = tpl.check.total === 0 || tpl.check.ok >= Math.ceil(tpl.check.total / 2);
@@ -58,8 +69,8 @@ function productFor(db, compId, url, ext) {
   return null;
 }
 
-/** Vorlage an weiteren Produktseiten des Shops prüfen: bekannte Treffer zuerst, sonst Adressen aus der Sitemap. */
-export async function checkTemplate(db, comp, tpl, { exclude = [], limit = 4, urls = null } = {}) {
+/** Weitere Produktseiten des Shops laden: bekannte Treffer zuerst, sonst Adressen aus der Sitemap. */
+async function checkPages(db, comp, { exclude = [], limit = 4, urls = null } = {}) {
   let list = urls ?? db.prepare("SELECT url, price FROM matches WHERE competitor_id=? AND url IS NOT NULL AND status IN ('ok','review') ORDER BY last_checked DESC LIMIT 20").all(comp.id);
   list = list.map((x) => (typeof x === 'string' ? { url: x, price: null } : x)).filter((x) => !exclude.includes(x.url));
   if (list.length < limit && !urls) {
@@ -70,13 +81,26 @@ export async function checkTemplate(db, comp, tpl, { exclude = [], limit = 4, ur
   for (const it of list) {
     if (pages.length >= limit) break;
     let p;
-    try { p = await loadPage(it.url); } catch (e) { pages.push({ url: it.url, ok: false, error: e.message }); continue; }
+    try { p = await loadPage(it.url); } catch (e) { pages.push({ url: it.url, expected: it.price ?? null, error: e.message }); continue; }
     if (!p.r) continue;
     const base = extractProduct(p.r.text);
     if (!base.isProductPage && base.price == null && !/\b(in den warenkorb|add to cart)\b/i.test(p.r.text)) continue; // keine Produktseite (Kategorie o. Ä.)
-    const t = applyShopTemplate(p.r.text, tpl, base.source === 'jsonld' ? base.price : null);
-    const priceOk = t?.price != null && (it.price == null || Math.abs(t.price - it.price) / it.price < 0.15);
-    pages.push({ url: it.url, ok: priceOk, ids: t?.ids.size ?? 0, price: t?.price ?? null, expected: it.price ?? null, ean: t?.ean ?? null, mpn: t?.mpn ?? null });
+    pages.push({ url: it.url, expected: it.price ?? null, html: p.r.text, ld: base.source === 'jsonld' ? base.price : null, sids: base.ids.size });
   }
-  return { at: new Date().toISOString(), ok: pages.filter((x) => x.ok).length, total: pages.length, with_ids: pages.filter((x) => x.ids > 0).length, pages };
+  return pages;
+}
+
+function evaluate(tpl, pages) {
+  const out = pages.map((pg) => {
+    if (pg.error) return { url: pg.url, ok: false, error: pg.error, expected: pg.expected };
+    const t = applyShopTemplate(pg.html, tpl, pg.ld);
+    const ok = t?.price != null && (pg.expected == null || Math.abs(t.price - pg.expected) / pg.expected < 0.15);
+    return { url: pg.url, ok, ids: (t?.ids.size ?? 0) + pg.sids, price: t?.price ?? null, expected: pg.expected, ean: t?.ean ?? null, mpn: t?.mpn ?? null };
+  });
+  return { at: new Date().toISOString(), ok: out.filter((x) => x.ok).length, total: out.length, with_ids: out.filter((x) => x.ids > 0).length, pages: out };
+}
+
+/** Gespeicherte Vorlage erneut an weiteren Produktseiten prüfen. */
+export async function checkTemplate(db, comp, tpl, opts = {}) {
+  return evaluate(tpl, await checkPages(db, comp, opts));
 }
